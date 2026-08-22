@@ -24,14 +24,22 @@ jobs:
 
     - name: Install Dependencies
       run: |
-        python -m pip install --upgrade pip setuptools wheel
+        python -m pip install --upgrade pip
+        pip install "setuptools<70" wheel
         pip install dlib --only-binary :all: || pip install dlib
         pip install git+https://github.com/ageitgey/face_recognition_models
         pip install -r requirements.txt
 
     - name: Build Executable with PyInstaller
       run: |
-        pyinstaller --noconfirm --onedir --windowed --name "CCTV_CMS" --collect-all face_recognition --collect-all face_recognition_models --add-data "faces;faces" main.py
+        pyinstaller --noconfirm --onedir --windowed `
+          --name "CCTV_CMS" `
+          --hidden-import "pkg_resources" `
+          --collect-all "face_recognition" `
+          --collect-all "face_recognition_models" `
+          --collect-all "PyQt6" `
+          --add-data "faces;faces" `
+          main.py
 
     - name: Upload Build Artifact
       uses: actions/upload-artifact@v4
