@@ -4,7 +4,7 @@ import time
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QListWidget, QListWidgetItem, QMessageBox,
-    QGroupBox, QTabWidget, QMenu
+    QGroupBox, QTabWidget, QMenu, QTreeWidget, QTreeWidgetItem
 )
 from PyQt6.QtGui import QImage, QPixmap, QAction
 from PyQt6.QtCore import Qt, QTimer
@@ -14,6 +14,7 @@ from scanner import scan_subnet
 from camera_store import CameraStore
 from camera_stream import CameraStreamThread
 from add_camera_dialog import AddCameraDialog
+from add_nvr_dialog import AddNVRDialog
 from face_library_dialog import FaceLibraryDialog
 
 
@@ -64,7 +65,11 @@ class CameraTabWidget(QWidget):
         rgb_image = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb_image.shape
         bytes_per_line = ch * w
-        qt_img = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+        # نکته: .copy() الزامی است. بدون آن، QImage صرفاً به بافر numpy موقتِ rgb_image
+        # اشاره می‌کند؛ به محض بازگشت از این تابع پایتون می‌تواند آن حافظه را آزاد/بازچرخانی
+        # کند و رندر بعدی (scaled/QPixmap.fromImage) به حافظه‌ی نامعتبر دسترسی پیدا کند —
+        # یکی دیگر از منابع کرش تصادفی برنامه هنگام پخش زنده.
+        qt_img = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
         self.video_label.setPixmap(
             QPixmap.fromImage(qt_img).scaled(
                 self.video_label.width(), self.video_label.height(),
@@ -114,18 +119,26 @@ class MainWindow(QMainWindow):
         scan_group.setLayout(scan_layout)
         left_panel.addWidget(scan_group)
 
-        # بخش لیست دوربین‌های من (با نام دلخواه)
-        cam_group = QGroupBox("دوربین‌های من")
+        # بخش لیست دوربین‌ها و NVRهای من (با نام دلخواه)
+        cam_group = QGroupBox("دوربین‌ها و NVRهای من")
         cam_layout = QVBoxLayout()
-        self.add_camera_btn = QPushButton("+ افزودن دوربین جدید")
+        add_btn_row = QHBoxLayout()
+        self.add_camera_btn = QPushButton("+ افزودن دوربین تکی")
         self.add_camera_btn.clicked.connect(lambda: self.open_add_camera_dialog())
-        self.camera_list = QListWidget()
+        self.add_nvr_btn = QPushButton("+ افزودن NVR")
+        self.add_nvr_btn.clicked.connect(self.open_add_nvr_dialog)
+        add_btn_row.addWidget(self.add_camera_btn)
+        add_btn_row.addWidget(self.add_nvr_btn)
+
+        # دوربین‌های متصل به یک NVR به‌صورت زیرمجموعه‌ی همان NVR نمایش داده می‌شوند.
+        self.camera_list = QTreeWidget()
+        self.camera_list.setHeaderHidden(True)
         self.camera_list.itemDoubleClicked.connect(self.on_camera_item_activated)
         self.camera_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.camera_list.customContextMenuRequested.connect(self.show_camera_context_menu)
-        connect_hint = QLabel("برای پخش زنده، دابل‌کلیک کنید. کلیک راست: ویرایش/حذف")
+        connect_hint = QLabel("برای پخش زنده روی یک دوربین/کانال دابل‌کلیک کنید. کلیک راست: ویرایش/حذف/بازخوانی کانال‌ها")
         connect_hint.setStyleSheet("color: #888; font-size: 10px;")
-        cam_layout.addWidget(self.add_camera_btn)
+        cam_layout.addLayout(add_btn_row)
         cam_layout.addWidget(self.camera_list)
         cam_layout.addWidget(connect_hint)
         cam_group.setLayout(cam_layout)
@@ -178,10 +191,24 @@ class MainWindow(QMainWindow):
 
     def reload_camera_list(self):
         self.camera_list.clear()
-        for cam in self.camera_store.cameras:
-            item = QListWidgetItem(cam["name"])
-            item.setData(Qt.ItemDataRole.UserRole, cam["id"])
-            self.camera_list.addItem(item)
+
+        # NVRها به‌صورت گره‌های والد و کانال‌های آن‌ها به‌صورت فرزند نمایش داده می‌شوند.
+        for nvr in self.camera_store.nvrs:
+            channel_count = len(self.camera_store.cameras_for_nvr(nvr["id"]))
+            nvr_item = QTreeWidgetItem([f"🖥 {nvr['name']}  ({nvr['ip']}) — {channel_count} کانال"])
+            nvr_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "nvr", "id": nvr["id"]})
+            self.camera_list.addTopLevelItem(nvr_item)
+            for cam in self.camera_store.cameras_for_nvr(nvr["id"]):
+                cam_item = QTreeWidgetItem([cam["name"]])
+                cam_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "camera", "id": cam["id"]})
+                nvr_item.addChild(cam_item)
+            nvr_item.setExpanded(True)
+
+        # دوربین‌های مستقل (بدون NVR)
+        for cam in self.camera_store.standalone_cameras():
+            cam_item = QTreeWidgetItem([cam["name"]])
+            cam_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "camera", "id": cam["id"]})
+            self.camera_list.addTopLevelItem(cam_item)
 
     def open_add_camera_dialog(self, prefill_ip=None):
         dialog = AddCameraDialog(self)
@@ -194,18 +221,92 @@ class MainWindow(QMainWindow):
             )
             self.reload_camera_list()
 
+    def open_add_nvr_dialog(self):
+        dialog = AddNVRDialog(self)
+        if dialog.exec():
+            data = dialog.get_nvr_data()
+            nvr = self.camera_store.add_nvr(
+                name=data["name"], ip=data["ip"], rtsp_port=data["rtsp_port"],
+                onvif_port=data["onvif_port"], user=data["user"],
+                pwd=data["pass"], brand=data["brand"],
+            )
+            for entry, default_name in dialog.get_selected_channels():
+                self._add_channel_from_entry(nvr, entry, default_name)
+            self.reload_camera_list()
+            QMessageBox.information(
+                self, "NVR اضافه شد",
+                f"NVR «{nvr['name']}» با {len(dialog.get_selected_channels())} کانال اضافه شد."
+            )
+
+    def _add_channel_from_entry(self, nvr, entry, default_name):
+        if entry["is_full_url"]:
+            self.camera_store.add_channel_camera(
+                nvr, entry["channel"], default_name, path="", full_url=entry["path_or_url"]
+            )
+        else:
+            self.camera_store.add_channel_camera(
+                nvr, entry["channel"], default_name, path=entry["path_or_url"]
+            )
+
+    def rescan_nvr(self, nvr_id):
+        nvr = self.camera_store.get_nvr(nvr_id)
+        if not nvr:
+            return
+        dialog = AddNVRDialog(self)
+        dialog.setWindowTitle(f"بازخوانی کانال‌های «{nvr['name']}»")
+        dialog.name_input.setText(nvr["name"])
+        dialog.ip_input.setText(nvr["ip"])
+        dialog.rtsp_port_input.setText(str(nvr.get("rtsp_port", "554")))
+        dialog.onvif_port_input.setText(str(nvr.get("onvif_port", "") or ""))
+        dialog.user_input.setText(nvr.get("user", ""))
+        dialog.pass_input.setText(nvr.get("pass", ""))
+        idx = dialog.brand_combo.findData(nvr.get("brand", "auto"))
+        if idx >= 0:
+            dialog.brand_combo.setCurrentIndex(idx)
+
+        if dialog.exec():
+            data = dialog.get_nvr_data()
+            self.camera_store.update_nvr(nvr_id, **data)
+            existing_channels = {c.get("channel") for c in self.camera_store.cameras_for_nvr(nvr_id)}
+            added = 0
+            for entry, default_name in dialog.get_selected_channels():
+                if entry["channel"] in existing_channels:
+                    continue  # این کانال قبلاً اضافه شده است
+                self._add_channel_from_entry(nvr, entry, default_name)
+                added += 1
+            self.reload_camera_list()
+            QMessageBox.information(self, "بازخوانی کامل شد", f"{added} کانال جدید اضافه شد.")
+
+    def delete_nvr(self, nvr_id):
+        confirm = QMessageBox.question(
+            self, "تأیید حذف", "آیا از حذف این NVR و همه‌ی کانال‌های ثبت‌شده‌ی آن مطمئن هستید؟"
+        )
+        if confirm == QMessageBox.StandardButton.Yes:
+            self.camera_store.remove_nvr(nvr_id, cascade=True)
+            self.reload_camera_list()
+
     def show_camera_context_menu(self, pos):
         item = self.camera_list.itemAt(pos)
         if not item:
             return
-        cam_id = item.data(Qt.ItemDataRole.UserRole)
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not data:
+            return
         menu = QMenu(self)
-        edit_action = QAction("ویرایش", self)
-        edit_action.triggered.connect(lambda: self.edit_camera(cam_id))
-        delete_action = QAction("حذف", self)
-        delete_action.triggered.connect(lambda: self.delete_camera(cam_id))
-        menu.addAction(edit_action)
-        menu.addAction(delete_action)
+        if data["type"] == "camera":
+            edit_action = QAction("ویرایش", self)
+            edit_action.triggered.connect(lambda: self.edit_camera(data["id"]))
+            delete_action = QAction("حذف", self)
+            delete_action.triggered.connect(lambda: self.delete_camera(data["id"]))
+            menu.addAction(edit_action)
+            menu.addAction(delete_action)
+        else:  # nvr
+            rescan_action = QAction("بازخوانی کانال‌ها", self)
+            rescan_action.triggered.connect(lambda: self.rescan_nvr(data["id"]))
+            delete_action = QAction("حذف NVR و همه کانال‌ها", self)
+            delete_action.triggered.connect(lambda: self.delete_nvr(data["id"]))
+            menu.addAction(rescan_action)
+            menu.addAction(delete_action)
         menu.exec(self.camera_list.mapToGlobal(pos))
 
     def edit_camera(self, cam_id):
@@ -224,9 +325,11 @@ class MainWindow(QMainWindow):
             self.camera_store.remove_camera(cam_id)
             self.reload_camera_list()
 
-    def on_camera_item_activated(self, item):
-        cam_id = item.data(Qt.ItemDataRole.UserRole)
-        cam = self.camera_store.get_camera(cam_id)
+    def on_camera_item_activated(self, item, column=0):
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not data or data["type"] != "camera":
+            return
+        cam = self.camera_store.get_camera(data["id"])
         if cam:
             self.open_live_tab(cam)
 

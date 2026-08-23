@@ -1,0 +1,24 @@
+# فایل‌های حاوی اطلاعات حساس (IP/نام‌کاربری/رمز عبور دوربین‌ها و NVR) که موقع
+# اجرای برنامه ساخته می‌شوند - نباید روی گیت‌هاب (حتی خصوصی) قرار بگیرند.
+cameras.json
+nvrs.json
+face_db.json
+
+# عکس‌های ثبت‌شده‌ی افراد در Face Library
+faces/*.jpg
+faces/*.png
+!faces/.gitkeep
+
+# فایل‌های پایتون
+__pycache__/
+*.pyc
+*.pyo
+
+# خروجی build
+build/
+dist/
+*.spec
+
+# محیط مجازی (در صورت استفاده)
+venv/
+.venv/
