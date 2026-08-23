@@ -2,6 +2,8 @@ import json
 import os
 import uuid
 
+from rtsp_utils import build_rtsp_url as _build_rtsp_url
+
 
 class CameraStore:
     """Persists the list of cameras the user has connected to before,
@@ -164,8 +166,10 @@ class CameraStore:
                     return f"{scheme}{user}:{pwd}@{rest}"
             return full_url
 
+        # رفع باگ: قبلاً user/pass بدون URL-encode مستقیم داخل رشته جایگذاری
+        # می‌شد؛ رمز عبورهای رایج دوربین‌ها که شامل @ # : / هستند، آدرس RTSP
+        # را خراب می‌کردند و اتصال بی‌دلیل شکست می‌خورد (رجوع کنید به
+        # rtsp_utils.build_rtsp_url).
         ip, port = cam["ip"], cam["port"]
         user, pwd, path = cam.get("user", ""), cam.get("pass", ""), cam.get("path", "")
-        if user and pwd:
-            return f"rtsp://{user}:{pwd}@{ip}:{port}/{path}" if path else f"rtsp://{user}:{pwd}@{ip}:{port}"
-        return f"rtsp://{ip}:{port}/{path}" if path else f"rtsp://{ip}:{port}"
+        return _build_rtsp_url(ip, port, user, pwd, path)

@@ -1,5 +1,8 @@
+import os
 import sys
 import time
+
+import cv2
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -10,12 +13,26 @@ from PyQt6.QtGui import QImage, QPixmap, QAction
 from PyQt6.QtCore import Qt, QTimer
 
 from face_engine import FaceEngine
-from scanner import scan_subnet
+from scanner import NetworkScanThread
 from camera_store import CameraStore
 from camera_stream import CameraStreamThread
 from add_camera_dialog import AddCameraDialog
 from add_nvr_dialog import AddNVRDialog
 from face_library_dialog import FaceLibraryDialog
+from device_detect import DeviceDetectThread
+
+# بهینه‌سازی برای سیستم‌های ضعیف (رم کم / بدون کارت گرافیک):
+# OpenCV به‌صورت پیش‌فرض برای عملیات داخلی (resize، cvtColor و ...) روی *تمام*
+# هسته‌های CPU ترد باز می‌کند. وقتی چند دوربین هم‌زمان پخش می‌شوند (هر کدام با
+# ترد پخش + ترد تشخیص چهره‌ی خودشان)، این تردهای داخلی OpenCV با تردهای خود
+# برنامه بر سر CPU رقابت می‌کنند و روی سیستم‌های 2 تا 4 هسته‌ای (بدون GPU) کل
+# رابط کاربری کند/تکه‌تکه می‌شود. محدود کردن آن به نصف هسته‌ها این رقابت را
+# کم می‌کند بدون افت محسوس در سرعت پردازش هر فریم.
+cv2.setNumThreads(max(1, (os.cpu_count() or 4) // 2))
+
+# روی سیستم‌های کم‌هسته، تشخیص چهره روی هر ۵ فریم هنوز نسبتاً سنگین است؛ فاصله
+# را کمی بیشتر می‌کنیم تا CPU بیشتری برای خود پخش زنده (decode ویدیو) بماند.
+_PROCESS_EVERY_N = 5 if (os.cpu_count() or 4) >= 6 else 8
 
 
 class CameraTabWidget(QWidget):
@@ -41,7 +58,7 @@ class CameraTabWidget(QWidget):
         self.setLayout(layout)
 
     def start(self, rtsp_url, log_callback):
-        self.stream_thread = CameraStreamThread(rtsp_url, self.face_engine, process_every_n=5)
+        self.stream_thread = CameraStreamThread(rtsp_url, self.face_engine, process_every_n=_PROCESS_EVERY_N)
         self.stream_thread.frame_ready.connect(self.on_frame_ready)
         self.stream_thread.error_signal.connect(self.on_error)
         self.stream_thread.connected_signal.connect(self.on_connected)
@@ -90,6 +107,9 @@ class MainWindow(QMainWindow):
 
         self.face_engine = FaceEngine()
         self.camera_store = CameraStore()
+        self.network_scan_thread = None
+        self.detect_thread = None
+        self._scan_ports_by_ip = {}  # ip -> [ports...] از آخرین اسکن شبکه
 
         self.init_ui()
         self.reload_camera_list()
@@ -121,10 +141,15 @@ class MainWindow(QMainWindow):
         self.scan_btn.clicked.connect(self.run_network_scan)
         self.scan_result_list = QListWidget()
         self.scan_result_list.itemDoubleClicked.connect(self.on_scan_result_selected)
+        self.detect_status_label = QLabel("")
+        self.detect_status_label.setStyleSheet("color: #aaaaaa; font-size: 11px;")
         scan_layout.addWidget(self.subnet_input)
         scan_layout.addWidget(self.scan_btn)
-        scan_layout.addWidget(QLabel("روی نتیجه دابل‌کلیک کنید تا به‌عنوان دوربین تکی یا NVR اضافه شود:"))
+        # نکته: دیگر از کاربر پرسیده نمی‌شود دستگاه دوربین تکی است یا NVR؛ با
+        # دابل‌کلیک، نوع دستگاه به‌صورت خودکار تشخیص داده می‌شود (device_detect.py).
+        scan_layout.addWidget(QLabel("روی نتیجه دابل‌کلیک کنید تا نوع دستگاه خودکار تشخیص داده و اضافه شود:"))
         scan_layout.addWidget(self.scan_result_list)
+        scan_layout.addWidget(self.detect_status_label)
         scan_group.setLayout(scan_layout)
         left_panel.addWidget(scan_group)
 
@@ -223,21 +248,26 @@ class MainWindow(QMainWindow):
             cam_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "camera", "id": cam["id"]})
             self.camera_list.addTopLevelItem(cam_item)
 
-    def open_add_camera_dialog(self, prefill_ip=None):
+    def open_add_camera_dialog(self, prefill_ip=None, detected_path=None, detected_full_url=None):
         dialog = AddCameraDialog(self)
         if prefill_ip:
             dialog.ip_input.setText(prefill_ip)
+        if detected_path is not None or detected_full_url is not None:
+            dialog.set_detected_stream(path=detected_path, full_url=detected_full_url)
         if dialog.exec():
             data = dialog.get_camera_data()
             self.camera_store.add_camera(
-                data["name"], data["ip"], data["port"], data["user"], data["pass"], data["path"]
+                data["name"], data["ip"], data["port"], data["user"], data["pass"], data["path"],
+                full_url=data.get("full_url"),
             )
             self.reload_camera_list()
 
-    def open_add_nvr_dialog(self, prefill_ip=None):
+    def open_add_nvr_dialog(self, prefill_ip=None, detected_brand=None, detected_onvif_port=None):
         dialog = AddNVRDialog(self)
         if prefill_ip:
             dialog.ip_input.setText(prefill_ip)
+        if detected_brand:
+            dialog.set_detected_brand(brand=detected_brand, onvif_port=detected_onvif_port)
         if dialog.exec():
             data = dialog.get_nvr_data()
             nvr = self.camera_store.add_nvr(
@@ -354,15 +384,57 @@ class MainWindow(QMainWindow):
             return
         ip = text.split(" ")[0]
 
-        # از آنجا که یک اسکن عمومی شبکه (بر اساس پورت‌های باز) نمی‌تواند با
-        # قطعیت مشخص کند دستگاه یک دوربین تکی است یا یک NVR چندکاناله، از خود
-        # کاربر می‌پرسیم؛ در صورت انتخاب NVR، دیالوگ افزودن NVR (با IP از پیش
-        # پرشده) باز می‌شود که پس از تکمیل، خود NVR و کانال‌های آن دقیقاً مثل
-        # مسیر «+ افزودن NVR» به‌صورت درختی (NVR + زیرمنوی کانال‌ها) اضافه
-        # می‌شوند.
+        if self.detect_thread is not None and self.detect_thread.isRunning():
+            return  # یک تشخیص در حال اجراست؛ منتظر پایان آن بمانیم.
+
+        # رفع درخواست: دیگر از کاربر «دوربین تکی یا NVR؟» پرسیده نمی‌شود؛
+        # DeviceDetectThread با یک اتصال آزمایشی (ONVIF یا تست کانال ۱ و ۲)
+        # خودش نوع دستگاه را تشخیص می‌دهد - رجوع کنید به device_detect.py.
+        self._detect_ip = ip
+        self.scan_result_list.setEnabled(False)
+        self.detect_status_label.setText(f"در حال تشخیص نوع دستگاه {ip}...")
+
+        self.detect_thread = DeviceDetectThread(
+            ip=ip,
+            open_ports=self._scan_ports_by_ip.get(ip, []),
+            rtsp_port="554",
+            user="admin",
+            pwd="",
+            parent=self,
+        )
+        self.detect_thread.progress_signal.connect(self.detect_status_label.setText)
+        self.detect_thread.detected_signal.connect(self._on_device_detected)
+        self.detect_thread.failed_signal.connect(self._on_device_detect_failed)
+        self.detect_thread.start()
+
+    def _on_device_detected(self, kind, payload):
+        self.scan_result_list.setEnabled(True)
+        self.detect_status_label.setText("")
+        ip = self._detect_ip
+        if kind == "nvr":
+            self.open_add_nvr_dialog(
+                prefill_ip=ip,
+                detected_brand=payload.get("brand"),
+                detected_onvif_port=payload.get("onvif_port"),
+            )
+        else:
+            self.open_add_camera_dialog(
+                prefill_ip=ip,
+                detected_path=payload.get("path"),
+                detected_full_url=payload.get("full_url"),
+            )
+
+    def _on_device_detect_failed(self, msg):
+        self.scan_result_list.setEnabled(True)
+        self.detect_status_label.setText("")
+        ip = self._detect_ip
+
+        # تشخیص خودکار با نام کاربری/رمز پیش‌فرض (admin/بدون رمز) ممکن است روی
+        # دستگاه‌هایی با اطلاعات ورود سفارشی شکست بخورد؛ در این حالت کاربر
+        # می‌تواند به‌صورت دستی و با وارد کردن رمز درست، نوع دستگاه را انتخاب کند.
         box = QMessageBox(self)
-        box.setWindowTitle("نوع دستگاه")
-        box.setText(f"دستگاه {ip} چه نوع دستگاهی است؟")
+        box.setWindowTitle("تشخیص خودکار ناموفق بود")
+        box.setText(f"{msg}\n\nنوع دستگاه {ip} را به‌صورت دستی مشخص کنید:")
         camera_btn = box.addButton("دوربین تکی", QMessageBox.ButtonRole.AcceptRole)
         nvr_btn = box.addButton("NVR (چند کاناله)", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("انصراف", QMessageBox.ButtonRole.RejectRole)
@@ -423,18 +495,31 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------- scan ---
 
     def run_network_scan(self):
+        # رفع باگ: قبلاً scan_subnet مستقیماً روی ترد UI اجرا می‌شد و کل برنامه
+        # را برای طول مدت اسکن (چند ثانیه تا چند ده ثانیه) کاملاً فریز می‌کرد؛
+        # حالا در یک QThread جداگانه (NetworkScanThread) اجرا می‌شود.
+        if self.network_scan_thread is not None and self.network_scan_thread.isRunning():
+            return
+
         subnet = self.subnet_input.text().strip()
         self.scan_result_list.clear()
         self.scan_result_list.addItem("در حال اسکن شبکه...")
-        QApplication.processEvents()
+        self.scan_btn.setEnabled(False)
 
-        devices = scan_subnet(subnet)
+        self.network_scan_thread = NetworkScanThread(subnet, self)
+        self.network_scan_thread.finished_signal.connect(self._on_network_scan_finished)
+        self.network_scan_thread.start()
+
+    def _on_network_scan_finished(self, devices):
+        self.scan_btn.setEnabled(True)
         self.scan_result_list.clear()
+        self._scan_ports_by_ip = {}
         if not devices:
             self.scan_result_list.addItem("هیچ دستگاهی یافت نشد.")
             return
 
         for dev in devices:
+            self._scan_ports_by_ip[dev["ip"]] = dev["ports"]
             ports_str = ",".join(map(str, dev["ports"]))
             self.scan_result_list.addItem(f"{dev['ip']} (پورت‌ها: {ports_str})")
 
@@ -445,6 +530,13 @@ class MainWindow(QMainWindow):
             widget = self.tabs.widget(i)
             if isinstance(widget, CameraTabWidget):
                 widget.stop()
+        # جلوگیری از کرش هنگام بستن برنامه در حین اسکن شبکه/تشخیص نوع دستگاه:
+        # Qt هنگام تخریب یک QThread که هنوز در حال اجراست، کرش می‌کند.
+        if self.network_scan_thread is not None and self.network_scan_thread.isRunning():
+            self.network_scan_thread.wait(3000)
+        if self.detect_thread is not None and self.detect_thread.isRunning():
+            self.detect_thread.cancel()
+            self.detect_thread.wait(3000)
         event.accept()
 
 

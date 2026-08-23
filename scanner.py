@@ -1,7 +1,16 @@
+import os
 import socket
 import concurrent.futures
 
+from PyQt6.QtCore import QThread, pyqtSignal
+
 COMMON_CCTV_PORTS = [554, 80, 8000, 37777, 8899]
+
+# روی سیستم‌های ضعیف (کم‌رم/بدون کارت‌گرافیک) تعداد هسته‌ی CPU معمولاً کم است؛
+# 50 ترد هم‌زمان روی چنین سیستمی باعث کندی شدید کل برنامه (از جمله پخش زنده‌ی
+# دوربین‌های باز) در طول اسکن می‌شود. تعداد ترد پیش‌فرض به نسبت هسته‌های واقعی
+# سیستم تنظیم می‌شود.
+DEFAULT_SCAN_THREADS = max(16, min(50, (os.cpu_count() or 4) * 8))
 
 def check_ip_port(ip: str, port: int, timeout=0.4) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -18,7 +27,7 @@ def scan_single_host(ip: str):
         return {"ip": ip, "ports": open_ports}
     return None
 
-def scan_subnet(base_subnet: str = "192.168.1", max_threads: int = 50):
+def scan_subnet(base_subnet: str = "192.168.1", max_threads: int = DEFAULT_SCAN_THREADS):
     """اسکن شبکه: تمام IPهای یک ساب‌نت را برای پورت‌های رایج دوربین/NVR بررسی
     می‌کند (554=RTSP, 80=HTTP/ONVIF, 8000/37777/8899=مدیریت NVRهای رایج).
     این اسکن فقط پورت‌های باز را گزارش می‌دهد و به‌تنهایی نمی‌تواند تشخیص دهد
@@ -34,3 +43,25 @@ def scan_subnet(base_subnet: str = "192.168.1", max_threads: int = 50):
                 active_devices.append(res)
 
     return active_devices
+
+
+class NetworkScanThread(QThread):
+    """اجرای scan_subnet در یک ترد جدا.
+
+    رفع باگ: قبلاً MainWindow.run_network_scan مستقیماً و به‌صورت همزمان
+    (blocking) روی ترد UI اجرا می‌شد؛ در نتیجه در طول کل اسکن ساب‌نت (که
+    می‌تواند چند ثانیه تا چند ده ثانیه طول بکشد)، کل رابط کاربری (از جمله
+    پخش زنده‌ی دوربین‌های در حال حاضر باز) کاملاً قفل/فریز می‌شد و کاربر گمان
+    می‌کرد برنامه هنگ کرده یا اسکن کار نمی‌کند. اجرای آن در QThread این مشکل
+    را برطرف می‌کند.
+    """
+
+    finished_signal = pyqtSignal(list)
+
+    def __init__(self, subnet, parent=None):
+        super().__init__(parent)
+        self.subnet = subnet
+
+    def run(self):
+        devices = scan_subnet(self.subnet)
+        self.finished_signal.emit(devices)

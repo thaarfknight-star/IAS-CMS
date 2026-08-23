@@ -1,8 +1,9 @@
 import concurrent.futures
+import os
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from rtsp_utils import open_capture
+from rtsp_utils import build_rtsp_url, probe_stream
 
 # --------------------------------------------------------------------------
 # الگوهای استاندارد RTSP برای هر کانال یک NVR، به تفکیک برند.
@@ -51,8 +52,18 @@ BRAND_LABELS = {
 # این بلاک‌شدن نامحدود از بین می‌رود.
 ONVIF_TIMEOUT_SEC = 5
 
+# پورت‌های رایج ONVIF که علاوه بر پورت وارد‌شده توسط کاربر امتحان می‌شوند (رفع
+# باگ: خیلی از NVRها روی پورت 80 پاسخ HTTP معمولی می‌دهند نه ONVIF - سرویس
+# ONVIF واقعی روی 8000/8080/2020 است - و چون فقط یک پورت امتحان می‌شد، ONVIF
+# همیشه شکست می‌خورد و کد بی‌دلیل مستقیم به روش brute-force می‌رفت).
+COMMON_ONVIF_PORTS = [80, 8000, 8080, 2020]
+
 # حداکثر تعداد کانالی که هم‌زمان (موازی) بررسی می‌شود.
-CHANNEL_PROBE_WORKERS = 6
+# روی سیستم‌های ضعیف (رم کم/بدون کارت‌گرافیک) تعداد هسته‌ی CPU معمولاً کم است؛
+# باز کردن بیش از حد اتصال RTSP هم‌زمان روی چنین سیستمی باعث ازدحام CPU/شبکه و
+# در نتیجه timeout کاذب برای کانال‌هایی می‌شود که واقعاً موجودند. تعداد ترد به
+# نسبت هسته‌های موجود تنظیم می‌شود (حداقل 3، حداکثر 6).
+CHANNEL_PROBE_WORKERS = max(3, min(6, (os.cpu_count() or 4)))
 
 
 def _format_templates(templates, ch):
@@ -89,14 +100,7 @@ def _discover_onvif_channels(ip, onvif_port, user, pwd):
     return channels or None
 
 
-def try_onvif_discovery(ip, onvif_port, user, pwd, timeout=ONVIF_TIMEOUT_SEC):
-    """تلاش برای کشف کانال‌های واقعی NVR از طریق پروتکل استاندارد ONVIF.
-
-    اگر کتابخانه‌ی onvif-zeep نصب نباشد، NVR از ONVIF پشتیبانی نکند، یا مهلت
-    زمانی (timeout) به پایان برسد، None برمی‌گرداند تا کد فراخوان به روش
-    برندی (brute force) سوییچ کند. این روش دقیق‌ترین راه است چون تعداد و آدرس
-    واقعی کانال‌ها را مستقیماً از خود دستگاه می‌گیرد (نه حدس زدن الگوی URL).
-    """
+def _try_onvif_single_port(ip, onvif_port, user, pwd, timeout):
     try:
         import onvif  # noqa: F401  - فقط برای بررسی نصب بودن کتابخانه
     except ImportError:
@@ -113,6 +117,29 @@ def try_onvif_discovery(ip, onvif_port, user, pwd, timeout=ONVIF_TIMEOUT_SEC):
             # هم شامل TimeoutError و هم هر خطای دیگر (اتصال رد شد، احراز هویت
             # ناموفق، دستگاه ONVIF را پشتیبانی نمی‌کند و ...).
             return None
+
+
+def try_onvif_discovery(ip, onvif_port, user, pwd, timeout=ONVIF_TIMEOUT_SEC):
+    """تلاش برای کشف کانال‌های واقعی NVR از طریق پروتکل استاندارد ONVIF.
+
+    اگر کتابخانه‌ی onvif-zeep نصب نباشد، NVR از ONVIF پشتیبانی نکند، یا مهلت
+    زمانی (timeout) به پایان برسد، None برمی‌گرداند تا کد فراخوان به روش
+    برندی (brute force) سوییچ کند. این روش دقیق‌ترین راه است چون تعداد و آدرس
+    واقعی کانال‌ها را مستقیماً از خود دستگاه می‌گیرد (نه حدس زدن الگوی URL).
+
+    رفع باگ: قبلاً فقط همان یک پورتی که کاربر در فیلد «پورت ONVIF» وارد کرده
+    بود امتحان می‌شد؛ چون سرویس ONVIF واقعی اغلب روی پورتی غیر از 80 (که
+    پیش‌فرض فرم است) اجرا می‌شود، این تلاش تقریباً همیشه شکست می‌خورد. حالا
+    اگر پورت وارد‌شده جواب نداد، پورت‌های رایج دیگر هم امتحان می‌شوند.
+    """
+    ports_to_try = [onvif_port] if onvif_port else []
+    ports_to_try += [p for p in COMMON_ONVIF_PORTS if p != onvif_port]
+
+    for port in ports_to_try:
+        result = _try_onvif_single_port(ip, port, user, pwd, timeout)
+        if result:
+            return result
+    return None
 
 
 class NVRScanThread(QThread):
@@ -146,23 +173,14 @@ class NVRScanThread(QThread):
         self._is_cancelled = True
 
     def _build_url(self, path):
-        if self.user and self.pwd:
-            return f"rtsp://{self.user}:{self.pwd}@{self.ip}:{self.rtsp_port}/{path}"
-        return f"rtsp://{self.ip}:{self.rtsp_port}/{path}"
+        return build_rtsp_url(self.ip, self.rtsp_port, self.user, self.pwd, path)
 
     def _probe_path(self, path):
-        url = self._build_url(path)
-        # open_capture: رجوع کنید به rtsp_utils.py — از تداخل (race condition) با
-        # پخش زنده‌ی هم‌زمان سایر دوربین‌ها روی متغیر محیطی FFmpeg جلوگیری می‌کند.
-        cap = open_capture(url)
-        try:
-            if cap.isOpened():
-                ret, frame = cap.read()
-                if ret and frame is not None:
-                    return True
-        finally:
-            cap.release()
-        return False
+        # probe_stream (رجوع کنید به rtsp_utils.py): هم از تداخل (race condition)
+        # با پخش زنده‌ی هم‌زمان سایر دوربین‌ها روی متغیر محیطی FFmpeg جلوگیری
+        # می‌کند، و هم چند بار تلاش می‌کند تا اولین کی‌فریم برسد (رفع false
+        # negative که باعث «کانال هست ولی پیدا نمی‌شود» بود).
+        return probe_stream(self._build_url(path))
 
     def _probe_channel(self, ch, brands_to_try):
         """یک کانال را با تمام الگوهای برندهای موردنظر تست می‌کند.

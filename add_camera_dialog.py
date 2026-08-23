@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QDialogButtonBox, QMessageBox
 )
 
-from rtsp_utils import open_capture
+from rtsp_utils import build_rtsp_url, probe_stream
 
 # مسیرهای استاندارد RTSP ویژه Sunell، IAP، Dahua، Hikvision و سایر برندها
 CANDIDATE_PATHS = [
@@ -53,21 +53,13 @@ class AutoDetectThread(QThread):
             path_display = path if path else "(root)"
             self.progress_signal.emit(f"در حال بررسی مسیر: {path_display}...")
 
-            if self.user and self.pwd:
-                url = f"rtsp://{self.user}:{self.pwd}@{self.ip}:{self.port}/{path}" if path else f"rtsp://{self.user}:{self.pwd}@{self.ip}:{self.port}"
-            else:
-                url = f"rtsp://{self.ip}:{self.port}/{path}" if path else f"rtsp://{self.ip}:{self.port}"
-
-            # نکته: open_capture از rtsp_utils استفاده می‌شود تا با پخش زنده‌ی
-            # سایر دوربین‌های باز، روی متغیر محیطی FFmpeg تداخل (race condition)
-            # پیش نیاید — رجوع کنید به توضیحات rtsp_utils.py.
-            cap = open_capture(url)
-            if cap.isOpened():
-                ret, frame = cap.read()
-                cap.release()
-                if ret and frame is not None:
-                    self.found_signal.emit(path, url)
-                    return
+            # build_rtsp_url: کاراکترهای خاص URL داخل رمز عبور را encode می‌کند؛
+            # probe_stream: با چند تلاش پیاپی، false negative ناشی از تاخیر
+            # رسیدن اولین کی‌فریم را رفع می‌کند — رجوع کنید به rtsp_utils.py.
+            url = build_rtsp_url(self.ip, self.port, self.user, self.pwd, path)
+            if probe_stream(url):
+                self.found_signal.emit(path, url)
+                return
 
         self.failed_signal.emit("هیچ مسیر معتبری با این مشخصات یافت نشد. نام کاربری، رمز عبور یا پورت را بررسی کنید.")
 
@@ -84,6 +76,7 @@ class AddCameraDialog(QDialog):
         self.setMinimumWidth(360)
         self.auto_detect_thread = None
         self.detected_path = None
+        self.detected_full_url = None
 
         self.name_input = QLineEdit()
         self.name_input.setPlaceholderText("مثلاً: درب اصلی، حیاط، راهرو")
@@ -135,6 +128,21 @@ class AddCameraDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(self.buttons)
         self.setLayout(layout)
+
+    def set_detected_stream(self, path=None, full_url=None):
+        """مسیر/آدرس استریم را که از قبل (مثلاً با تشخیص خودکار نوع دستگاه
+        بعد از اسکن شبکه - رجوع کنید به device_detect.py) پیدا شده، از پیش پر
+        می‌کند تا کاربر مجبور به تکرار دوباره‌ی جستجو نباشد."""
+        self.auto_detect_chk.setChecked(False)
+        self.auto_detect_chk.setEnabled(False)
+        self.path_input.setEnabled(True)
+        self.detected_full_url = full_url
+        if full_url:
+            self.path_input.setText(full_url)
+            self.path_input.setEnabled(False)
+        elif path is not None:
+            self.path_input.setText(path)
+        self.status_label.setText("مسیر استریم به‌صورت خودکار شناسایی شد.")
 
     def handle_accept(self):
         ip = self.ip_input.text().strip()
@@ -189,5 +197,8 @@ class AddCameraDialog(QDialog):
             "port": self.port_input.text().strip() or "554",
             "user": self.user_input.text().strip(),
             "pass": self.pass_input.text().strip(),
-            "path": self.detected_path if self.detected_path is not None else self.path_input.text().strip(),
+            "path": "" if self.detected_full_url else (
+                self.detected_path if self.detected_path is not None else self.path_input.text().strip()
+            ),
+            "full_url": self.detected_full_url,
         }

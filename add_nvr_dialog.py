@@ -1,4 +1,4 @@
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QLabel,
     QComboBox, QSpinBox, QPushButton, QListWidget, QListWidgetItem,
@@ -89,6 +89,18 @@ class AddNVRDialog(QDialog):
         layout.addLayout(select_row)
         layout.addWidget(self.buttons)
         self.setLayout(layout)
+
+    def set_detected_brand(self, brand=None, onvif_port=None):
+        """نوع دستگاه از قبل (با device_detect.py) NVR تشخیص داده شده؛ برند/پورت
+        ONVIF شناسایی‌شده را از پیش پر می‌کند و بلافاصله اسکن کانال‌ها را
+        شروع می‌کند تا کاربر مجبور به کلیک دوباره روی «جستجو» نباشد."""
+        if brand:
+            idx = self.brand_combo.findData(brand)
+            if idx != -1:
+                self.brand_combo.setCurrentIndex(idx)
+        if onvif_port:
+            self.onvif_port_input.setText(str(onvif_port))
+        QTimer.singleShot(0, self.start_scan)
 
     # ------------------------------------------------------------- scan ---
 
