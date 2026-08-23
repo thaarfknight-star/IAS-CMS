@@ -41,6 +41,8 @@ jobs:
           --windows-console-mode=disable `
           --company-name="IAS" `
           --product-name="CCTV CMS" `
+          --file-version="1.0.0.0" `
+          --product-version="1.0.0.0" `
           --include-package=face_recognition `
           --include-package-data=face_recognition_models `
           --include-data-dir=faces=faces `
