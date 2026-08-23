@@ -1,18 +1,19 @@
-import os
 import threading
 import concurrent.futures
 
 import cv2
 from PyQt6.QtCore import QThread, pyqtSignal
 
+from rtsp_utils import open_capture, STREAM_FFMPEG_OPTS
+
 # نکته کلیدی برای رفع مشکل «Live نبودن»:
 #   nobuffer / low_delay / max_delay کوچک از تجمع فریم در بافر داخلی FFmpeg جلوگیری می‌کنند.
 #   بدون این تنظیمات، اگر پردازش (تشخیص چهره) کندتر از رسیدن فریم‌های شبکه باشد،
 #   بافر به مرور پر شده و تصویر نمایش داده‌شده مربوط به چند ثانیه قبل می‌شود.
-FFMPEG_LOW_LATENCY_OPTS = (
-    "rtsp_transport;tcp|stimeout;5000000|max_delay;300000|"
-    "buffer_size;102400|fflags;nobuffer|flags;low_delay"
-)
+# نکته‌ی مهم دیگر: باز کردن Capture اکنون از طریق rtsp_utils.open_capture انجام
+# می‌شود تا با تردهای دیگر (اسکن NVR، تشخیص خودکار دوربین تکی) روی متغیر محیطی
+# مشترک FFmpeg دچار race condition نشود؛ رجوع کنید به توضیحات rtsp_utils.py.
+FFMPEG_LOW_LATENCY_OPTS = STREAM_FFMPEG_OPTS
 
 
 class CameraStreamThread(QThread):
@@ -68,8 +69,7 @@ class CameraStreamThread(QThread):
             self._recognize_busy.clear()
 
     def run(self):
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = FFMPEG_LOW_LATENCY_OPTS
-        cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
+        cap = open_capture(self.rtsp_url, FFMPEG_LOW_LATENCY_OPTS)
         try:
             # بافر داخلی OpenCV/FFmpeg را به حداقل می‌رسانیم تا همیشه جدیدترین فریم نمایش داده شود.
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)

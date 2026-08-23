@@ -1,7 +1,8 @@
-import os
+import concurrent.futures
 
-import cv2
 from PyQt6.QtCore import QThread, pyqtSignal
+
+from rtsp_utils import open_capture
 
 # --------------------------------------------------------------------------
 # الگوهای استاندارد RTSP برای هر کانال یک NVR، به تفکیک برند.
@@ -42,59 +43,87 @@ BRAND_LABELS = {
     "generic": "سایر / عمومی",
 }
 
+# حداکثر زمان (ثانیه) قابل قبول برای کل مرحله‌ی کشف ONVIF. کتابخانه‌ی
+# onvif-zeep/zeep به‌صورت پیش‌فرض timeout ندارد و اگر دستگاه در دسترس نباشد
+# (یا پورت اشتباه باشد)، فراخوانی SOAP می‌تواند برای مدت نامحدود بلاک شود؛
+# این دقیقاً یکی از علت‌های اصلی «NVR شناسایی می‌شود ولی وصل/اسکن نمی‌شود» و
+# قفل‌شدن کامل دیالوگ بود. با اجرای آن در یک ترد جدا و گرفتن نتیجه با timeout،
+# این بلاک‌شدن نامحدود از بین می‌رود.
+ONVIF_TIMEOUT_SEC = 5
+
+# حداکثر تعداد کانالی که هم‌زمان (موازی) بررسی می‌شود.
+CHANNEL_PROBE_WORKERS = 6
+
 
 def _format_templates(templates, ch):
     return [t.format(ch=ch, ch0=ch - 1, ch2=f"{ch:02d}") for t in templates]
 
 
-def try_onvif_discovery(ip, onvif_port, user, pwd, timeout=4):
+def _discover_onvif_channels(ip, onvif_port, user, pwd):
+    """بدنه‌ی اصلی کشف ONVIF؛ این تابع می‌تواند برای مدتی نامحدود بلاک شود، به
+    همین دلیل توسط try_onvif_discovery با یک مهلت زمانی ثابت فراخوانی می‌شود."""
+    from onvif import ONVIFCamera
+
+    cam = ONVIFCamera(ip, int(onvif_port), user, pwd)
+    media = cam.create_media_service()
+    profiles = media.GetProfiles()
+    if not profiles:
+        return None
+
+    channels = []
+    for idx, profile in enumerate(profiles, start=1):
+        try:
+            token = getattr(profile, "token", None) or getattr(profile, "_token", None)
+            req = media.create_type("GetStreamUri")
+            req.ProfileToken = token
+            req.StreamSetup = {
+                "Stream": "RTP-Unicast",
+                "Transport": {"Protocol": "RTSP"},
+            }
+            uri = media.GetStreamUri(req).Uri
+            name = getattr(profile, "Name", None) or f"کانال {idx}"
+            channels.append({"channel": idx, "name": str(name), "url": uri})
+        except Exception:
+            continue
+
+    return channels or None
+
+
+def try_onvif_discovery(ip, onvif_port, user, pwd, timeout=ONVIF_TIMEOUT_SEC):
     """تلاش برای کشف کانال‌های واقعی NVR از طریق پروتکل استاندارد ONVIF.
 
-    اگر کتابخانه‌ی onvif-zeep نصب نباشد یا NVR از ONVIF پشتیبانی نکند، None
-    برمی‌گرداند تا کد فراخوان به روش برندی (brute force) سوییچ کند.
-    این روش دقیق‌ترین راه است چون تعداد و آدرس واقعی کانال‌ها را مستقیماً از
-    خود دستگاه می‌گیرد (نه حدس زدن الگوی URL).
+    اگر کتابخانه‌ی onvif-zeep نصب نباشد، NVR از ONVIF پشتیبانی نکند، یا مهلت
+    زمانی (timeout) به پایان برسد، None برمی‌گرداند تا کد فراخوان به روش
+    برندی (brute force) سوییچ کند. این روش دقیق‌ترین راه است چون تعداد و آدرس
+    واقعی کانال‌ها را مستقیماً از خود دستگاه می‌گیرد (نه حدس زدن الگوی URL).
     """
     try:
-        from onvif import ONVIFCamera
+        import onvif  # noqa: F401  - فقط برای بررسی نصب بودن کتابخانه
     except ImportError:
         return None
 
-    try:
-        cam = ONVIFCamera(ip, int(onvif_port), user, pwd)
-        media = cam.create_media_service()
-        profiles = media.GetProfiles()
-        if not profiles:
+    # اجرای فراخوانی SOAP در یک ترد جدا با مهلت زمانی مشخص؛ بدون این کار، اگر
+    # دستگاه به درخواست پاسخ ندهد، برنامه برای مدت نامحدود (تا زمان timeout
+    # پیش‌فرض TCP سیستم‌عامل که می‌تواند دقیقه‌ها طول بکشد) قفل می‌ماند.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_discover_onvif_channels, ip, onvif_port, user, pwd)
+        try:
+            return future.result(timeout=timeout)
+        except Exception:
+            # هم شامل TimeoutError و هم هر خطای دیگر (اتصال رد شد، احراز هویت
+            # ناموفق، دستگاه ONVIF را پشتیبانی نمی‌کند و ...).
             return None
-
-        channels = []
-        for idx, profile in enumerate(profiles, start=1):
-            try:
-                token = getattr(profile, "token", None) or getattr(profile, "_token", None)
-                req = media.create_type("GetStreamUri")
-                req.ProfileToken = token
-                req.StreamSetup = {
-                    "Stream": "RTP-Unicast",
-                    "Transport": {"Protocol": "RTSP"},
-                }
-                uri = media.GetStreamUri(req).Uri
-                name = getattr(profile, "Name", None) or f"کانال {idx}"
-                channels.append({"channel": idx, "name": str(name), "url": uri})
-            except Exception:
-                continue
-
-        return channels or None
-    except Exception:
-        return None
 
 
 class NVRScanThread(QThread):
     """کانال‌های (دوربین‌های) متصل به یک NVR را شناسایی می‌کند.
 
     ابتدا ONVIF را امتحان می‌کند (سریع و دقیق، در صورت پشتیبانی NVR و نصب بودن
-    کتابخانه)؛ در غیر این صورت هر کانال از 1 تا max_channels را با الگوهای
-    RTSP شناخته‌شده‌ی برندهای رایج تست می‌کند (دقیقاً مشابه منطق auto-detect
-    تک‌دوربین موجود در add_camera_dialog، اما برای هر کانال).
+    کتابخانه، با مهلت زمانی محدود)؛ در غیر این صورت هر کانال از 1 تا
+    max_channels را به‌صورت **موازی** (چند کانال هم‌زمان) با الگوهای RTSP
+    شناخته‌شده‌ی برندهای رایج تست می‌کند. اجرای موازی باعث می‌شود جستجو برای
+    NVRهایی با تعداد کانال زیاد به‌جای چند دقیقه، چند ثانیه طول بکشد و کاربر
+    احساس «قفل‌شدن»/«وصل نشدن» نکند.
     """
 
     progress_signal = pyqtSignal(str)
@@ -123,7 +152,9 @@ class NVRScanThread(QThread):
 
     def _probe_path(self, path):
         url = self._build_url(path)
-        cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+        # open_capture: رجوع کنید به rtsp_utils.py — از تداخل (race condition) با
+        # پخش زنده‌ی هم‌زمان سایر دوربین‌ها روی متغیر محیطی FFmpeg جلوگیری می‌کند.
+        cap = open_capture(url)
         try:
             if cap.isOpened():
                 ret, frame = cap.read()
@@ -133,11 +164,26 @@ class NVRScanThread(QThread):
             cap.release()
         return False
 
+    def _probe_channel(self, ch, brands_to_try):
+        """یک کانال را با تمام الگوهای برندهای موردنظر تست می‌کند.
+        خروجی: (channel, name, path) در صورت موفقیت، یا None."""
+        for brand in brands_to_try:
+            if self._is_cancelled:
+                return None
+            for path in _format_templates(CHANNEL_TEMPLATES[brand], ch):
+                if self._is_cancelled:
+                    return None
+                try:
+                    if self._probe_path(path):
+                        return (ch, f"کانال {ch}", path)
+                except Exception:
+                    continue
+        return None
+
     def run(self):
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|stimeout;2000000"
         found_count = 0
 
-        # ۱) تلاش برای کشف دقیق از طریق ONVIF (در صورت پشتیبانی)
+        # ۱) تلاش برای کشف دقیق از طریق ONVIF (در صورت پشتیبانی، با مهلت زمانی محدود)
         if self.onvif_port and not self._is_cancelled:
             self.progress_signal.emit("در حال تلاش برای کشف کانال‌ها از طریق ONVIF...")
             onvif_channels = try_onvif_discovery(self.ip, self.onvif_port, self.user, self.pwd)
@@ -150,30 +196,44 @@ class NVRScanThread(QThread):
                 self.finished_signal.emit(found_count)
                 return
 
-        # ۲) روش جایگزین: تست الگوهای RTSP شناخته‌شده برای هر کانال
+        if self._is_cancelled:
+            self.failed_signal.emit("جستجو لغو شد.")
+            self.finished_signal.emit(found_count)
+            return
+
+        # ۲) روش جایگزین: تست الگوهای RTSP شناخته‌شده برای هر کانال، به‌صورت موازی.
         if self.brand == "auto":
             brands_to_try = ["dahua_iap", "hikvision", "sunell", "generic"]
         else:
             brands_to_try = [self.brand]
 
-        for ch in range(1, self.max_channels + 1):
-            if self._is_cancelled:
-                break
+        self.progress_signal.emit(f"در حال بررسی {self.max_channels} کانال به‌صورت هم‌زمان...")
+        channels = list(range(1, self.max_channels + 1))
 
-            self.progress_signal.emit(f"در حال بررسی کانال {ch} از {self.max_channels}...")
-            found_for_channel = False
+        with concurrent.futures.ThreadPoolExecutor(max_workers=CHANNEL_PROBE_WORKERS) as executor:
+            future_to_ch = {
+                executor.submit(self._probe_channel, ch, brands_to_try): ch for ch in channels
+            }
+            checked = 0
+            # نتایج به ترتیب شماره‌ی کانال مرتب می‌شوند تا لیست نهایی منظم باشد.
+            results = {}
+            for future in concurrent.futures.as_completed(future_to_ch):
+                ch = future_to_ch[future]
+                checked += 1
+                self.progress_signal.emit(f"بررسی شد {checked} از {self.max_channels} کانال...")
+                if self._is_cancelled:
+                    continue
+                try:
+                    result = future.result()
+                except Exception:
+                    result = None
+                if result:
+                    results[ch] = result
 
-            for brand in brands_to_try:
-                if self._is_cancelled or found_for_channel:
-                    break
-                for path in _format_templates(CHANNEL_TEMPLATES[brand], ch):
-                    if self._is_cancelled:
-                        break
-                    if self._probe_path(path):
-                        self.channel_found_signal.emit(ch, f"کانال {ch}", path)
-                        found_count += 1
-                        found_for_channel = True
-                        break
+            for ch in sorted(results):
+                found_ch, name, path = results[ch]
+                self.channel_found_signal.emit(found_ch, name, path)
+                found_count += 1
 
         if self._is_cancelled:
             self.failed_signal.emit("جستجو لغو شد.")

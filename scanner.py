@@ -19,7 +19,11 @@ def scan_single_host(ip: str):
     return None
 
 def scan_subnet(base_subnet: str = "192.168.1", max_threads: int = 50):
-    """Scan local subnet for active CCTV devices and RTSP ports."""
+    """اسکن شبکه: تمام IPهای یک ساب‌نت را برای پورت‌های رایج دوربین/NVR بررسی
+    می‌کند (554=RTSP, 80=HTTP/ONVIF, 8000/37777/8899=مدیریت NVRهای رایج).
+    این اسکن فقط پورت‌های باز را گزارش می‌دهد و به‌تنهایی نمی‌تواند تشخیص دهد
+    دستگاه یک دوربین تکی است یا یک NVR چندکاناله؛ این تصمیم در UI از کاربر
+    پرسیده می‌شود (رجوع کنید به MainWindow.on_scan_result_selected)."""
     active_devices = []
     ip_list = [f"{base_subnet}.{i}" for i in range(1, 255)]
 

@@ -1,11 +1,10 @@
-import os
-
-import cv2
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QLineEdit, QCheckBox, QLabel,
     QDialogButtonBox, QMessageBox
 )
+
+from rtsp_utils import open_capture
 
 # مسیرهای استاندارد RTSP ویژه Sunell، IAP، Dahua، Hikvision و سایر برندها
 CANDIDATE_PATHS = [
@@ -47,8 +46,6 @@ class AutoDetectThread(QThread):
         self._is_cancelled = False
 
     def run(self):
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|stimeout;2000000"
-
         for path in CANDIDATE_PATHS:
             if self._is_cancelled:
                 return
@@ -61,7 +58,10 @@ class AutoDetectThread(QThread):
             else:
                 url = f"rtsp://{self.ip}:{self.port}/{path}" if path else f"rtsp://{self.ip}:{self.port}"
 
-            cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+            # نکته: open_capture از rtsp_utils استفاده می‌شود تا با پخش زنده‌ی
+            # سایر دوربین‌های باز، روی متغیر محیطی FFmpeg تداخل (race condition)
+            # پیش نیاید — رجوع کنید به توضیحات rtsp_utils.py.
+            cap = open_capture(url)
             if cap.isOpened():
                 ret, frame = cap.read()
                 cap.release()
@@ -166,6 +166,21 @@ class AddCameraDialog(QDialog):
         self.buttons.setEnabled(True)
         self.status_label.setText("مسیر پیدا نشد.")
         QMessageBox.warning(self, "عدم اتصال", err_msg)
+
+    def closeEvent(self, event):
+        # اگر تشخیص خودکار هنوز در حال اجراست و کاربر پنجره را (مثلاً از دکمه‌ی
+        # ضربدر) می‌بندد، باید ترد پس‌زمینه به‌درستی متوقف شود؛ در غیر این صورت
+        # Qt هنگام تخریب یک QThread هنوز در حال اجرا کرش می‌کند.
+        if self.auto_detect_thread and self.auto_detect_thread.isRunning():
+            self.auto_detect_thread.cancel()
+            self.auto_detect_thread.wait(3000)
+        event.accept()
+
+    def reject(self):
+        if self.auto_detect_thread and self.auto_detect_thread.isRunning():
+            self.auto_detect_thread.cancel()
+            self.auto_detect_thread.wait(3000)
+        super().reject()
 
     def get_camera_data(self):
         return {

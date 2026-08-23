@@ -50,6 +50,13 @@ class AddNVRDialog(QDialog):
 
         self.scan_btn = QPushButton("جستجوی کانال‌های متصل")
         self.scan_btn.clicked.connect(self.start_scan)
+        # نکته (رفع باگ قفل‌شدن دیالوگ حین اسکن): NVRScanThread از قبل متد
+        # cancel() را داشت اما در نسخه‌ی قبلی هیچ دکمه‌ای آن را صدا نمی‌زد و کل
+        # دکمه‌ها (از جمله Cancel) حین اسکن غیرفعال می‌شدند؛ اگر اسکن طول
+        # می‌کشید یا دستگاه پاسخ نمی‌داد، کاربر هیچ راهی برای لغو/بستن دیالوگ
+        # از طریق دکمه‌ها نداشت (فقط بستن با ضربدر که باعث کرش هنگام تخریب
+        # ترد در حال اجرا می‌شد). اکنون خود دکمه‌ی جستجو حین اسکن به «لغو
+        # جستجو» تبدیل و همچنان فعال می‌ماند.
 
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: #aaaaaa; font-size: 11px;")
@@ -86,6 +93,13 @@ class AddNVRDialog(QDialog):
     # ------------------------------------------------------------- scan ---
 
     def start_scan(self):
+        if self.scan_thread is not None and self.scan_thread.isRunning():
+            # دکمه در حالت اسکن به «لغو جستجو» تبدیل شده؛ کلیک دوباره یعنی لغو.
+            self.status_label.setText("در حال لغو جستجو...")
+            self.scan_thread.cancel()
+            self.scan_btn.setEnabled(False)
+            return
+
         ip = self.ip_input.text().strip()
         if not ip:
             QMessageBox.warning(self, "خطا", "لطفاً آدرس IP دستگاه NVR را وارد کنید.")
@@ -93,8 +107,13 @@ class AddNVRDialog(QDialog):
 
         self.channels_list.clear()
         self.found_channels = []
-        self.scan_btn.setEnabled(False)
-        self.buttons.setEnabled(False)
+        self.scan_btn.setText("لغو جستجو")
+        # فقط دکمه‌ی OK غیرفعال می‌شود (چون نتایج هنوز کامل نیست)؛ خود
+        # QDialogButtonBox دیگر به‌صورت کامل غیرفعال نمی‌شود تا کاربر همیشه
+        # بتواند دیالوگ را از طریق دکمه‌ی Cancel ببندد.
+        ok_btn = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if ok_btn:
+            ok_btn.setEnabled(False)
         self.status_label.setText("در حال جستجوی کانال‌های متصل به NVR...")
 
         onvif_port = self.onvif_port_input.text().strip()
@@ -133,15 +152,38 @@ class AddNVRDialog(QDialog):
 
     def _on_scan_finished(self, count):
         self.scan_btn.setEnabled(True)
-        self.buttons.setEnabled(True)
+        self.scan_btn.setText("جستجوی کانال‌های متصل")
+        ok_btn = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if ok_btn:
+            ok_btn.setEnabled(True)
         if count:
             self.status_label.setText(f"{count} کانال یافت شد. کانال‌های موردنظر برای افزودن را تیک بزنید.")
 
     def _on_scan_failed(self, msg):
         self.scan_btn.setEnabled(True)
-        self.buttons.setEnabled(True)
+        self.scan_btn.setText("جستجوی کانال‌های متصل")
+        ok_btn = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if ok_btn:
+            ok_btn.setEnabled(True)
         self.status_label.setText(msg)
         QMessageBox.warning(self, "نتیجه جستجو", msg)
+
+    def _stop_scan_thread(self):
+        """در صورت فعال بودن اسکن، آن را لغو و منتظر پایان امن ترد می‌ماند.
+        بدون این کار، اگر کاربر دیالوگ را حین اسکن ببندد، Qt هنگام تخریب یک
+        QThread هنوز در حال اجرا کرش می‌کند - یکی از منابع بسته شدن ناگهانی
+        برنامه هنگام کار با NVR."""
+        if self.scan_thread is not None and self.scan_thread.isRunning():
+            self.scan_thread.cancel()
+            self.scan_thread.wait(3000)
+
+    def closeEvent(self, event):
+        self._stop_scan_thread()
+        event.accept()
+
+    def reject(self):
+        self._stop_scan_thread()
+        super().reject()
 
     def _set_all_checked(self, checked):
         state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked

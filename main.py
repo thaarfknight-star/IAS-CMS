@@ -104,17 +104,26 @@ class MainWindow(QMainWindow):
         left_panel = QVBoxLayout()
 
         # بخش اسکن شبکه
+        # نکته: قبلاً این بخش «اسکن دستگاه‌های مداربسته» نام داشت و صرفاً پورت‌های
+        # باز را نشان می‌داد؛ چون این اسکن صرفاً یک اسکن عمومی شبکه (پورت‌های باز
+        # روی هر IP) است - نه اسکن اختصاصی دوربین - عنوان و متن دکمه به «اسکن
+        # شبکه» تغییر کرد تا با واقعیت عملکرد آن هم‌خوانی داشته باشد. همچنین حالا
+        # با دابل‌کلیک روی هر نتیجه، کاربر مشخص می‌کند دستگاه یک دوربین تکی است یا
+        # یک NVR؛ در صورت انتخاب NVR، مستقیماً دیالوگ افزودن NVR با IP از پیش
+        # پرشده باز می‌شود و کانال‌ها/دوربین‌های متصل به آن پس از افزودن، به‌صورت
+        # زیرمنو (زیرشاخه‌ی درختی) زیر همان NVR در پنل «دوربین‌ها و NVRهای من»
+        # نمایش داده می‌شوند (رجوع کنید به reload_camera_list).
         scan_group = QGroupBox("اسکن شبکه (Network Scan)")
         scan_layout = QVBoxLayout()
         self.subnet_input = QLineEdit("192.168.1")
         self.subnet_input.setPlaceholderText("پیشوند ساب‌نت (مثلاً 192.168.1)")
-        self.scan_btn = QPushButton("اسکن دستگاه‌های مداربسته")
+        self.scan_btn = QPushButton("اسکن شبکه")
         self.scan_btn.clicked.connect(self.run_network_scan)
         self.scan_result_list = QListWidget()
         self.scan_result_list.itemDoubleClicked.connect(self.on_scan_result_selected)
         scan_layout.addWidget(self.subnet_input)
         scan_layout.addWidget(self.scan_btn)
-        scan_layout.addWidget(QLabel("برای افزودن، روی نتیجه دابل‌کلیک کنید:"))
+        scan_layout.addWidget(QLabel("روی نتیجه دابل‌کلیک کنید تا به‌عنوان دوربین تکی یا NVR اضافه شود:"))
         scan_layout.addWidget(self.scan_result_list)
         scan_group.setLayout(scan_layout)
         left_panel.addWidget(scan_group)
@@ -126,7 +135,11 @@ class MainWindow(QMainWindow):
         self.add_camera_btn = QPushButton("+ افزودن دوربین تکی")
         self.add_camera_btn.clicked.connect(lambda: self.open_add_camera_dialog())
         self.add_nvr_btn = QPushButton("+ افزودن NVR")
-        self.add_nvr_btn.clicked.connect(self.open_add_nvr_dialog)
+        # نکته: چون open_add_nvr_dialog اکنون یک آرگومان اختیاری (prefill_ip)
+        # دارد، باید مثل add_camera_btn از طریق lambda وصل شود؛ در غیر این
+        # صورت PyQt مقدار bool سیگنال clicked(checked) را به‌جای None به
+        # prefill_ip پاس می‌دهد و IP به‌اشتباه با True/False پر می‌شود.
+        self.add_nvr_btn.clicked.connect(lambda: self.open_add_nvr_dialog())
         add_btn_row.addWidget(self.add_camera_btn)
         add_btn_row.addWidget(self.add_nvr_btn)
 
@@ -221,8 +234,10 @@ class MainWindow(QMainWindow):
             )
             self.reload_camera_list()
 
-    def open_add_nvr_dialog(self):
+    def open_add_nvr_dialog(self, prefill_ip=None):
         dialog = AddNVRDialog(self)
+        if prefill_ip:
+            dialog.ip_input.setText(prefill_ip)
         if dialog.exec():
             data = dialog.get_nvr_data()
             nvr = self.camera_store.add_nvr(
@@ -335,9 +350,28 @@ class MainWindow(QMainWindow):
 
     def on_scan_result_selected(self, item):
         text = item.text()
-        if " " in text:
-            ip = text.split(" ")[0]
+        if " " not in text:
+            return
+        ip = text.split(" ")[0]
+
+        # از آنجا که یک اسکن عمومی شبکه (بر اساس پورت‌های باز) نمی‌تواند با
+        # قطعیت مشخص کند دستگاه یک دوربین تکی است یا یک NVR چندکاناله، از خود
+        # کاربر می‌پرسیم؛ در صورت انتخاب NVR، دیالوگ افزودن NVR (با IP از پیش
+        # پرشده) باز می‌شود که پس از تکمیل، خود NVR و کانال‌های آن دقیقاً مثل
+        # مسیر «+ افزودن NVR» به‌صورت درختی (NVR + زیرمنوی کانال‌ها) اضافه
+        # می‌شوند.
+        box = QMessageBox(self)
+        box.setWindowTitle("نوع دستگاه")
+        box.setText(f"دستگاه {ip} چه نوع دستگاهی است؟")
+        camera_btn = box.addButton("دوربین تکی", QMessageBox.ButtonRole.AcceptRole)
+        nvr_btn = box.addButton("NVR (چند کاناله)", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("انصراف", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+
+        if box.clickedButton() == camera_btn:
             self.open_add_camera_dialog(prefill_ip=ip)
+        elif box.clickedButton() == nvr_btn:
+            self.open_add_nvr_dialog(prefill_ip=ip)
 
     # ------------------------------------------------------------ tabs ----
 
@@ -397,7 +431,7 @@ class MainWindow(QMainWindow):
         devices = scan_subnet(subnet)
         self.scan_result_list.clear()
         if not devices:
-            self.scan_result_list.addItem("هیچ دوربینی یافت نشد.")
+            self.scan_result_list.addItem("هیچ دستگاهی یافت نشد.")
             return
 
         for dev in devices:
