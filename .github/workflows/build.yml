@@ -30,19 +30,27 @@ jobs:
         pip install git+https://github.com/ageitgey/face_recognition_models
         pip install -r requirements.txt
 
-    - name: Build Executable with PyInstaller
+    - name: Build Executable with Nuitka (portable, compiled to machine code)
       run: |
-        pyinstaller --noconfirm --onedir --windowed `
-          --name "CCTV_CMS" `
-          --hidden-import "pkg_resources" `
-          --collect-all "face_recognition" `
-          --collect-all "face_recognition_models" `
-          --collect-all "PyQt6" `
-          --add-data "faces;faces" `
+        python -m pip install nuitka
+        python -m nuitka `
+          --onefile `
+          --standalone `
+          --mingw64 `
+          --enable-plugin=pyqt6 `
+          --windows-console-mode=disable `
+          --company-name="IAS" `
+          --product-name="CCTV CMS" `
+          --include-package=face_recognition `
+          --include-package-data=face_recognition_models `
+          --include-data-dir=faces=faces `
+          --output-dir=dist `
+          --output-filename=CCTV_CMS.exe `
+          --assume-yes-for-downloads `
           main.py
 
     - name: Upload Build Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: CCTV_CMS_Windows
-        path: dist/CCTV_CMS/
+        name: CCTV_CMS_Windows_Portable
+        path: dist/CCTV_CMS.exe
