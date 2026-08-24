@@ -17,8 +17,14 @@
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from rtsp_utils import build_rtsp_url, probe_stream
+from rtsp_utils import build_rtsp_url, frames_look_identical, probe_stream
 from nvr_scanner import CHANNEL_TEMPLATES, _format_templates, try_onvif_discovery
+
+# بعد از کانال ۱، این کانال‌ها هم برای تایید چندکاناله بودن دستگاه امتحان
+# می‌شوند (نه فقط کانال ۲): برخی NVRها کانال ۲ خالی/غیرفعال دارند و فقط
+# کانال‌های بعدی متصل‌اند؛ اگر فقط کانال ۲ چک شود، چنین NVRای به‌اشتباه
+# «دوربین تکی» تشخیص داده می‌شود.
+_EXTRA_CHANNELS_TO_CHECK = (2, 3, 4)
 
 
 class DeviceDetectThread(QThread):
@@ -88,8 +94,8 @@ class DeviceDetectThread(QThread):
             return
 
         # ۲) بدون ONVIF: کانال ۱ را با الگوهای هر برند تست می‌کن؛ به محض یافتن
-        # الگوی برند درست، کانال ۲ همان برند را هم تست کن تا مشخص شود تک‌کاناله
-        # است یا چندکاناله.
+        # الگوی برند درست، چند کانال بعدی همان برند را هم تست کن تا مشخص شود
+        # تک‌کاناله است یا چندکاناله.
         self.progress_signal.emit("در حال بررسی کانال‌ها...")
         for brand in ("dahua_iap", "hikvision", "sunell", "generic"):
             if self._is_cancelled:
@@ -99,8 +105,28 @@ class DeviceDetectThread(QThread):
                 continue
 
             self.progress_signal.emit("دستگاه یافت شد، در حال بررسی تعداد کانال...")
-            path_ch2 = self._probe_channel(brand, 2)
-            if path_ch2:
+            url_ch1 = build_rtsp_url(self.ip, self.rtsp_port, self.user, self.pwd, path_ch1)
+
+            # رفع باگ «دوربین تکی به‌اشتباه NVR تشخیص داده می‌شود»: صرف باز
+            # شدن URL کانال ۲ (یا بعدی) کافی نیست - خیلی از دوربین‌های تکی
+            # پارامتر channel را نادیده می‌گیرند و همیشه همان یک فید را
+            # برمی‌گردانند. اینجا محتوای واقعی تصویر کانال ۱ و کانال کاندید
+            # مقایسه می‌شود (rtsp_utils.frames_look_identical)؛ فقط وقتی
+            # تصویر واقعاً متفاوت باشد، کانال جداگانه (و در نتیجه NVR) تایید
+            # می‌شود.
+            is_multi_channel = False
+            for ch in _EXTRA_CHANNELS_TO_CHECK:
+                if self._is_cancelled:
+                    return
+                path_ch_n = self._probe_channel(brand, ch)
+                if not path_ch_n:
+                    continue
+                url_ch_n = build_rtsp_url(self.ip, self.rtsp_port, self.user, self.pwd, path_ch_n)
+                if not frames_look_identical(url_ch1, url_ch_n):
+                    is_multi_channel = True
+                    break
+
+            if is_multi_channel:
                 self.detected_signal.emit("nvr", {"brand": brand, "onvif_port": ""})
             else:
                 self.detected_signal.emit("camera", {"path": path_ch1, "full_url": None})

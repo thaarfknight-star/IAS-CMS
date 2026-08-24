@@ -39,19 +39,56 @@ class CameraStore:
                 print(f"خطا در بارگذاری لیست NVRها: {e}")
                 self.nvrs = []
 
+        # رفع درخواست امنیتی: رمزهای عبور دیگر روی دیسک ذخیره نمی‌شوند (به
+        # save/save_nvrs زیر رجوع کنید). اگر فایل‌های cameras.json/nvrs.json
+        # از نسخه‌ی قبلی برنامه (که رمز را مستقیم روی دیسک ذخیره می‌کرد) باقی
+        # مانده باشند، همین‌جا در همان اولین بارگذاری پاک و دوباره نوشته
+        # می‌شوند تا هیچ رمزی روی دیسک نماند.
+        if any(c.get("pass") for c in self.cameras):
+            for c in self.cameras:
+                c["pass"] = ""
+            self.save()
+        if any(n.get("pass") for n in self.nvrs):
+            for n in self.nvrs:
+                n["pass"] = ""
+            self.save_nvrs()
+
     def save(self):
         try:
             with open(self.path, "w", encoding="utf-8") as f:
-                json.dump(self.cameras, f, ensure_ascii=False, indent=2)
+                json.dump(self._without_passwords(self.cameras), f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"خطا در ذخیره لیست دوربین‌ها: {e}")
 
     def save_nvrs(self):
         try:
             with open(self.nvr_path, "w", encoding="utf-8") as f:
-                json.dump(self.nvrs, f, ensure_ascii=False, indent=2)
+                json.dump(self._without_passwords(self.nvrs), f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"خطا در ذخیره لیست NVRها: {e}")
+
+    @staticmethod
+    def _without_passwords(items):
+        """رفع درخواست امنیتی: رمز عبور هرگز روی دیسک نوشته نمی‌شود؛ فقط در
+        حافظه (در طول همان اجرای برنامه) نگه‌داشته می‌شود تا پخش زنده در همان
+        نشست کار کند. با هر بار اجرای مجدد برنامه، رمز خالی بارگذاری می‌شود و
+        دوباره از کاربر پرسیده می‌شود (به camera_store.clear_all_passwords و
+        main.py._ensure_password رجوع کنید)."""
+        cleaned = []
+        for item in items:
+            item_copy = dict(item)
+            item_copy["pass"] = ""
+            cleaned.append(item_copy)
+        return cleaned
+
+    def clear_all_passwords(self):
+        """تمام رمزهای عبور نگه‌داشته‌شده در حافظه (نه فایل - که اصلاً رمزی
+        در آن ذخیره نمی‌شود) را پاک می‌کند؛ هنگام خروج از برنامه صدا زده
+        می‌شود."""
+        for cam in self.cameras:
+            cam["pass"] = ""
+        for nvr in self.nvrs:
+            nvr["pass"] = ""
 
     # ------------------------------------------------------------ cameras --
 

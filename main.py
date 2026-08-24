@@ -7,7 +7,7 @@ import cv2
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QListWidget, QListWidgetItem, QMessageBox,
-    QGroupBox, QTabWidget, QMenu, QTreeWidget, QTreeWidgetItem
+    QGroupBox, QTabWidget, QMenu, QTreeWidget, QTreeWidgetItem, QInputDialog
 )
 from PyQt6.QtGui import QImage, QPixmap, QAction
 from PyQt6.QtCore import Qt, QTimer
@@ -110,6 +110,7 @@ class MainWindow(QMainWindow):
         self.network_scan_thread = None
         self.detect_thread = None
         self._scan_ports_by_ip = {}  # ip -> [ports...] از آخرین اسکن شبکه
+        self._detect_queue = []  # صف IPهایی که با انتخاب چندتایی باید پشت‌سرهم تشخیص داده شوند
 
         self.init_ui()
         self.reload_camera_list()
@@ -140,15 +141,26 @@ class MainWindow(QMainWindow):
         self.scan_btn = QPushButton("اسکن شبکه")
         self.scan_btn.clicked.connect(self.run_network_scan)
         self.scan_result_list = QListWidget()
+        # رفع درخواست: قبلاً فقط دابل‌کلیک روی یک ردیف ممکن بود (انتخاب تکی).
+        # حالا با نگه‌داشتن Ctrl یا Shift هنگام کلیک، چند دستگاه هم‌زمان قابل
+        # انتخاب است و با دکمه‌ی «افزودن دستگاه‌های انتخاب‌شده» زیر، همه‌ی
+        # آن‌ها پشت‌سرهم (یکی پس از دیگری) تشخیص داده و اضافه می‌شوند.
+        self.scan_result_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.scan_result_list.itemDoubleClicked.connect(self.on_scan_result_selected)
+        self.add_selected_scan_btn = QPushButton("+ افزودن دستگاه‌های انتخاب‌شده")
+        self.add_selected_scan_btn.clicked.connect(self.on_add_selected_scan_results)
         self.detect_status_label = QLabel("")
         self.detect_status_label.setStyleSheet("color: #aaaaaa; font-size: 11px;")
         scan_layout.addWidget(self.subnet_input)
         scan_layout.addWidget(self.scan_btn)
         # نکته: دیگر از کاربر پرسیده نمی‌شود دستگاه دوربین تکی است یا NVR؛ با
         # دابل‌کلیک، نوع دستگاه به‌صورت خودکار تشخیص داده می‌شود (device_detect.py).
-        scan_layout.addWidget(QLabel("روی نتیجه دابل‌کلیک کنید تا نوع دستگاه خودکار تشخیص داده و اضافه شود:"))
+        scan_layout.addWidget(QLabel(
+            "روی یک نتیجه دابل‌کلیک کنید، یا با Ctrl/Shift چند مورد را انتخاب و "
+            "«افزودن دستگاه‌های انتخاب‌شده» را بزنید:"
+        ))
         scan_layout.addWidget(self.scan_result_list)
+        scan_layout.addWidget(self.add_selected_scan_btn)
         scan_layout.addWidget(self.detect_status_label)
         scan_group.setLayout(scan_layout)
         left_panel.addWidget(scan_group)
@@ -387,11 +399,45 @@ class MainWindow(QMainWindow):
         if self.detect_thread is not None and self.detect_thread.isRunning():
             return  # یک تشخیص در حال اجراست؛ منتظر پایان آن بمانیم.
 
+        # دابل‌کلیک یعنی فقط همین یک دستگاه (صف خالی است).
+        self._detect_queue = []
+        self._start_device_detect(ip)
+
+    def on_add_selected_scan_results(self):
+        """رفع درخواست: چند نتیجه‌ی اسکن هم‌زمان انتخاب و پشت‌سرهم اضافه شوند.
+        چون هر تشخیص (و در ادامه‌ی آن، دیالوگ افزودن دوربین/NVR) نیاز به
+        تعامل کاربر دارد، دستگاه‌ها یکی‌یکی (نه هم‌زمان) پردازش می‌شوند: بعد
+        از بسته‌شدن دیالوگ مربوط به هر دستگاه، خودکار سراغ دستگاه بعدی در صف
+        می‌رود."""
+        if self.detect_thread is not None and self.detect_thread.isRunning():
+            return
+
+        ips = []
+        for item in self.scan_result_list.selectedItems():
+            text = item.text()
+            if " " not in text:
+                continue
+            ip = text.split(" ")[0]
+            if ip not in ips:
+                ips.append(ip)
+
+        if not ips:
+            QMessageBox.information(
+                self, "موردی انتخاب نشده",
+                "ابتدا با Ctrl/Shift یک یا چند دستگاه را از لیست نتایج اسکن انتخاب کنید."
+            )
+            return
+
+        self._detect_queue = ips[1:]
+        self._start_device_detect(ips[0])
+
+    def _start_device_detect(self, ip):
         # رفع درخواست: دیگر از کاربر «دوربین تکی یا NVR؟» پرسیده نمی‌شود؛
-        # DeviceDetectThread با یک اتصال آزمایشی (ONVIF یا تست کانال ۱ و ۲)
+        # DeviceDetectThread با یک اتصال آزمایشی (ONVIF یا تست کانال‌ها)
         # خودش نوع دستگاه را تشخیص می‌دهد - رجوع کنید به device_detect.py.
         self._detect_ip = ip
         self.scan_result_list.setEnabled(False)
+        self.add_selected_scan_btn.setEnabled(False)
         self.detect_status_label.setText(f"در حال تشخیص نوع دستگاه {ip}...")
 
         self.detect_thread = DeviceDetectThread(
@@ -407,10 +453,22 @@ class MainWindow(QMainWindow):
         self.detect_thread.failed_signal.connect(self._on_device_detect_failed)
         self.detect_thread.start()
 
-    def _on_device_detected(self, kind, payload):
+    def _reset_detect_ui(self):
         self.scan_result_list.setEnabled(True)
         self.detect_status_label.setText("")
+
+    def _advance_detect_queue(self):
+        """بعد از بسته‌شدن دیالوگ دستگاه فعلی، اگر مورد دیگری در صفِ انتخاب
+        چندتایی باقی مانده، تشخیص آن را شروع می‌کند."""
+        if self._detect_queue:
+            next_ip = self._detect_queue.pop(0)
+            self._start_device_detect(next_ip)
+        else:
+            self.add_selected_scan_btn.setEnabled(True)
+
+    def _on_device_detected(self, kind, payload):
         ip = self._detect_ip
+        self._reset_detect_ui()
         if kind == "nvr":
             self.open_add_nvr_dialog(
                 prefill_ip=ip,
@@ -423,11 +481,11 @@ class MainWindow(QMainWindow):
                 detected_path=payload.get("path"),
                 detected_full_url=payload.get("full_url"),
             )
+        self._advance_detect_queue()
 
     def _on_device_detect_failed(self, msg):
-        self.scan_result_list.setEnabled(True)
-        self.detect_status_label.setText("")
         ip = self._detect_ip
+        self._reset_detect_ui()
 
         # تشخیص خودکار با نام کاربری/رمز پیش‌فرض (admin/بدون رمز) ممکن است روی
         # دستگاه‌هایی با اطلاعات ورود سفارشی شکست بخورد؛ در این حالت کاربر
@@ -444,6 +502,7 @@ class MainWindow(QMainWindow):
             self.open_add_camera_dialog(prefill_ip=ip)
         elif box.clickedButton() == nvr_btn:
             self.open_add_nvr_dialog(prefill_ip=ip)
+        self._advance_detect_queue()
 
     # ------------------------------------------------------------ tabs ----
 
@@ -455,11 +514,46 @@ class MainWindow(QMainWindow):
                 self.tabs.setCurrentIndex(i)
                 return
 
+        if not self._ensure_password(cam):
+            return  # کاربر از وارد کردن رمز صرف‌نظر کرد
+
         tab = CameraTabWidget(cam, self.face_engine)
         index = self.tabs.addTab(tab, cam["name"])
         self.tabs.setCurrentIndex(index)
         rtsp_url = self.camera_store.build_rtsp_url(cam)
         tab.start(rtsp_url, self.log_face_event)
+
+    def _ensure_password(self, cam: dict) -> bool:
+        """رفع درخواست امنیتی: رمزهای عبور دیگر روی دیسک ذخیره نمی‌شوند
+        (camera_store.py)، پس با هر بار اجرای برنامه خالی بارگذاری می‌شوند.
+        قبل از شروع پخش زنده، اگر رمز دوربین (یا در صورت متصل بودن به یک NVR،
+        رمز خود آن NVR) در حافظه موجود نباشد، اینجا از کاربر پرسیده می‌شود.
+        رمز واردشده فقط در حافظه (تا زمان بستن برنامه) نگه‌داشته می‌شود تا
+        برای بقیه‌ی کانال‌های همان NVR در همین نشست دوباره پرسیده نشود."""
+        nvr = self.camera_store.get_nvr(cam.get("nvr_id")) if cam.get("nvr_id") else None
+        source = nvr if nvr is not None else cam
+
+        if source.get("pass"):
+            if nvr is not None and not cam.get("pass"):
+                cam["pass"] = nvr["pass"]
+            return True
+
+        label = f"NVR «{source['name']}»" if nvr is not None else f"دوربین «{source['name']}»"
+        pwd, ok = QInputDialog.getText(
+            self, "رمز عبور مورد نیاز",
+            f"برای اتصال، رمز عبور {label} را وارد کنید:",
+            QLineEdit.EchoMode.Password,
+        )
+        if not ok:
+            return False
+
+        source["pass"] = pwd
+        if nvr is not None:
+            # رمز بین همه‌ی کانال‌های همین NVR مشترک است؛ برای جلوگیری از
+            # پرسیدن دوباره در همین نشست، روی همه‌ی آن‌ها هم اعمال می‌شود.
+            for sibling in self.camera_store.cameras_for_nvr(nvr["id"]):
+                sibling["pass"] = pwd
+        return True
 
     def close_camera_tab(self, index):
         widget = self.tabs.widget(index)
@@ -537,6 +631,12 @@ class MainWindow(QMainWindow):
         if self.detect_thread is not None and self.detect_thread.isRunning():
             self.detect_thread.cancel()
             self.detect_thread.wait(3000)
+
+        # رفع درخواست: هنگام خروج از برنامه، تمام رمزهای عبوری که فقط در
+        # حافظه نگه‌داشته شده بودند (هیچ‌وقت روی دیسک ذخیره نمی‌شوند - رجوع
+        # کنید به camera_store.py) پاک می‌شوند؛ در اجرای بعدی دوباره پرسیده
+        # خواهند شد.
+        self.camera_store.clear_all_passwords()
         event.accept()
 
 

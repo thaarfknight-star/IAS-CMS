@@ -101,3 +101,57 @@ def probe_stream(url: str, ffmpeg_options: str = PROBE_FFMPEG_OPTS, attempts: in
         return False
     finally:
         cap.release()
+
+
+def _grab_probe_frame(cap, attempts: int = PROBE_READ_ATTEMPTS):
+    for _ in range(max(1, attempts)):
+        ret, frame = cap.read()
+        if ret and frame is not None:
+            return frame
+    return None
+
+
+# آستانه‌ی اختلاف میانگین (روی مقیاس ۰ تا ۲۵۵، بعد از grayscale + کوچک‌سازی)
+# که پایین‌تر از آن دو فریم «عملاً یکسان» در نظر گرفته می‌شوند. عمداً کمی
+# بالاست چون فشرده‌سازی H.264/نویز حسگر حتی بین دو فریم پیاپی از یک منبع
+# واحد هم اختلاف جزئی ایجاد می‌کند.
+FRAME_DIFF_IDENTICAL_THRESHOLD = 8.0
+
+
+def frames_look_identical(url_a: str, url_b: str, diff_threshold: float = FRAME_DIFF_IDENTICAL_THRESHOLD) -> bool:
+    """بررسی می‌کند آیا دو آدرس RTSP عملاً یک تصویر (یک فید) برمی‌گردانند یا نه.
+
+    رفع باگ «دوربین تکی به‌اشتباه NVR تشخیص داده می‌شود» (device_detect.py):
+    خیلی از دوربین‌های تکی ارزان‌قیمت (فریمورهای عمومی مبتنی بر Hisilicon که
+    هم روی دوربین‌های تکی و هم روی NVR استفاده می‌شوند) پارامتر channel داخل
+    URL را اصلاً بررسی نمی‌کنند و صرف‌نظر از مقدارش (channel=1 یا channel=2)
+    همیشه همان تک استریم موجود را برمی‌گردانند. تا اینجا در کد فقط «باز شدن»
+    اتصال RTSP کانال دوم بررسی می‌شد که برای این دوربین‌ها همیشه true است -
+    نتیجه: دوربین تکی به‌اشتباه به‌عنوان NVR (چندکاناله) شناسایی می‌شد.
+
+    این تابع علاوه بر باز شدن اتصال، یک فریم واقعی از هر دو آدرس می‌گیرد و
+    محتوای تصویر را مقایسه می‌کند؛ فقط وقتی تصویر واقعاً متفاوت باشد (یعنی
+    واقعاً دو منبع/دوربین جدا هستند) کانال دوم به‌عنوان کانال واقعی تایید
+    می‌شود.
+    """
+    cap_a = open_capture(url_a)
+    cap_b = open_capture(url_b)
+    try:
+        frame_a = _grab_probe_frame(cap_a)
+        frame_b = _grab_probe_frame(cap_b)
+    finally:
+        cap_a.release()
+        cap_b.release()
+
+    if frame_a is None or frame_b is None:
+        # اگر نتوانستیم از یکی از دو طرف فریمی بگیریم، نمی‌توان با اطمینان
+        # گفت یکسان‌اند؛ محافظه‌کارانه فرض می‌شود متفاوت‌اند (به نفع تشخیص NVR
+        # به‌جای از دست دادن یک کانال واقعی).
+        return False
+
+    small_a = cv2.resize(frame_a, (48, 32), interpolation=cv2.INTER_AREA)
+    small_b = cv2.resize(frame_b, (48, 32), interpolation=cv2.INTER_AREA)
+    gray_a = cv2.cvtColor(small_a, cv2.COLOR_BGR2GRAY).astype("float32")
+    gray_b = cv2.cvtColor(small_b, cv2.COLOR_BGR2GRAY).astype("float32")
+    mean_diff = float(abs(gray_a - gray_b).mean())
+    return mean_diff < diff_threshold
