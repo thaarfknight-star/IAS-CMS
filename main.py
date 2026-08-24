@@ -5,10 +5,10 @@ import time
 import cv2
 
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QListWidget, QListWidgetItem, QMessageBox,
     QGroupBox, QMenu, QTreeWidget, QTreeWidgetItem, QInputDialog, QComboBox,
-    QScrollArea, QFrame, QSizePolicy
+    QScrollArea, QFrame, QSizePolicy, QSplitter
 )
 from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon
 from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
@@ -184,11 +184,21 @@ class CameraGridWidget(QWidget):
         for s in self.slots:
             s.clicked.connect(self._on_slot_clicked)
 
-        self.grid_layout = QGridLayout()
-        self.grid_layout.setSpacing(4)
+        # رفع درخواست: اندازه‌ی هر پنجره (پنل) باید با درگ‌کردن مرز بین دو
+        # پنجره قابل تنظیم باشد. QGridLayout قبلی سلول‌ها را همیشه با اندازه‌ی
+        # مساوی و ثابت تقسیم می‌کرد و هیچ راهی برای تغییر دستی نداشت. حالا از
+        # چیدمان تودرتوی QSplitter استفاده می‌شود: یک splitter عمودی بیرونی
+        # (self.row_splitter) شامل یک splitter افقی برای هر ردیف
+        # (self.row_splitters)، و هر splitter افقی شامل پنجره‌های همان ردیف.
+        # کاربر با کشیدن مرز بین دو پنجره‌ی هم‌ردیف یا دو ردیف، اندازه‌ی
+        # آن‌ها را تغییر می‌دهد.
+        self.row_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.row_splitter.setHandleWidth(4)
+        self.row_splitters = []  # splitter افقیِ هر ردیف، به ترتیب از بالا به پایین
+
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.addLayout(self.grid_layout)
+        outer.addWidget(self.row_splitter)
 
     def _on_slot_clicked(self, slot):
         if self.selected_slot is slot:
@@ -208,26 +218,45 @@ class CameraGridWidget(QWidget):
                 s.clear()
             if s.index == getattr(self.selected_slot, "index", -1):
                 self.selected_slot = None
-            self.grid_layout.removeWidget(s)
             s.setParent(None)
             s.hide()
 
-        while self.grid_layout.count():
-            item = self.grid_layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.setParent(None)
+        # splitterهای ردیفِ چیدمان قبلی از بین می‌روند (خود ویجت‌های پنجره
+        # نه؛ آن‌ها فقط setParent(None) شده و در حلقه‌ی زیر به splitterهای
+        # جدید اضافه می‌شوند).
+        for rs in self.row_splitters:
+            rs.setParent(None)
+            rs.deleteLater()
+        self.row_splitters = []
 
         rows, cols = GRID_LAYOUTS[n]
         for r in range(rows):
-            self.grid_layout.setRowStretch(r, 1)
-        for c in range(cols):
-            self.grid_layout.setColumnStretch(c, 1)
+            row_splitter = QSplitter(Qt.Orientation.Horizontal)
+            row_splitter.setHandleWidth(4)
+            for c in range(cols):
+                i = r * cols + c
+                if i >= n:
+                    break
+                slot = self.slots[i]
+                slot.setParent(None)
+                row_splitter.addWidget(slot)
+                slot.show()
+            self.row_splitter.addWidget(row_splitter)
+            self.row_splitters.append(row_splitter)
 
-        for i in range(n):
-            r, c = divmod(i, cols)
-            self.grid_layout.addWidget(self.slots[i], r, c)
-            self.slots[i].show()
+        # رفع درخواست: وقتی تعداد پنجره‌های نمایش عوض می‌شود، اندازه‌ی
+        # پنجره‌های جدید باید متناسب با تعداد جدید تنظیم شود - نه اینکه
+        # نسبت‌های دستیِ باقی‌مانده از چیدمان قبلی (که ممکن است تعداد سطر/
+        # ستون متفاوتی داشت) روی چیدمان جدید اعمال شود. به همین دلیل بعد از
+        # ساخت splitterهای جدید، اندازه‌ی مساوی برای splitter عمودی بیرونی
+        # (بین ردیف‌ها) و هر splitter افقی داخلی (بین پنجره‌های همان ردیف)
+        # تنظیم می‌شود؛ از این‌جا به بعد کاربر می‌تواند با درگ‌کردن آن‌ها را
+        # دستی تغییر دهد.
+        if self.row_splitter.count():
+            self.row_splitter.setSizes([1000] * self.row_splitter.count())
+        for rs in self.row_splitters:
+            if rs.count():
+                rs.setSizes([1000] * rs.count())
 
         self.visible_count = n
 
@@ -453,16 +482,12 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(center_panel, 5)
         main_layout.addLayout(right_panel, 2)
 
-        # لاگ رویدادها (شناسایی چهره‌های شناخته‌شده/ناشناس)
-        log_group = QGroupBox("رویدادهای شناسایی چهره")
-        log_layout = QVBoxLayout()
-        self.event_log = QListWidget()
-        self.event_log.setMaximumHeight(140)
-        log_layout.addWidget(self.event_log)
-        log_group.setLayout(log_layout)
-
+        # رفع درخواست: پنل جداگانه‌ی «رویدادهای شناسایی چهره» (لاگ متنی خام
+        # زیر صفحه) حذف شد؛ چون هر رویداد همان لحظه هم به‌صورت یک آیتم با
+        # تصویر واقعی چهره در پنل «چهره‌های شناسایی‌شده» (ستون راست) اضافه
+        # می‌شود، آن لاگ متنی صرفاً همان اطلاعات را دوباره و بدون تصویر نشان
+        # می‌داد. اکنون فقط همان پنل «چهره‌های شناسایی‌شده» باقی مانده است.
         outer_layout.addLayout(main_layout)
-        outer_layout.addWidget(log_group)
 
         main_widget.setLayout(outer_layout)
         self.setCentralWidget(main_widget)
@@ -501,7 +526,7 @@ class MainWindow(QMainWindow):
             self.camera_list.addTopLevelItem(cam_item)
 
     def open_add_camera_dialog(self, prefill_ip=None, detected_path=None, detected_full_url=None,
-                                prefill_user=None, prefill_pass=None):
+                                prefill_user=None, prefill_pass=None, prefill_port=None):
         dialog = AddCameraDialog(self)
         if prefill_ip:
             dialog.ip_input.setText(prefill_ip)
@@ -509,6 +534,11 @@ class MainWindow(QMainWindow):
             dialog.user_input.setText(prefill_user)
         if prefill_pass:
             dialog.pass_input.setText(prefill_pass)
+        if prefill_port:
+            # پورت RTSP واقعی‌ای که تشخیص خودکار (device_detect.py) پیدا کرده؛
+            # رجوع کنید به توضیح COMMON_RTSP_PORT_FALLBACKS در آن فایل - خیلی
+            # از NVR/دوربین‌ها روی پورتی غیر از پیش‌فرض 554 هستند.
+            dialog.port_input.setText(str(prefill_port))
         if detected_path is not None or detected_full_url is not None:
             dialog.set_detected_stream(path=detected_path, full_url=detected_full_url)
         if dialog.exec():
@@ -520,7 +550,7 @@ class MainWindow(QMainWindow):
             self.reload_camera_list()
 
     def open_add_nvr_dialog(self, prefill_ip=None, detected_brand=None, detected_onvif_port=None,
-                             prefill_user=None, prefill_pass=None):
+                             prefill_user=None, prefill_pass=None, prefill_rtsp_port=None):
         dialog = AddNVRDialog(self)
         if prefill_ip:
             dialog.ip_input.setText(prefill_ip)
@@ -528,6 +558,12 @@ class MainWindow(QMainWindow):
             dialog.user_input.setText(prefill_user)
         if prefill_pass:
             dialog.pass_input.setText(prefill_pass)
+        if prefill_rtsp_port:
+            # پورت RTSP واقعی‌ای که تشخیص خودکار پیدا کرده؛ باید *قبل* از
+            # set_detected_brand تنظیم شود چون آن متد بلافاصله اسکن کانال‌ها
+            # را با مقدار فعلی این فیلد شروع می‌کند - در غیر این صورت اسکن
+            # دوباره با پورت پیش‌فرض غلط (554) انجام می‌شد.
+            dialog.rtsp_port_input.setText(str(prefill_rtsp_port))
         if detected_brand:
             dialog.set_detected_brand(brand=detected_brand, onvif_port=detected_onvif_port)
         if dialog.exec():
@@ -544,6 +580,7 @@ class MainWindow(QMainWindow):
                 self, "NVR اضافه شد",
                 f"NVR «{nvr['name']}» با {len(dialog.get_selected_channels())} کانال اضافه شد."
             )
+
 
     def _add_channel_from_entry(self, nvr, entry, default_name):
         if entry["is_full_url"]:
@@ -711,7 +748,6 @@ class MainWindow(QMainWindow):
             self.alert_banner.setStyleSheet("font-weight: bold; color: #e74c3c;")
             face_item_text = f"⚠ چهره تعریف نشده\n{camera_name} - {timestamp}"
 
-        self.event_log.insertItem(0, text)
         self.alert_banner.setText(text)
         self._banner_timer.start(5000)
 
@@ -903,6 +939,7 @@ class MainWindow(QMainWindow):
                 detected_onvif_port=payload.get("onvif_port"),
                 prefill_user=user,
                 prefill_pass=pwd,
+                prefill_rtsp_port=payload.get("rtsp_port"),
             )
         else:
             self.open_add_camera_dialog(
@@ -911,6 +948,7 @@ class MainWindow(QMainWindow):
                 detected_full_url=payload.get("full_url"),
                 prefill_user=user,
                 prefill_pass=pwd,
+                prefill_port=payload.get("rtsp_port"),
             )
         self._advance_detect_queue()
 
