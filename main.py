@@ -325,9 +325,21 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         main_widget = QWidget()
         outer_layout = QVBoxLayout()
-        main_layout = QHBoxLayout()
 
-        left_panel = QVBoxLayout()
+        # رفع درخواست: اندازه‌ی پنل سمت چپ (اسکن/لیست دوربین‌ها)، پنل وسط
+        # (دیوار نمایش) و پنل سمت راست (چهره‌های شناسایی‌شده) باید با
+        # درگ‌کردن مرز بین‌شان قابل تنظیم باشد. قبلاً این سه با QHBoxLayout و
+        # یک ضریب کشش ثابت (2:5:2) کنار هم چیده می‌شدند که هیچ راهی برای
+        # تغییر دستی نداشت. حالا هر پنل داخل یک QWidget مستقل قرار می‌گیرد و
+        # این سه ویجت داخل یک QSplitter افقی (self.main_splitter) چیده
+        # می‌شوند؛ کاربر با کشیدن مرز بین دو پنل، عرض آن‌ها را تغییر می‌دهد.
+        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter.setHandleWidth(4)
+        self.main_splitter.setChildrenCollapsible(False)
+
+        left_widget = QWidget()
+        left_panel = QVBoxLayout(left_widget)
+        left_panel.setContentsMargins(0, 0, 0, 0)
 
         # بخش اسکن شبکه
         # نکته: قبلاً این بخش «اسکن دستگاه‌های مداربسته» نام داشت و صرفاً پورت‌های
@@ -437,7 +449,9 @@ class MainWindow(QMainWindow):
         left_panel.addStretch()
 
         # پنل میانی: دیوار نمایش چند-دوربینه با تعداد پنجره‌ی قابل‌انتخاب
-        center_panel = QVBoxLayout()
+        center_widget = QWidget()
+        center_panel = QVBoxLayout(center_widget)
+        center_panel.setContentsMargins(0, 0, 0, 0)
         self.alert_banner = QLabel("")
         self.alert_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.alert_banner.setFixedHeight(28)
@@ -464,7 +478,9 @@ class MainWindow(QMainWindow):
         center_panel.addWidget(grid_scroll, 1)
 
         # پنل راست: ستون چهره‌های شناسایی‌شده (تعریف‌شده یا تعریف‌نشده)
-        right_panel = QVBoxLayout()
+        right_widget = QWidget()
+        right_panel = QVBoxLayout(right_widget)
+        right_panel.setContentsMargins(0, 0, 0, 0)
         detected_group = QGroupBox("چهره‌های شناسایی‌شده")
         detected_layout = QVBoxLayout()
         self.detected_faces_list = QListWidget()
@@ -478,16 +494,22 @@ class MainWindow(QMainWindow):
         detected_group.setLayout(detected_layout)
         right_panel.addWidget(detected_group)
 
-        main_layout.addLayout(left_panel, 2)
-        main_layout.addLayout(center_panel, 5)
-        main_layout.addLayout(right_panel, 2)
+        self.main_splitter.addWidget(left_widget)
+        self.main_splitter.addWidget(center_widget)
+        self.main_splitter.addWidget(right_widget)
+        # نسبت اولیه‌ی عرض پنل‌ها (چپ:وسط:راست) معادل همان ضریب کشش قبلی
+        # (2:5:2)؛ از این‌جا به بعد کاربر با درگ‌کردن مرزها آن را تغییر می‌دهد.
+        self.main_splitter.setSizes([260, 650, 260])
+        self.main_splitter.setStretchFactor(0, 2)
+        self.main_splitter.setStretchFactor(1, 5)
+        self.main_splitter.setStretchFactor(2, 2)
 
         # رفع درخواست: پنل جداگانه‌ی «رویدادهای شناسایی چهره» (لاگ متنی خام
         # زیر صفحه) حذف شد؛ چون هر رویداد همان لحظه هم به‌صورت یک آیتم با
         # تصویر واقعی چهره در پنل «چهره‌های شناسایی‌شده» (ستون راست) اضافه
         # می‌شود، آن لاگ متنی صرفاً همان اطلاعات را دوباره و بدون تصویر نشان
         # می‌داد. اکنون فقط همان پنل «چهره‌های شناسایی‌شده» باقی مانده است.
-        outer_layout.addLayout(main_layout)
+        outer_layout.addWidget(self.main_splitter)
 
         main_widget.setLayout(outer_layout)
         self.setCentralWidget(main_widget)

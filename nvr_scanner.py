@@ -100,6 +100,17 @@ def _discover_onvif_channels(ip, onvif_port, user, pwd):
     return channels or None
 
 
+# اجراکننده‌ی مشترک و پایدار برای فراخوانی‌های ONVIF/SOAP که ممکن است بی‌نهایت
+# بلاک شوند. عمداً از ``with ThreadPoolExecutor() as executor`` استفاده
+# نمی‌شود: متد ``__exit__`` آن (shutdown(wait=True)) همچنان منتظر پایان
+# *واقعی* ترد داخلی می‌ماند - یعنی حتی با ``future.result(timeout=...)``، خودِ
+# تابع فراخوان در عمل تا پایان کامل فراخوان SOAP (که می‌تواند دقیقه‌ها طول
+# بکشد) بلاک می‌ماند و دقیقاً همان «قفل‌شدن نامحدود» که این تابع قرار بود رفع
+# کند، دوباره رخ می‌دهد. با executor مشترک (بدون shutdown هم‌زمان)، در صورت
+# عبور از timeout فوراً کنترل به فراخوان برمی‌گردد.
+_ONVIF_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=8, thread_name_prefix="ias-onvif")
+
+
 def _try_onvif_single_port(ip, onvif_port, user, pwd, timeout):
     try:
         import onvif  # noqa: F401  - فقط برای بررسی نصب بودن کتابخانه
@@ -109,14 +120,13 @@ def _try_onvif_single_port(ip, onvif_port, user, pwd, timeout):
     # اجرای فراخوانی SOAP در یک ترد جدا با مهلت زمانی مشخص؛ بدون این کار، اگر
     # دستگاه به درخواست پاسخ ندهد، برنامه برای مدت نامحدود (تا زمان timeout
     # پیش‌فرض TCP سیستم‌عامل که می‌تواند دقیقه‌ها طول بکشد) قفل می‌ماند.
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_discover_onvif_channels, ip, onvif_port, user, pwd)
-        try:
-            return future.result(timeout=timeout)
-        except Exception:
-            # هم شامل TimeoutError و هم هر خطای دیگر (اتصال رد شد، احراز هویت
-            # ناموفق، دستگاه ONVIF را پشتیبانی نمی‌کند و ...).
-            return None
+    future = _ONVIF_EXECUTOR.submit(_discover_onvif_channels, ip, onvif_port, user, pwd)
+    try:
+        return future.result(timeout=timeout)
+    except Exception:
+        # هم شامل TimeoutError و هم هر خطای دیگر (اتصال رد شد، احراز هویت
+        # ناموفق، دستگاه ONVIF را پشتیبانی نمی‌کند و ...).
+        return None
 
 
 def try_onvif_discovery(ip, onvif_port, user, pwd, timeout=ONVIF_TIMEOUT_SEC):

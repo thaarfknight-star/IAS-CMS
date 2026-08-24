@@ -27,6 +27,7 @@ transport اشتباه) تلاش برای اتصال می‌کند و اتصال
 هم‌زمان چند دوربین را کند نمی‌کند.
 """
 
+import concurrent.futures
 import os
 import threading
 from urllib.parse import quote
@@ -41,13 +42,56 @@ CAPTURE_OPEN_LOCK = threading.Lock()
 # NVRهای ضعیف یا شبکه‌های شلوغ (سیستم‌های کم‌رم که همزمان چند کانال را بررسی
 # می‌کنند) کافی نبود و باعث می‌شد کانال‌های واقعاً موجود، به‌اشتباه «یافت نشد»
 # گزارش شوند؛ به 3.5 ثانیه افزایش یافت.
-PROBE_FFMPEG_OPTS = "rtsp_transport;tcp|stimeout;3500000"
+#
+# رفع باگ «اسکن کانال‌های NVR برای همیشه روی 'در حال جستجو...' می‌ماند و هیچ
+# کانالی اضافه نمی‌شود»: گزینه‌ی ``stimeout`` فقط توسط نسخه‌های قدیمی‌تر FFmpeg
+# شناخته می‌شود؛ در بسیاری از بیلدهای جدید FFmpeg (از جمله ffmpeg باندل‌شده با
+# نسخه‌های اخیر opencv-python) این گزینه به ``timeout`` تغییر نام یافته و
+# ``stimeout`` صرفاً نادیده گرفته می‌شود (بدون خطا). نتیجه: هیچ timeout واقعی
+# اعمال نمی‌شود و cv2.VideoCapture روی هر کانال/IP بی‌پاسخ، تا timeout پیش‌فرض
+# سیستم‌عامل برای اتصال TCP (که می‌تواند ده‌ها ثانیه تا چند دقیقه طول بکشد) بلاک
+# می‌ماند - دقیقاً همان رفتار «برای همیشه روی جستجو می‌ماند». هر دو نام گزینه با
+# هم پاس داده می‌شوند تا صرف‌نظر از نسخه‌ی FFmpeg، حداقل یکی از آن‌ها اثر کند.
+PROBE_FFMPEG_OPTS = "rtsp_transport;tcp|stimeout;3500000|timeout;3500000"
 
 # گزینه‌ی کم‌تاخیر برای پخش زنده‌ی طولانی‌مدت.
 STREAM_FFMPEG_OPTS = (
-    "rtsp_transport;tcp|stimeout;5000000|max_delay;300000|"
+    "rtsp_transport;tcp|stimeout;5000000|timeout;5000000|max_delay;300000|"
     "buffer_size;102400|fflags;nobuffer|flags;low_delay"
 )
+
+# رفع همان باگ از زاویه‌ی دوم (محافظ سخت، مستقل از اینکه گزینه‌ی FFmpeg بالا
+# واقعاً اثر کند یا نه): چون نمی‌توان به تنظیمات FFmpeg به‌تنهایی اطمینان کرد،
+# probe_stream/frames_look_identical عملیات مسدودکننده (باز کردن
+# cv2.VideoCapture + خواندن فریم) را در یک ترد جداگانه اجرا می‌کنند و حداکثر
+# HARD_PROBE_TIMEOUT_SEC ثانیه منتظر می‌مانند؛ در صورت عبور از این مهلت، فوراً
+# به فراخوان کنترل برگردانده می‌شود (نتیجه: کانال یافت نشد) و ترد داخلی به‌صورت
+# پس‌زمینه به کار خودش تا پایان طبیعی (که ممکن است دیرتر برسد) ادامه می‌دهد -
+# بدون اینکه اسکن NVR یا تشخیص خودکار را قفل کند.
+#
+# توجه مهم: عمداً از ``with ThreadPoolExecutor() as executor`` استفاده نشده.
+# متد ``__exit__`` آن (shutdown(wait=True)) همچنان منتظر پایان *واقعی* ترد
+# داخلی می‌ماند، یعنی حتی با ``future.result(timeout=...)``، خودِ تابع فراخوان
+# در عمل تا پایان کامل عملیات مسدودکننده بلاک می‌ماند - دقیقاً همین ظرافت در
+# try_onvif_discovery (nvr_scanner.py) هم بود. اینجا از یک executor مشترک و
+# پایدار (بدون shutdown هم‌زمان) استفاده می‌شود تا این مشکل تکرار نشود.
+HARD_PROBE_TIMEOUT_SEC = 6.0
+_PROBE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=64, thread_name_prefix="ias-rtsp-probe"
+)
+
+
+def _run_with_hard_timeout(func, timeout, *args, **kwargs):
+    """func را در ترد جداگانه اجرا می‌کند و حداکثر timeout ثانیه صبر می‌کند.
+    در صورت عبور از مهلت (یا هر خطای دیگر)، بدون بلاک‌شدن، مقدار پیش‌فرض
+    (None) برمی‌گرداند."""
+    future = _PROBE_EXECUTOR.submit(func, *args, **kwargs)
+    try:
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        return None
+    except Exception:
+        return None
 
 # حداکثر تعداد تلاش برای خواندن یک فریم بعد از باز شدن اتصال، حین «کشف/تست»
 # (نه پخش زنده‌ی مداوم). رفع باگ «دوربین/کانال هست ولی پیدا نمی‌شود»:
@@ -84,12 +128,7 @@ def build_rtsp_url(ip: str, port, user: str = "", pwd: str = "", path: str = "")
     return f"rtsp://{auth}{ip}:{port}/{path}" if path else f"rtsp://{auth}{ip}:{port}"
 
 
-def probe_stream(url: str, ffmpeg_options: str = PROBE_FFMPEG_OPTS, attempts: int = PROBE_READ_ATTEMPTS) -> bool:
-    """بررسی می‌کند آیا یک آدرس RTSP معتبر است و فریم واقعی برمی‌گرداند یا نه.
-
-    برخلاف یک cap.read() تکی، چند بار پیاپی تلاش می‌کند تا false negative
-    ناشی از تاخیر رسیدن اولین کی‌فریم رخ ندهد (رجوع کنید به PROBE_READ_ATTEMPTS).
-    """
+def _probe_stream_blocking(url: str, ffmpeg_options: str, attempts: int) -> bool:
     cap = open_capture(url, ffmpeg_options)
     try:
         if not cap.isOpened():
@@ -101,6 +140,22 @@ def probe_stream(url: str, ffmpeg_options: str = PROBE_FFMPEG_OPTS, attempts: in
         return False
     finally:
         cap.release()
+
+
+def probe_stream(url: str, ffmpeg_options: str = PROBE_FFMPEG_OPTS, attempts: int = PROBE_READ_ATTEMPTS) -> bool:
+    """بررسی می‌کند آیا یک آدرس RTSP معتبر است و فریم واقعی برمی‌گرداند یا نه.
+
+    برخلاف یک cap.read() تکی، چند بار پیاپی تلاش می‌کند تا false negative
+    ناشی از تاخیر رسیدن اولین کی‌فریم رخ ندهد (رجوع کنید به PROBE_READ_ATTEMPTS).
+
+    با مهلت زمانی سخت (HARD_PROBE_TIMEOUT_SEC) اجرا می‌شود تا در صورت بی‌اثر
+    بودن گزینه‌ی timeout/stimeout روی بیلد FFmpeg نصب‌شده، اسکن برای همیشه
+    معلق نماند (رجوع کنید به توضیح بالای فایل).
+    """
+    result = _run_with_hard_timeout(
+        _probe_stream_blocking, HARD_PROBE_TIMEOUT_SEC, url, ffmpeg_options, attempts
+    )
+    return bool(result)
 
 
 def _grab_probe_frame(cap, attempts: int = PROBE_READ_ATTEMPTS):
@@ -133,15 +188,22 @@ def frames_look_identical(url_a: str, url_b: str, diff_threshold: float = FRAME_
     محتوای تصویر را مقایسه می‌کند؛ فقط وقتی تصویر واقعاً متفاوت باشد (یعنی
     واقعاً دو منبع/دوربین جدا هستند) کانال دوم به‌عنوان کانال واقعی تایید
     می‌شود.
+
+    مثل probe_stream، با مهلت زمانی سخت اجرا می‌شود تا در صورت بی‌اثر بودن
+    گزینه‌ی timeout روی FFmpeg نصب‌شده، تشخیص خودکار نوع دستگاه معلق نماند.
     """
-    cap_a = open_capture(url_a)
-    cap_b = open_capture(url_b)
-    try:
-        frame_a = _grab_probe_frame(cap_a)
-        frame_b = _grab_probe_frame(cap_b)
-    finally:
-        cap_a.release()
-        cap_b.release()
+
+    def _grab_both():
+        cap_a = open_capture(url_a)
+        cap_b = open_capture(url_b)
+        try:
+            return _grab_probe_frame(cap_a), _grab_probe_frame(cap_b)
+        finally:
+            cap_a.release()
+            cap_b.release()
+
+    result = _run_with_hard_timeout(_grab_both, HARD_PROBE_TIMEOUT_SEC * 2)
+    frame_a, frame_b = result if result is not None else (None, None)
 
     if frame_a is None or frame_b is None:
         # اگر نتوانستیم از یکی از دو طرف فریمی بگیریم، نمی‌توان با اطمینان
