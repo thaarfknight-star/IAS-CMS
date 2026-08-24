@@ -132,15 +132,39 @@ class FaceEngine:
 
     # ---------- recognition ----------
 
+    @staticmethod
+    def _crop_face(frame, box, margin=0.25):
+        """برش تصویر چهره از فریم اصلی (با کمی حاشیه‌ی اطراف صورت) برای نمایش
+        در ستون «چهره‌های شناسایی‌شده». در صورت نامعتبر بودن مختصات، None
+        برمی‌گرداند تا خطای برش هرگز باعث توقف تشخیص نشود."""
+        try:
+            top, right, bottom, left = box
+            h, w = frame.shape[:2]
+            box_h, box_w = max(bottom - top, 1), max(right - left, 1)
+            pad_y, pad_x = int(box_h * margin), int(box_w * margin)
+            top = max(0, top - pad_y)
+            left = max(0, left - pad_x)
+            bottom = min(h, bottom + pad_y)
+            right = min(w, right + pad_x)
+            if bottom <= top or right <= left:
+                return None
+            return frame[top:bottom, left:right].copy()
+        except Exception:
+            return None
+
     def recognize(self, frame, downscale=0.5):
         """Detect + match every face in a frame.
 
-        Returns (results, unknown_alert, known_events):
+        Returns (results, unknown_alert, known_events, unknown_face_image):
           - results: [{"box": (top,right,bottom,left) in full-frame coords, "person": dict|None}]
           - unknown_alert: True once when an unmatched face has been seen and the
             cooldown for a fresh "چهره تعریف نشده" notice has elapsed.
-          - known_events: list of person dicts newly re-confirmed (cooldown-limited,
-            so the same person doesn't spam a notice every frame).
+          - known_events: [{"person": dict, "face_image": ndarray|None}] newly
+            re-confirmed persons (cooldown-limited, so the same person doesn't
+            spam a notice every frame). face_image is a cropped BGR frame of
+            just that face, for the "چهره‌های شناسایی‌شده" side column.
+          - unknown_face_image: ndarray|None - cropped image of an unmatched
+            face, set together with unknown_alert.
         """
         # این متد به‌طور مداوم از ترد(های) پخش زنده صدا زده می‌شود؛ قفل تضمین می‌کند که
         # هم‌زمان با ثبت/ویرایش/حذف چهره (که از ترد UI اجرا می‌شود) به dlib یا
@@ -158,6 +182,7 @@ class FaceEngine:
             results = []
             saw_unknown = False
             known_events = []
+            unknown_crop = None
 
             for (top, right, bottom, left), enc in zip(locations, encodings):
                 box = (int(top * scale), int(right * scale), int(bottom * scale), int(left * scale))
@@ -173,9 +198,10 @@ class FaceEngine:
                     last_seen = self._last_seen_person.get(person["id"], 0)
                     if now - last_seen >= self.known_alert_cooldown:
                         self._last_seen_person[person["id"]] = now
-                        known_events.append(person)
+                        known_events.append({"person": person, "face_image": self._crop_face(frame, box)})
                 else:
                     saw_unknown = True
+                    unknown_crop = self._crop_face(frame, box)
 
                 results.append({"box": box, "person": person})
 
@@ -183,8 +209,10 @@ class FaceEngine:
             if saw_unknown and (now - self._last_unknown_alert) >= self.unknown_alert_cooldown:
                 self._last_unknown_alert = now
                 unknown_alert = True
+            else:
+                unknown_crop = None
 
-            return results, unknown_alert, known_events
+            return results, unknown_alert, known_events, unknown_crop
 
     def draw_results(self, frame, results):
         """Overlay boxes + labels in-place. Unmatched faces are explicitly
