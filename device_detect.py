@@ -23,7 +23,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from rtsp_utils import (
     build_rtsp_url, frames_look_identical, probe_stream, COMMON_RTSP_PORT_FALLBACKS,
 )
-from nvr_scanner import CHANNEL_TEMPLATES, _format_templates, try_onvif_discovery
+from nvr_scanner import CHANNEL_TEMPLATES, _format_templates, try_onvif_discovery_ex
 
 # بعد از کانال ۱، این کانال‌ها هم برای تایید چندکاناله بودن دستگاه امتحان
 # می‌شوند (نه فقط کانال ۲): برخی NVRها کانال ۲ خالی/غیرفعال دارند و فقط
@@ -145,12 +145,26 @@ class DeviceDetectThread(QThread):
 
     def run(self):
         # ۱) تلاش با ONVIF: تعداد پروفایل‌ها مستقیماً نوع دستگاه را مشخص می‌کند.
+        #
+        # رفع باگ اصلیِ «تشخیص خودکار روی هر IP خیلی طول می‌کشد / انگار قفل
+        # کرده»: قبلاً اینجا روی تمام پورت‌های کاندید (_onvif_candidate_ports،
+        # تا ۸ پورت) حلقه زده می‌شد و try_onvif_discovery برای *هرکدام*
+        # جداگانه صدا زده می‌شد؛ چون خودِ آن تابع هم به‌صورت مستقل ۴ پورت
+        # رایج دیگر را امتحان می‌کرد، ترکیب دو حلقه یعنی روی دستگاه‌های بدون
+        # ONVIF (رایج‌ترین حالت) ده‌ها تلاش پیاپی هرکدام تا ۵ ثانیه طول
+        # می‌کشید (می‌توانست به بیش از ۲ دقیقه برسد) - قبل از اینکه اصلاً
+        # بررسی کانال‌ها شروع شود. حالا فقط یک فراخوان واحد انجام می‌شود؛
+        # تمام پورت‌های کاندید به‌صورت دی‌داپ‌شده داخل همان یک فراخوان امتحان
+        # می‌شوند، پس هر پورت واقعی حداکثر یک‌بار تست می‌شود.
         self.progress_signal.emit("در حال تشخیص نوع دستگاه (ONVIF)...")
-        for onvif_port in self._onvif_candidate_ports():
-            if self._is_cancelled:
-                return
-            channels = try_onvif_discovery(self.ip, onvif_port, self.user, self.pwd)
+        candidate_ports = self._onvif_candidate_ports()
+        primary_port = candidate_ports[0] if candidate_ports else 80
+        if not self._is_cancelled:
+            channels, working_port = try_onvif_discovery_ex(
+                self.ip, primary_port, self.user, self.pwd, extra_ports=candidate_ports[1:]
+            )
             if channels:
+                onvif_port = working_port or primary_port
                 if len(channels) > 1:
                     self.detected_signal.emit(
                         "nvr", {"brand": "auto", "onvif_port": str(onvif_port), "rtsp_port": str(self.rtsp_port)}

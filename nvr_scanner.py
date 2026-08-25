@@ -136,7 +136,22 @@ def _try_onvif_single_port(ip, onvif_port, user, pwd, timeout):
         return None
 
 
-def try_onvif_discovery(ip, onvif_port, user, pwd, timeout=ONVIF_TIMEOUT_SEC):
+def try_onvif_discovery_ex(ip, onvif_port, user, pwd, timeout=ONVIF_TIMEOUT_SEC, extra_ports=None):
+    """مثل try_onvif_discovery، اما (channels, port_used) برمی‌گرداند تا فراخوان
+    بداند دقیقاً کدام پورت واقعاً جواب داده (برای پیش‌پرکردن درست فرم NVR)."""
+    ports_to_try = []
+    for p in [onvif_port, *(extra_ports or []), *COMMON_ONVIF_PORTS]:
+        if p and p not in ports_to_try:
+            ports_to_try.append(p)
+
+    for port in ports_to_try:
+        result = _try_onvif_single_port(ip, port, user, pwd, timeout)
+        if result:
+            return result, port
+    return None, None
+
+
+def try_onvif_discovery(ip, onvif_port, user, pwd, timeout=ONVIF_TIMEOUT_SEC, extra_ports=None):
     """تلاش برای کشف کانال‌های واقعی NVR از طریق پروتکل استاندارد ONVIF.
 
     اگر کتابخانه‌ی onvif-zeep نصب نباشد، NVR از ONVIF پشتیبانی نکند، یا مهلت
@@ -148,15 +163,28 @@ def try_onvif_discovery(ip, onvif_port, user, pwd, timeout=ONVIF_TIMEOUT_SEC):
     بود امتحان می‌شد؛ چون سرویس ONVIF واقعی اغلب روی پورتی غیر از 80 (که
     پیش‌فرض فرم است) اجرا می‌شود، این تلاش تقریباً همیشه شکست می‌خورد. حالا
     اگر پورت وارد‌شده جواب نداد، پورت‌های رایج دیگر هم امتحان می‌شوند.
-    """
-    ports_to_try = [onvif_port] if onvif_port else []
-    ports_to_try += [p for p in COMMON_ONVIF_PORTS if p != onvif_port]
 
-    for port in ports_to_try:
-        result = _try_onvif_single_port(ip, port, user, pwd, timeout)
-        if result:
-            return result
-    return None
+    ``extra_ports`` (اختیاری): پورت‌های اضافه‌ای که فراخوان می‌خواهد امتحان
+    شوند (مثلاً پورت‌های باز واقعی که یک اسکن شبکه قبلاً پیدا کرده). این
+    پورت‌ها هم داخل همین یک فراخوانی، همراه با ``onvif_port`` و
+    ``COMMON_ONVIF_PORTS`` و بدون تکرار امتحان می‌شوند.
+
+    رفع باگ مهم «تشخیص خودکار نوع دستگاه روی هر IP خیلی طول می‌کشد / قفل
+    می‌کند»: قبلاً ``device_detect.DeviceDetectThread`` این تابع را یک‌بار
+    برای *هر* پورت کاندید (تا ۸ پورت) به‌صورت جداگانه صدا می‌زد، و هر بار خودِ
+    این تابع دوباره همان ۴ پورت ``COMMON_ONVIF_PORTS`` را از نو امتحان
+    می‌کرد؛ یعنی روی هر دستگاهی که اصلاً ONVIF نداشت (رایج‌ترین حالت برای
+    NVRهای ژنریک/فقط-RTSP)، تعداد تلاش واقعی به ``len(پورت‌های کاندید) ×
+    len(COMMON_ONVIF_PORTS)`` می‌رسید - مثلاً فقط با ۴ پورت پیش‌فرض،
+    4×4×5ثانیه = ۸۰ ثانیه، و با پورت‌های اضافی که اسکن شبکه پیدا کرده بود
+    (554، 8899، 37777 و ...) این عدد به بیش از ۲ دقیقه هم می‌رسید - همه‌ی
+    این‌ها فقط برای فاز ONVIF و *قبل* از شروع بررسی کانال‌ها. با پارامتر
+    ``extra_ports``، فراخوان اکنون تمام پورت‌های کاندید را یک‌جا و در یک
+    فراخوان (با دی‌داپ) پاس می‌دهد؛ هر پورت واقعی حداکثر یک‌بار امتحان
+    می‌شود.
+    """
+    channels, _port = try_onvif_discovery_ex(ip, onvif_port, user, pwd, timeout, extra_ports)
+    return channels
 
 
 class NVRScanThread(QThread):
