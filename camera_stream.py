@@ -20,8 +20,8 @@ class CameraStreamThread(QThread):
     frame_ready = pyqtSignal(object, object)   # (frame_for_display, raw_frame)
     error_signal = pyqtSignal(str)
     connected_signal = pyqtSignal()
-    known_face_signal = pyqtSignal(dict, object)   # (person, face_image ndarray|None)
-    unknown_face_signal = pyqtSignal(object)       # face_image ndarray|None
+    known_face_signal = pyqtSignal(dict)
+    unknown_face_signal = pyqtSignal()
 
     def __init__(self, rtsp_url, face_engine, process_every_n=5, parent=None):
         super().__init__(parent)
@@ -56,12 +56,12 @@ class CameraStreamThread(QThread):
 
     def _run_recognition(self, frame):
         try:
-            results, unknown_alert, known_events, unknown_crop = self.face_engine.recognize(frame)
+            results, unknown_alert, known_events = self.face_engine.recognize(frame)
             self._last_results = results
             if unknown_alert:
-                self.unknown_face_signal.emit(unknown_crop)
-            for ev in known_events:
-                self.known_face_signal.emit(ev["person"], ev["face_image"])
+                self.unknown_face_signal.emit()
+            for person in known_events:
+                self.known_face_signal.emit(person)
         except Exception as e:
             # خطای تشخیص چهره نباید باعث توقف پخش زنده شود.
             print(f"خطا در تشخیص چهره: {e}")

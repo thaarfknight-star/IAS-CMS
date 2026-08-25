@@ -7,11 +7,10 @@ import cv2
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QListWidget, QListWidgetItem, QMessageBox,
-    QGroupBox, QMenu, QTreeWidget, QTreeWidgetItem, QInputDialog, QComboBox,
-    QScrollArea, QFrame, QSizePolicy, QSplitter
+    QGroupBox, QTabWidget, QMenu, QTreeWidget, QTreeWidgetItem, QInputDialog
 )
-from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon
-from PyQt6.QtCore import Qt, QTimer, QSize, pyqtSignal
+from PyQt6.QtGui import QImage, QPixmap, QAction
+from PyQt6.QtCore import Qt, QTimer
 
 from face_engine import FaceEngine
 from scanner import NetworkScanThread
@@ -35,113 +34,51 @@ cv2.setNumThreads(max(1, (os.cpu_count() or 4) // 2))
 # را کمی بیشتر می‌کنیم تا CPU بیشتری برای خود پخش زنده (decode ویدیو) بماند.
 _PROCESS_EVERY_N = 5 if (os.cpu_count() or 4) >= 6 else 8
 
-# تعداد پنجره‌های نمایش هم‌زمان که کاربر می‌تواند انتخاب کند و چیدمان
-# (ردیف, ستون) هرکدام - نزدیک‌ترین چیدمان تقریباً مربعی برای هر تعداد.
-GRID_LAYOUTS = {
-    1: (1, 1),
-    4: (2, 2),
-    9: (3, 3),
-    16: (4, 4),
-    20: (4, 5),
-    36: (6, 6),
-    64: (8, 8),
-}
-MAX_GRID_SLOTS = max(GRID_LAYOUTS)
 
+class CameraTabWidget(QWidget):
+    """یک تب نمایش زنده برای یک دوربین مشخص."""
 
-class GridSlotWidget(QFrame):
-    """یک «پنجره» تکی داخل دیوار نمایش چند-دوربینه. می‌تواند خالی باشد یا یک
-    دوربین را پخش کند. با کلیک روی آن (چه خالی چه پر) به‌عنوان پنجره‌ی «فعال»
-    انتخاب می‌شود: پنجره‌ی خالیِ انتخاب‌شده، مقصد بعدی دابل‌کلیک روی یک دوربین
-    از لیست است؛ پنجره‌ی پرِ انتخاب‌شده، منبع فریم برای «ثبت چهره از تصویر
-    زنده» در Face Library است."""
-
-    clicked = pyqtSignal(object)
-
-    def __init__(self, index, face_engine, parent=None):
+    def __init__(self, cam: dict, face_engine: FaceEngine, parent=None):
         super().__init__(parent)
-        self.index = index
+        self.cam = cam
         self.face_engine = face_engine
-        self.cam = None
-        self.stream_thread = None
         self.latest_raw_frame = None
-        self._selected = False
-
-        self.setMinimumSize(130, 100)
-        self.setFrameShape(QFrame.Shape.Box)
-        self._apply_border()
+        self.stream_thread = None
 
         layout = QVBoxLayout()
-        layout.setContentsMargins(3, 3, 3, 3)
-        layout.setSpacing(2)
-
-        header = QHBoxLayout()
-        header.setSpacing(4)
-        self.name_label = QLabel("")
-        self.name_label.setStyleSheet("color: #cccccc; font-size: 10px;")
-        self.close_btn = QPushButton("✕")
-        self.close_btn.setFixedSize(18, 18)
-        self.close_btn.setStyleSheet("font-size: 10px; padding: 0px;")
-        self.close_btn.setVisible(False)
-        self.close_btn.clicked.connect(self.clear)
-        header.addWidget(self.name_label, 1)
-        header.addWidget(self.close_btn)
-
-        self.video_label = QLabel("پنجره خالی\n(کلیک کنید، سپس روی دوربین در لیست\nدابل‌کلیک کنید)")
+        self.status_label = QLabel(f"در حال اتصال به «{cam['name']}»...")
+        self.status_label.setStyleSheet("color: #aaaaaa; font-size: 11px;")
+        self.video_label = QLabel("در انتظار تصویر...")
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.video_label.setStyleSheet("background-color: #1e1e1e; color: #888888; font-size: 10px; border-radius: 4px;")
-        self.video_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.video_label.setStyleSheet("background-color: #1e1e1e; color: #ffffff; border-radius: 8px;")
+        self.video_label.setMinimumSize(800, 480)
 
-        layout.addLayout(header)
-        layout.addWidget(self.video_label, 1)
+        layout.addWidget(self.status_label)
+        layout.addWidget(self.video_label)
         self.setLayout(layout)
 
-    def _apply_border(self):
-        color = "#3b82f6" if self._selected else "#333333"
-        width = "2px" if self._selected else "1px"
-        self.setStyleSheet(f"GridSlotWidget {{ border: {width} solid {color}; border-radius: 6px; }}")
-
-    def set_selected(self, selected: bool):
-        self._selected = selected
-        self._apply_border()
-
-    def is_empty(self):
-        return self.cam is None
-
-    def mousePressEvent(self, event):
-        self.clicked.emit(self)
-        super().mousePressEvent(event)
-
-    # ------------------------------------------------------------- stream ---
-
-    def assign(self, cam: dict, rtsp_url: str, log_callback):
-        if not self.is_empty():
-            self.clear()
-        self.cam = cam
-        self.name_label.setText(cam["name"])
-        self.close_btn.setVisible(True)
-        self.video_label.setText(f"در حال اتصال به «{cam['name']}»...")
-
+    def start(self, rtsp_url, log_callback):
         self.stream_thread = CameraStreamThread(rtsp_url, self.face_engine, process_every_n=_PROCESS_EVERY_N)
         self.stream_thread.frame_ready.connect(self.on_frame_ready)
         self.stream_thread.error_signal.connect(self.on_error)
         self.stream_thread.connected_signal.connect(self.on_connected)
         self.stream_thread.known_face_signal.connect(
-            lambda person, face_img: log_callback("known", self.cam["name"], person, face_img)
+            lambda person: log_callback("known", self.cam["name"], person)
         )
         self.stream_thread.unknown_face_signal.connect(
-            lambda face_img: log_callback("unknown", self.cam["name"], None, face_img)
+            lambda: log_callback("unknown", self.cam["name"], None)
         )
         self.stream_thread.start()
 
     def on_connected(self):
-        pass  # نام دوربین در هدر ثابت است؛ نیازی به تکرار «متصل شد» روی خود ویدیو نیست.
+        self.status_label.setText(f"وضعیت: متصل - پخش زنده «{self.cam['name']}»")
 
     def on_error(self, msg):
-        self.video_label.setText(f"خطا: {msg}")
+        self.status_label.setText(f"خطا: {msg}")
 
     def on_frame_ready(self, display_frame, raw_frame):
         self.latest_raw_frame = raw_frame
+        import cv2
         rgb_image = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb_image.shape
         bytes_per_line = ch * w
@@ -157,158 +94,16 @@ class GridSlotWidget(QFrame):
             )
         )
 
-    def clear(self):
+    def stop(self):
         if self.stream_thread and self.stream_thread.isRunning():
             self.stream_thread.stop()
-        self.stream_thread = None
-        self.cam = None
-        self.latest_raw_frame = None
-        self.name_label.setText("")
-        self.close_btn.setVisible(False)
-        self.video_label.setPixmap(QPixmap())
-        self.video_label.setText("پنجره خالی\n(کلیک کنید، سپس روی دوربین در لیست\nدابل‌کلیک کنید)")
-
-
-class CameraGridWidget(QWidget):
-    """دیوار نمایش چند-دوربینه با تعداد پنجره‌ی قابل‌انتخاب
-    (1, 4, 9, 16, 20, 36, 64)."""
-
-    def __init__(self, face_engine: FaceEngine, log_callback, parent=None):
-        super().__init__(parent)
-        self.face_engine = face_engine
-        self.log_callback = log_callback
-        self.selected_slot = None
-        self.visible_count = 0
-
-        self.slots = [GridSlotWidget(i, face_engine) for i in range(MAX_GRID_SLOTS)]
-        for s in self.slots:
-            s.clicked.connect(self._on_slot_clicked)
-
-        # رفع درخواست: اندازه‌ی هر پنجره (پنل) باید با درگ‌کردن مرز بین دو
-        # پنجره قابل تنظیم باشد. QGridLayout قبلی سلول‌ها را همیشه با اندازه‌ی
-        # مساوی و ثابت تقسیم می‌کرد و هیچ راهی برای تغییر دستی نداشت. حالا از
-        # چیدمان تودرتوی QSplitter استفاده می‌شود: یک splitter عمودی بیرونی
-        # (self.row_splitter) شامل یک splitter افقی برای هر ردیف
-        # (self.row_splitters)، و هر splitter افقی شامل پنجره‌های همان ردیف.
-        # کاربر با کشیدن مرز بین دو پنجره‌ی هم‌ردیف یا دو ردیف، اندازه‌ی
-        # آن‌ها را تغییر می‌دهد.
-        self.row_splitter = QSplitter(Qt.Orientation.Vertical)
-        self.row_splitter.setHandleWidth(4)
-        self.row_splitters = []  # splitter افقیِ هر ردیف، به ترتیب از بالا به پایین
-
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(self.row_splitter)
-
-    def _on_slot_clicked(self, slot):
-        if self.selected_slot is slot:
-            return
-        if self.selected_slot is not None:
-            self.selected_slot.set_selected(False)
-        self.selected_slot = slot
-        slot.set_selected(True)
-
-    def set_window_count(self, n):
-        n = n if n in GRID_LAYOUTS else 4
-        # پنجره‌هایی که دیگر در محدوده‌ی تعداد جدید نیستند، اگر در حال پخش
-        # باشند متوقف می‌شوند تا هم منابع (CPU/شبکه) آزاد شود و هم ترد
-        # پس‌زمینه‌شان معلق نماند.
-        for s in self.slots[n:]:
-            if not s.is_empty():
-                s.clear()
-            if s.index == getattr(self.selected_slot, "index", -1):
-                self.selected_slot = None
-            s.setParent(None)
-            s.hide()
-
-        # splitterهای ردیفِ چیدمان قبلی از بین می‌روند (خود ویجت‌های پنجره
-        # نه؛ آن‌ها فقط setParent(None) شده و در حلقه‌ی زیر به splitterهای
-        # جدید اضافه می‌شوند).
-        for rs in self.row_splitters:
-            rs.setParent(None)
-            rs.deleteLater()
-        self.row_splitters = []
-
-        rows, cols = GRID_LAYOUTS[n]
-        for r in range(rows):
-            row_splitter = QSplitter(Qt.Orientation.Horizontal)
-            row_splitter.setHandleWidth(4)
-            for c in range(cols):
-                i = r * cols + c
-                if i >= n:
-                    break
-                slot = self.slots[i]
-                slot.setParent(None)
-                row_splitter.addWidget(slot)
-                slot.show()
-            self.row_splitter.addWidget(row_splitter)
-            self.row_splitters.append(row_splitter)
-
-        # رفع درخواست: وقتی تعداد پنجره‌های نمایش عوض می‌شود، اندازه‌ی
-        # پنجره‌های جدید باید متناسب با تعداد جدید تنظیم شود - نه اینکه
-        # نسبت‌های دستیِ باقی‌مانده از چیدمان قبلی (که ممکن است تعداد سطر/
-        # ستون متفاوتی داشت) روی چیدمان جدید اعمال شود. به همین دلیل بعد از
-        # ساخت splitterهای جدید، اندازه‌ی مساوی برای splitter عمودی بیرونی
-        # (بین ردیف‌ها) و هر splitter افقی داخلی (بین پنجره‌های همان ردیف)
-        # تنظیم می‌شود؛ از این‌جا به بعد کاربر می‌تواند با درگ‌کردن آن‌ها را
-        # دستی تغییر دهد.
-        if self.row_splitter.count():
-            self.row_splitter.setSizes([1000] * self.row_splitter.count())
-        for rs in self.row_splitters:
-            if rs.count():
-                rs.setSizes([1000] * rs.count())
-
-        self.visible_count = n
-
-    def assign_camera(self, cam: dict, rtsp_url: str) -> bool:
-        """دوربین را در پنجره‌ی انتخاب‌شده (اگر خالی است) یا اولین پنجره‌ی
-        خالی نمایش می‌دهد. اگر همان دوربین از قبل باز است، فقط آن پنجره را
-        برجسته می‌کند. در صورت پر بودن همه‌ی پنجره‌ها، False برمی‌گرداند."""
-        for s in self.slots[:self.visible_count]:
-            if s.cam is not None and s.cam["id"] == cam["id"]:
-                self._on_slot_clicked(s)
-                return True
-
-        target = None
-        if self.selected_slot is not None and self.selected_slot.is_empty() \
-                and self.selected_slot.index < self.visible_count:
-            target = self.selected_slot
-        if target is None:
-            for s in self.slots[:self.visible_count]:
-                if s.is_empty():
-                    target = s
-                    break
-        if target is None:
-            return False
-
-        if self.selected_slot is not None:
-            self.selected_slot.set_selected(False)
-        self.selected_slot = target
-        target.set_selected(True)
-        target.assign(cam, rtsp_url, self.log_callback)
-        return True
-
-    def close_camera(self, cam_id):
-        for s in self.slots[:self.visible_count]:
-            if s.cam is not None and s.cam["id"] == cam_id:
-                s.clear()
-
-    def get_active_camera_frame(self):
-        if self.selected_slot is not None and not self.selected_slot.is_empty():
-            return self.selected_slot.latest_raw_frame
-        return None
-
-    def stop_all(self):
-        for s in self.slots:
-            if not s.is_empty():
-                s.clear()
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("CCTV Management System (CMS) & Face Recognition")
-        self.setGeometry(100, 100, 1500, 780)
+        self.setGeometry(100, 100, 1300, 720)
 
         self.face_engine = FaceEngine()
         self.camera_store = CameraStore()
@@ -325,21 +120,9 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         main_widget = QWidget()
         outer_layout = QVBoxLayout()
+        main_layout = QHBoxLayout()
 
-        # رفع درخواست: اندازه‌ی پنل سمت چپ (اسکن/لیست دوربین‌ها)، پنل وسط
-        # (دیوار نمایش) و پنل سمت راست (چهره‌های شناسایی‌شده) باید با
-        # درگ‌کردن مرز بین‌شان قابل تنظیم باشد. قبلاً این سه با QHBoxLayout و
-        # یک ضریب کشش ثابت (2:5:2) کنار هم چیده می‌شدند که هیچ راهی برای
-        # تغییر دستی نداشت. حالا هر پنل داخل یک QWidget مستقل قرار می‌گیرد و
-        # این سه ویجت داخل یک QSplitter افقی (self.main_splitter) چیده
-        # می‌شوند؛ کاربر با کشیدن مرز بین دو پنل، عرض آن‌ها را تغییر می‌دهد.
-        self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.main_splitter.setHandleWidth(4)
-        self.main_splitter.setChildrenCollapsible(False)
-
-        left_widget = QWidget()
-        left_panel = QVBoxLayout(left_widget)
-        left_panel.setContentsMargins(0, 0, 0, 0)
+        left_panel = QVBoxLayout()
 
         # بخش اسکن شبکه
         # نکته: قبلاً این بخش «اسکن دستگاه‌های مداربسته» نام داشت و صرفاً پورت‌های
@@ -353,71 +136,32 @@ class MainWindow(QMainWindow):
         # نمایش داده می‌شوند (رجوع کنید به reload_camera_list).
         scan_group = QGroupBox("اسکن شبکه (Network Scan)")
         scan_layout = QVBoxLayout()
-
-        # رفع درخواست: قبلاً تشخیص خودکار نوع دستگاه (device_detect.py) همیشه
-        # با admin/بدون-رمز تلاش می‌کرد که روی هر دستگاهی با اطلاعات ورود
-        # سفارشی (رمز واقعی) شکست می‌خورد و اغلب همین باعث می‌شد NVRها اصلاً
-        # درست شناسایی نشوند. حالا کاربر می‌تواند یوزرنیم/پسورد واقعی دستگاه‌ها
-        # را یک‌بار اینجا وارد کند؛ همین مقدار هم برای اتصال آزمایشی تشخیص نوع
-        # دستگاه و هم برای پرشدن خودکار دیالوگ افزودن دوربین/NVR استفاده می‌شود.
-        scan_layout.addWidget(QLabel(
-            "یوزرنیم/پسورد دستگاه‌ها (برای تشخیص نوع دستگاه و اتصال استفاده می‌شود):"
-        ))
-        cred_row = QHBoxLayout()
-        self.scan_user_input = QLineEdit("admin")
-        self.scan_user_input.setPlaceholderText("یوزرنیم")
-        self.scan_pass_input = QLineEdit()
-        self.scan_pass_input.setPlaceholderText("پسورد")
-        self.scan_pass_input.setEchoMode(QLineEdit.EchoMode.Password)
-        cred_row.addWidget(self.scan_user_input)
-        cred_row.addWidget(self.scan_pass_input)
-        scan_layout.addLayout(cred_row)
-
         self.subnet_input = QLineEdit("192.168.1")
         self.subnet_input.setPlaceholderText("پیشوند ساب‌نت (مثلاً 192.168.1)")
         self.scan_btn = QPushButton("اسکن شبکه")
         self.scan_btn.clicked.connect(self.run_network_scan)
         self.scan_result_list = QListWidget()
-        # رفع درخواست: به‌جای نگه‌داشتن Ctrl/Shift برای انتخاب چند دستگاه، هر
-        # ردیف نتیجه‌ی اسکن یک تیک (checkbox) دارد؛ کاربر هر دستگاهی که
-        # می‌خواهد اضافه شود را تیک می‌زند.
-        self.scan_result_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        # رفع درخواست: قبلاً فقط دابل‌کلیک روی یک ردیف ممکن بود (انتخاب تکی).
+        # حالا با نگه‌داشتن Ctrl یا Shift هنگام کلیک، چند دستگاه هم‌زمان قابل
+        # انتخاب است و با دکمه‌ی «افزودن دستگاه‌های انتخاب‌شده» زیر، همه‌ی
+        # آن‌ها پشت‌سرهم (یکی پس از دیگری) تشخیص داده و اضافه می‌شوند.
+        self.scan_result_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
         self.scan_result_list.itemDoubleClicked.connect(self.on_scan_result_selected)
-        self.add_selected_scan_btn = QPushButton("+ افزودن دستگاه‌های تیک‌خورده")
+        self.add_selected_scan_btn = QPushButton("+ افزودن دستگاه‌های انتخاب‌شده")
         self.add_selected_scan_btn.clicked.connect(self.on_add_selected_scan_results)
         self.detect_status_label = QLabel("")
         self.detect_status_label.setStyleSheet("color: #aaaaaa; font-size: 11px;")
-        # رفع درخواست «برنامه قفل می‌کند»: تشخیص خودکار نوع دستگاه (به‌خصوص
-        # برای دستگاه‌هایی که اصلاً پاسخ نمی‌دهند یا اطلاعات ورودشان اشتباه
-        # است) می‌تواند طول بکشد و قبلاً هیچ راهی برای لغو آن از پنجره‌ی
-        # اصلی وجود نداشت - کاربر فقط منتظر می‌ماند و برنامه را «قفل‌شده»
-        # حس می‌کند. این دکمه در طول تشخیص فعال می‌شود و با کلیک، هم دستگاه
-        # فعلی و هم صف باقی‌مانده‌ی «افزودن دستگاه‌های تیک‌خورده» لغو می‌شود.
-        self.cancel_detect_btn = QPushButton("لغو تشخیص")
-        self.cancel_detect_btn.setVisible(False)
-        self.cancel_detect_btn.clicked.connect(self._cancel_detection)
-        detect_status_row = QHBoxLayout()
-        detect_status_row.addWidget(self.detect_status_label, 1)
-        detect_status_row.addWidget(self.cancel_detect_btn)
         scan_layout.addWidget(self.subnet_input)
         scan_layout.addWidget(self.scan_btn)
         # نکته: دیگر از کاربر پرسیده نمی‌شود دستگاه دوربین تکی است یا NVR؛ با
         # دابل‌کلیک، نوع دستگاه به‌صورت خودکار تشخیص داده می‌شود (device_detect.py).
         scan_layout.addWidget(QLabel(
-            "روی یک نتیجه دابل‌کلیک کنید (افزودن تکی)، یا چند دستگاه را تیک بزنید و "
-            "«افزودن دستگاه‌های تیک‌خورده» را بزنید:"
+            "روی یک نتیجه دابل‌کلیک کنید، یا با Ctrl/Shift چند مورد را انتخاب و "
+            "«افزودن دستگاه‌های انتخاب‌شده» را بزنید:"
         ))
         scan_layout.addWidget(self.scan_result_list)
-        scan_check_row = QHBoxLayout()
-        select_all_scan_btn = QPushButton("تیک همه")
-        select_all_scan_btn.clicked.connect(lambda: self._set_all_scan_checked(True))
-        select_none_scan_btn = QPushButton("لغو تیک همه")
-        select_none_scan_btn.clicked.connect(lambda: self._set_all_scan_checked(False))
-        scan_check_row.addWidget(select_all_scan_btn)
-        scan_check_row.addWidget(select_none_scan_btn)
-        scan_layout.addLayout(scan_check_row)
         scan_layout.addWidget(self.add_selected_scan_btn)
-        scan_layout.addLayout(detect_status_row)
+        scan_layout.addWidget(self.detect_status_label)
         scan_group.setLayout(scan_layout)
         left_panel.addWidget(scan_group)
 
@@ -428,10 +172,10 @@ class MainWindow(QMainWindow):
         self.add_camera_btn = QPushButton("+ افزودن دوربین تکی")
         self.add_camera_btn.clicked.connect(lambda: self.open_add_camera_dialog())
         self.add_nvr_btn = QPushButton("+ افزودن NVR")
-        # نکته: چون open_add_nvr_dialog اکنون آرگومان‌های اختیاری بیشتری
+        # نکته: چون open_add_nvr_dialog اکنون یک آرگومان اختیاری (prefill_ip)
         # دارد، باید مثل add_camera_btn از طریق lambda وصل شود؛ در غیر این
         # صورت PyQt مقدار bool سیگنال clicked(checked) را به‌جای None به
-        # اولین آرگومان پاس می‌دهد.
+        # prefill_ip پاس می‌دهد و IP به‌اشتباه با True/False پر می‌شود.
         self.add_nvr_btn.clicked.connect(lambda: self.open_add_nvr_dialog())
         add_btn_row.addWidget(self.add_camera_btn)
         add_btn_row.addWidget(self.add_nvr_btn)
@@ -460,68 +204,31 @@ class MainWindow(QMainWindow):
         left_panel.addWidget(face_group)
         left_panel.addStretch()
 
-        # پنل میانی: دیوار نمایش چند-دوربینه با تعداد پنجره‌ی قابل‌انتخاب
-        center_widget = QWidget()
-        center_panel = QVBoxLayout(center_widget)
-        center_panel.setContentsMargins(0, 0, 0, 0)
+        # پنل راست: تب‌های پخش زنده هر دوربین
+        right_panel = QVBoxLayout()
         self.alert_banner = QLabel("")
         self.alert_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.alert_banner.setFixedHeight(28)
         self.alert_banner.setStyleSheet("font-weight: bold;")
+        self.tabs = QTabWidget()
+        self.tabs.setTabsClosable(True)
+        self.tabs.tabCloseRequested.connect(self.close_camera_tab)
+        right_panel.addWidget(self.alert_banner)
+        right_panel.addWidget(self.tabs)
 
-        grid_controls = QHBoxLayout()
-        grid_controls.addWidget(QLabel("تعداد پنجره نمایش هم‌زمان:"))
-        self.window_count_combo = QComboBox()
-        for n in sorted(GRID_LAYOUTS):
-            self.window_count_combo.addItem(str(n), n)
-        self.window_count_combo.setCurrentIndex(sorted(GRID_LAYOUTS).index(4))
-        self.window_count_combo.currentIndexChanged.connect(self._on_window_count_changed)
-        grid_controls.addWidget(self.window_count_combo)
-        grid_controls.addStretch()
+        main_layout.addLayout(left_panel, 1)
+        main_layout.addLayout(right_panel, 3)
 
-        self.camera_grid = CameraGridWidget(self.face_engine, self.log_face_event)
-        self.camera_grid.set_window_count(self.window_count_combo.currentData())
-        grid_scroll = QScrollArea()
-        grid_scroll.setWidgetResizable(True)
-        grid_scroll.setWidget(self.camera_grid)
+        # لاگ رویدادها (شناسایی چهره‌های شناخته‌شده/ناشناس)
+        log_group = QGroupBox("رویدادهای شناسایی چهره")
+        log_layout = QVBoxLayout()
+        self.event_log = QListWidget()
+        self.event_log.setMaximumHeight(140)
+        log_layout.addWidget(self.event_log)
+        log_group.setLayout(log_layout)
 
-        center_panel.addWidget(self.alert_banner)
-        center_panel.addLayout(grid_controls)
-        center_panel.addWidget(grid_scroll, 1)
-
-        # پنل راست: ستون چهره‌های شناسایی‌شده (تعریف‌شده یا تعریف‌نشده)
-        right_widget = QWidget()
-        right_panel = QVBoxLayout(right_widget)
-        right_panel.setContentsMargins(0, 0, 0, 0)
-        detected_group = QGroupBox("چهره‌های شناسایی‌شده")
-        detected_layout = QVBoxLayout()
-        self.detected_faces_list = QListWidget()
-        self.detected_faces_list.setIconSize(QSize(64, 64))
-        self.detected_faces_list.setWordWrap(True)
-        detected_hint = QLabel("تصویر افرادی که در هر پنجره‌ی پخش زنده شناسایی می‌شوند (تعریف‌شده یا تعریف‌نشده) اینجا نمایش داده می‌شود.")
-        detected_hint.setWordWrap(True)
-        detected_hint.setStyleSheet("color: #888; font-size: 10px;")
-        detected_layout.addWidget(detected_hint)
-        detected_layout.addWidget(self.detected_faces_list)
-        detected_group.setLayout(detected_layout)
-        right_panel.addWidget(detected_group)
-
-        self.main_splitter.addWidget(left_widget)
-        self.main_splitter.addWidget(center_widget)
-        self.main_splitter.addWidget(right_widget)
-        # نسبت اولیه‌ی عرض پنل‌ها (چپ:وسط:راست) معادل همان ضریب کشش قبلی
-        # (2:5:2)؛ از این‌جا به بعد کاربر با درگ‌کردن مرزها آن را تغییر می‌دهد.
-        self.main_splitter.setSizes([260, 650, 260])
-        self.main_splitter.setStretchFactor(0, 2)
-        self.main_splitter.setStretchFactor(1, 5)
-        self.main_splitter.setStretchFactor(2, 2)
-
-        # رفع درخواست: پنل جداگانه‌ی «رویدادهای شناسایی چهره» (لاگ متنی خام
-        # زیر صفحه) حذف شد؛ چون هر رویداد همان لحظه هم به‌صورت یک آیتم با
-        # تصویر واقعی چهره در پنل «چهره‌های شناسایی‌شده» (ستون راست) اضافه
-        # می‌شود، آن لاگ متنی صرفاً همان اطلاعات را دوباره و بدون تصویر نشان
-        # می‌داد. اکنون فقط همان پنل «چهره‌های شناسایی‌شده» باقی مانده است.
-        outer_layout.addWidget(self.main_splitter)
+        outer_layout.addLayout(main_layout)
+        outer_layout.addWidget(log_group)
 
         main_widget.setLayout(outer_layout)
         self.setCentralWidget(main_widget)
@@ -529,12 +236,6 @@ class MainWindow(QMainWindow):
         self._banner_timer = QTimer(self)
         self._banner_timer.setSingleShot(True)
         self._banner_timer.timeout.connect(lambda: self.alert_banner.setText(""))
-
-    # -------------------------------------------------------- window grid ---
-
-    def _on_window_count_changed(self, _index):
-        n = self.window_count_combo.currentData()
-        self.camera_grid.set_window_count(n)
 
     # ------------------------------------------------------- camera list ---
 
@@ -559,20 +260,10 @@ class MainWindow(QMainWindow):
             cam_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "camera", "id": cam["id"]})
             self.camera_list.addTopLevelItem(cam_item)
 
-    def open_add_camera_dialog(self, prefill_ip=None, detected_path=None, detected_full_url=None,
-                                prefill_user=None, prefill_pass=None, prefill_port=None):
+    def open_add_camera_dialog(self, prefill_ip=None, detected_path=None, detected_full_url=None):
         dialog = AddCameraDialog(self)
         if prefill_ip:
             dialog.ip_input.setText(prefill_ip)
-        if prefill_user:
-            dialog.user_input.setText(prefill_user)
-        if prefill_pass:
-            dialog.pass_input.setText(prefill_pass)
-        if prefill_port:
-            # پورت RTSP واقعی‌ای که تشخیص خودکار (device_detect.py) پیدا کرده؛
-            # رجوع کنید به توضیح COMMON_RTSP_PORT_FALLBACKS در آن فایل - خیلی
-            # از NVR/دوربین‌ها روی پورتی غیر از پیش‌فرض 554 هستند.
-            dialog.port_input.setText(str(prefill_port))
         if detected_path is not None or detected_full_url is not None:
             dialog.set_detected_stream(path=detected_path, full_url=detected_full_url)
         if dialog.exec():
@@ -583,21 +274,10 @@ class MainWindow(QMainWindow):
             )
             self.reload_camera_list()
 
-    def open_add_nvr_dialog(self, prefill_ip=None, detected_brand=None, detected_onvif_port=None,
-                             prefill_user=None, prefill_pass=None, prefill_rtsp_port=None):
+    def open_add_nvr_dialog(self, prefill_ip=None, detected_brand=None, detected_onvif_port=None):
         dialog = AddNVRDialog(self)
         if prefill_ip:
             dialog.ip_input.setText(prefill_ip)
-        if prefill_user:
-            dialog.user_input.setText(prefill_user)
-        if prefill_pass:
-            dialog.pass_input.setText(prefill_pass)
-        if prefill_rtsp_port:
-            # پورت RTSP واقعی‌ای که تشخیص خودکار پیدا کرده؛ باید *قبل* از
-            # set_detected_brand تنظیم شود چون آن متد بلافاصله اسکن کانال‌ها
-            # را با مقدار فعلی این فیلد شروع می‌کند - در غیر این صورت اسکن
-            # دوباره با پورت پیش‌فرض غلط (554) انجام می‌شد.
-            dialog.rtsp_port_input.setText(str(prefill_rtsp_port))
         if detected_brand:
             dialog.set_detected_brand(brand=detected_brand, onvif_port=detected_onvif_port)
         if dialog.exec():
@@ -614,7 +294,6 @@ class MainWindow(QMainWindow):
                 self, "NVR اضافه شد",
                 f"NVR «{nvr['name']}» با {len(dialog.get_selected_channels())} کانال اضافه شد."
             )
-
 
     def _add_channel_from_entry(self, nvr, entry, default_name):
         if entry["is_full_url"]:
@@ -660,8 +339,6 @@ class MainWindow(QMainWindow):
             self, "تأیید حذف", "آیا از حذف این NVR و همه‌ی کانال‌های ثبت‌شده‌ی آن مطمئن هستید؟"
         )
         if confirm == QMessageBox.StandardButton.Yes:
-            for cam in self.camera_store.cameras_for_nvr(nvr_id):
-                self.camera_grid.close_camera(cam["id"])
             self.camera_store.remove_nvr(nvr_id, cascade=True)
             self.reload_camera_list()
 
@@ -702,7 +379,6 @@ class MainWindow(QMainWindow):
     def delete_camera(self, cam_id):
         confirm = QMessageBox.question(self, "تأیید حذف", "آیا از حذف این دوربین از لیست مطمئن هستید؟")
         if confirm == QMessageBox.StandardButton.Yes:
-            self.camera_grid.close_camera(cam_id)
             self.camera_store.remove_camera(cam_id)
             self.reload_camera_list()
 
@@ -712,7 +388,140 @@ class MainWindow(QMainWindow):
             return
         cam = self.camera_store.get_camera(data["id"])
         if cam:
-            self.open_live_view(cam)
+            self.open_live_tab(cam)
+
+    def on_scan_result_selected(self, item):
+        text = item.text()
+        if " " not in text:
+            return
+        ip = text.split(" ")[0]
+
+        if self.detect_thread is not None and self.detect_thread.isRunning():
+            return  # یک تشخیص در حال اجراست؛ منتظر پایان آن بمانیم.
+
+        # دابل‌کلیک یعنی فقط همین یک دستگاه (صف خالی است).
+        self._detect_queue = []
+        self._start_device_detect(ip)
+
+    def on_add_selected_scan_results(self):
+        """رفع درخواست: چند نتیجه‌ی اسکن هم‌زمان انتخاب و پشت‌سرهم اضافه شوند.
+        چون هر تشخیص (و در ادامه‌ی آن، دیالوگ افزودن دوربین/NVR) نیاز به
+        تعامل کاربر دارد، دستگاه‌ها یکی‌یکی (نه هم‌زمان) پردازش می‌شوند: بعد
+        از بسته‌شدن دیالوگ مربوط به هر دستگاه، خودکار سراغ دستگاه بعدی در صف
+        می‌رود."""
+        if self.detect_thread is not None and self.detect_thread.isRunning():
+            return
+
+        ips = []
+        for item in self.scan_result_list.selectedItems():
+            text = item.text()
+            if " " not in text:
+                continue
+            ip = text.split(" ")[0]
+            if ip not in ips:
+                ips.append(ip)
+
+        if not ips:
+            QMessageBox.information(
+                self, "موردی انتخاب نشده",
+                "ابتدا با Ctrl/Shift یک یا چند دستگاه را از لیست نتایج اسکن انتخاب کنید."
+            )
+            return
+
+        self._detect_queue = ips[1:]
+        self._start_device_detect(ips[0])
+
+    def _start_device_detect(self, ip):
+        # رفع درخواست: دیگر از کاربر «دوربین تکی یا NVR؟» پرسیده نمی‌شود؛
+        # DeviceDetectThread با یک اتصال آزمایشی (ONVIF یا تست کانال‌ها)
+        # خودش نوع دستگاه را تشخیص می‌دهد - رجوع کنید به device_detect.py.
+        self._detect_ip = ip
+        self.scan_result_list.setEnabled(False)
+        self.add_selected_scan_btn.setEnabled(False)
+        self.detect_status_label.setText(f"در حال تشخیص نوع دستگاه {ip}...")
+
+        self.detect_thread = DeviceDetectThread(
+            ip=ip,
+            open_ports=self._scan_ports_by_ip.get(ip, []),
+            rtsp_port="554",
+            user="admin",
+            pwd="",
+            parent=self,
+        )
+        self.detect_thread.progress_signal.connect(self.detect_status_label.setText)
+        self.detect_thread.detected_signal.connect(self._on_device_detected)
+        self.detect_thread.failed_signal.connect(self._on_device_detect_failed)
+        self.detect_thread.start()
+
+    def _reset_detect_ui(self):
+        self.scan_result_list.setEnabled(True)
+        self.detect_status_label.setText("")
+
+    def _advance_detect_queue(self):
+        """بعد از بسته‌شدن دیالوگ دستگاه فعلی، اگر مورد دیگری در صفِ انتخاب
+        چندتایی باقی مانده، تشخیص آن را شروع می‌کند."""
+        if self._detect_queue:
+            next_ip = self._detect_queue.pop(0)
+            self._start_device_detect(next_ip)
+        else:
+            self.add_selected_scan_btn.setEnabled(True)
+
+    def _on_device_detected(self, kind, payload):
+        ip = self._detect_ip
+        self._reset_detect_ui()
+        if kind == "nvr":
+            self.open_add_nvr_dialog(
+                prefill_ip=ip,
+                detected_brand=payload.get("brand"),
+                detected_onvif_port=payload.get("onvif_port"),
+            )
+        else:
+            self.open_add_camera_dialog(
+                prefill_ip=ip,
+                detected_path=payload.get("path"),
+                detected_full_url=payload.get("full_url"),
+            )
+        self._advance_detect_queue()
+
+    def _on_device_detect_failed(self, msg):
+        ip = self._detect_ip
+        self._reset_detect_ui()
+
+        # تشخیص خودکار با نام کاربری/رمز پیش‌فرض (admin/بدون رمز) ممکن است روی
+        # دستگاه‌هایی با اطلاعات ورود سفارشی شکست بخورد؛ در این حالت کاربر
+        # می‌تواند به‌صورت دستی و با وارد کردن رمز درست، نوع دستگاه را انتخاب کند.
+        box = QMessageBox(self)
+        box.setWindowTitle("تشخیص خودکار ناموفق بود")
+        box.setText(f"{msg}\n\nنوع دستگاه {ip} را به‌صورت دستی مشخص کنید:")
+        camera_btn = box.addButton("دوربین تکی", QMessageBox.ButtonRole.AcceptRole)
+        nvr_btn = box.addButton("NVR (چند کاناله)", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("انصراف", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+
+        if box.clickedButton() == camera_btn:
+            self.open_add_camera_dialog(prefill_ip=ip)
+        elif box.clickedButton() == nvr_btn:
+            self.open_add_nvr_dialog(prefill_ip=ip)
+        self._advance_detect_queue()
+
+    # ------------------------------------------------------------ tabs ----
+
+    def open_live_tab(self, cam: dict):
+        # اگر همین دوربین از قبل باز است، فقط به آن تب سوییچ کن.
+        for i in range(self.tabs.count()):
+            widget = self.tabs.widget(i)
+            if isinstance(widget, CameraTabWidget) and widget.cam["id"] == cam["id"]:
+                self.tabs.setCurrentIndex(i)
+                return
+
+        if not self._ensure_password(cam):
+            return  # کاربر از وارد کردن رمز صرف‌نظر کرد
+
+        tab = CameraTabWidget(cam, self.face_engine)
+        index = self.tabs.addTab(tab, cam["name"])
+        self.tabs.setCurrentIndex(index)
+        rtsp_url = self.camera_store.build_rtsp_url(cam)
+        tab.start(rtsp_url, self.log_face_event)
 
     def _ensure_password(self, cam: dict) -> bool:
         """رفع درخواست امنیتی: رمزهای عبور دیگر روی دیسک ذخیره نمی‌شوند
@@ -746,8 +555,17 @@ class MainWindow(QMainWindow):
                 sibling["pass"] = pwd
         return True
 
+    def close_camera_tab(self, index):
+        widget = self.tabs.widget(index)
+        if isinstance(widget, CameraTabWidget):
+            widget.stop()
+        self.tabs.removeTab(index)
+
     def get_active_camera_frame(self):
-        return self.camera_grid.get_active_camera_frame()
+        widget = self.tabs.currentWidget()
+        if isinstance(widget, CameraTabWidget):
+            return widget.latest_raw_frame
+        return None
 
     # ------------------------------------------------------ face library ---
 
@@ -755,47 +573,18 @@ class MainWindow(QMainWindow):
         dialog = FaceLibraryDialog(self.face_engine, self.get_active_camera_frame, self)
         dialog.exec()
 
-    @staticmethod
-    def _face_image_to_icon(face_img):
-        """تبدیل برش تصویر چهره (BGR ndarray) به QIcon برای نمایش در ستون
-        «چهره‌های شناسایی‌شده». اگر برشی موجود نباشد (مثلاً تشخیص محل دقیق چهره
-        ممکن نشده)، None برمی‌گرداند تا آیتم بدون آیکون (فقط متن) نمایش داده شود."""
-        if face_img is None or face_img.size == 0:
-            return None
-        try:
-            rgb = cv2.cvtColor(face_img, cv2.COLOR_BGR2RGB)
-            h, w, ch = rgb.shape
-            qt_img = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
-            return QIcon(QPixmap.fromImage(qt_img))
-        except Exception:
-            return None
-
-    def log_face_event(self, kind, camera_name, person, face_img=None):
+    def log_face_event(self, kind, camera_name, person):
         timestamp = time.strftime("%H:%M:%S")
         if kind == "known":
-            person_name = person.get("name", "") if person else ""
-            text = f"[{timestamp}] {camera_name}: چهره شناسایی شد - {person_name}"
+            text = f"[{timestamp}] {camera_name}: چهره شناسایی شد - {person.get('name', '')}"
             self.alert_banner.setStyleSheet("font-weight: bold; color: #2ecc71;")
-            face_item_text = f"{person_name}\n{camera_name} - {timestamp}"
         else:
             text = f"[{timestamp}] {camera_name}: ⚠ چهره تعریف نشده شناسایی شد!"
             self.alert_banner.setStyleSheet("font-weight: bold; color: #e74c3c;")
-            face_item_text = f"⚠ چهره تعریف نشده\n{camera_name} - {timestamp}"
 
+        self.event_log.insertItem(0, text)
         self.alert_banner.setText(text)
         self._banner_timer.start(5000)
-
-        # ستون سمت راست: تصویر خودِ شخص شناسایی‌شده (تعریف‌شده یا تعریف‌نشده).
-        face_item = QListWidgetItem(face_item_text)
-        icon = self._face_image_to_icon(face_img)
-        if icon is not None:
-            face_item.setIcon(icon)
-        if kind == "unknown":
-            face_item.setForeground(Qt.GlobalColor.red)
-        self.detected_faces_list.insertItem(0, face_item)
-        # جلوگیری از رشد بی‌حد لیست در یک نشست طولانی.
-        while self.detected_faces_list.count() > 300:
-            self.detected_faces_list.takeItem(self.detected_faces_list.count() - 1)
 
     # ------------------------------------------------------------- scan ---
 
@@ -826,27 +615,15 @@ class MainWindow(QMainWindow):
         for dev in devices:
             self._scan_ports_by_ip[dev["ip"]] = dev["ports"]
             ports_str = ",".join(map(str, dev["ports"]))
-            item = QListWidgetItem(f"{dev['ip']} (پورت‌ها: {ports_str})")
-            # رفع درخواست: به‌جای انتخاب چندتایی با Ctrl/Shift، هر ردیف یک
-            # تیک (checkbox) دارد.
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Unchecked)
-            self.scan_result_list.addItem(item)
-
-    def _set_all_scan_checked(self, checked):
-        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
-        for i in range(self.scan_result_list.count()):
-            item = self.scan_result_list.item(i)
-            if item.flags() & Qt.ItemFlag.ItemIsUserCheckable:
-                item.setCheckState(state)
-
-    def _scan_credentials(self):
-        return self.scan_user_input.text().strip() or "admin", self.scan_pass_input.text()
+            self.scan_result_list.addItem(f"{dev['ip']} (پورت‌ها: {ports_str})")
 
     # ------------------------------------------------------------ close ---
 
     def closeEvent(self, event):
-        self.camera_grid.stop_all()
+        for i in range(self.tabs.count()):
+            widget = self.tabs.widget(i)
+            if isinstance(widget, CameraTabWidget):
+                widget.stop()
         # جلوگیری از کرش هنگام بستن برنامه در حین اسکن شبکه/تشخیص نوع دستگاه:
         # Qt هنگام تخریب یک QThread که هنوز در حال اجراست، کرش می‌کند.
         if self.network_scan_thread is not None and self.network_scan_thread.isRunning():
@@ -861,168 +638,6 @@ class MainWindow(QMainWindow):
         # خواهند شد.
         self.camera_store.clear_all_passwords()
         event.accept()
-
-    # ------------------------------------------------------------ tabs ----
-
-    def open_live_view(self, cam: dict):
-        if not self._ensure_password(cam):
-            return  # کاربر از وارد کردن رمز صرف‌نظر کرد
-
-        rtsp_url = self.camera_store.build_rtsp_url(cam)
-        if not self.camera_grid.assign_camera(cam, rtsp_url):
-            QMessageBox.information(
-                self, "پنجره‌ی خالی وجود ندارد",
-                "همه‌ی پنجره‌های نمایش پر هستند. یکی از پنجره‌ها را ببندید (✕) یا "
-                "روی یک پنجره‌ی خالی کلیک کنید تا آن به‌عنوان مقصد انتخاب شود، یا "
-                "تعداد پنجره‌های نمایش هم‌زمان را افزایش دهید."
-            )
-
-    def on_scan_result_selected(self, item):
-        text = item.text()
-        if " " not in text:
-            return
-        ip = text.split(" ")[0]
-
-        if self.detect_thread is not None and self.detect_thread.isRunning():
-            return  # یک تشخیص در حال اجراست؛ منتظر پایان آن بمانیم.
-
-        # دابل‌کلیک یعنی فقط همین یک دستگاه (صف خالی است).
-        self._detect_queue = []
-        self._start_device_detect(ip)
-
-    def on_add_selected_scan_results(self):
-        """رفع درخواست: چند نتیجه‌ی اسکن هم‌زمان (با تیک زدن) انتخاب و
-        پشت‌سرهم اضافه شوند. چون هر تشخیص (و در ادامه‌ی آن، دیالوگ افزودن
-        دوربین/NVR) نیاز به تعامل کاربر دارد، دستگاه‌ها یکی‌یکی (نه هم‌زمان)
-        پردازش می‌شوند: بعد از بسته‌شدن دیالوگ مربوط به هر دستگاه، خودکار سراغ
-        دستگاه بعدی در صف می‌رود."""
-        if self.detect_thread is not None and self.detect_thread.isRunning():
-            return
-
-        ips = []
-        for i in range(self.scan_result_list.count()):
-            item = self.scan_result_list.item(i)
-            if not (item.flags() & Qt.ItemFlag.ItemIsUserCheckable):
-                continue
-            if item.checkState() != Qt.CheckState.Checked:
-                continue
-            text = item.text()
-            if " " not in text:
-                continue
-            ip = text.split(" ")[0]
-            if ip not in ips:
-                ips.append(ip)
-
-        if not ips:
-            QMessageBox.information(
-                self, "موردی تیک نخورده",
-                "ابتدا تیک دستگاه‌(های) موردنظر را از لیست نتایج اسکن بزنید."
-            )
-            return
-
-        self._detect_queue = ips[1:]
-        self._start_device_detect(ips[0])
-
-    def _start_device_detect(self, ip):
-        # رفع درخواست: دیگر از کاربر «دوربین تکی یا NVR؟» پرسیده نمی‌شود؛
-        # DeviceDetectThread با یک اتصال آزمایشی (ONVIF یا تست کانال‌ها)
-        # خودش نوع دستگاه را تشخیص می‌دهد - رجوع کنید به device_detect.py.
-        # رفع مشکل «تشخیص NVR»: قبلاً این اتصال آزمایشی همیشه با admin/بدون-رمز
-        # انجام می‌شد؛ حالا از یوزرنیم/پسورد وارد شده در بالای پنل اسکن استفاده
-        # می‌شود تا روی دستگاه‌هایی با اطلاعات ورود سفارشی هم درست کار کند.
-        self._detect_ip = ip
-        self.scan_result_list.setEnabled(False)
-        self.add_selected_scan_btn.setEnabled(False)
-        self.cancel_detect_btn.setVisible(True)
-        self.cancel_detect_btn.setEnabled(True)
-        self.detect_status_label.setText(f"در حال تشخیص نوع دستگاه {ip}...")
-
-        user, pwd = self._scan_credentials()
-        self.detect_thread = DeviceDetectThread(
-            ip=ip,
-            open_ports=self._scan_ports_by_ip.get(ip, []),
-            rtsp_port="554",
-            user=user,
-            pwd=pwd,
-            parent=self,
-        )
-        self.detect_thread.progress_signal.connect(self.detect_status_label.setText)
-        self.detect_thread.detected_signal.connect(self._on_device_detected)
-        self.detect_thread.failed_signal.connect(self._on_device_detect_failed)
-        self.detect_thread.start()
-
-    def _reset_detect_ui(self):
-        self.scan_result_list.setEnabled(True)
-        self.detect_status_label.setText("")
-        self.cancel_detect_btn.setVisible(False)
-
-    def _cancel_detection(self):
-        """رفع درخواست «برنامه قفل می‌کند»: کاربر می‌تواند در هر لحظه از
-        تشخیص خودکار (و کل صف باقی‌مانده‌ی افزودن چندتایی) صرف‌نظر کند، به‌جای
-        اینکه مجبور به انتظار تا پایان طبیعی/ناموفق آن باشد."""
-        self.cancel_detect_btn.setEnabled(False)
-        if self.detect_thread is not None and self.detect_thread.isRunning():
-            self.detect_thread.cancel()
-            self.detect_status_label.setText("در حال لغو...")
-            self.detect_thread.wait(3000)
-        self._detect_queue = []
-        self._reset_detect_ui()
-        self.add_selected_scan_btn.setEnabled(True)
-
-    def _advance_detect_queue(self):
-        """بعد از بسته‌شدن دیالوگ دستگاه فعلی، اگر مورد دیگری در صفِ انتخاب
-        چندتایی باقی مانده، تشخیص آن را شروع می‌کند."""
-        if self._detect_queue:
-            next_ip = self._detect_queue.pop(0)
-            self._start_device_detect(next_ip)
-        else:
-            self.add_selected_scan_btn.setEnabled(True)
-
-    def _on_device_detected(self, kind, payload):
-        ip = self._detect_ip
-        self._reset_detect_ui()
-        user, pwd = self._scan_credentials()
-        if kind == "nvr":
-            self.open_add_nvr_dialog(
-                prefill_ip=ip,
-                detected_brand=payload.get("brand"),
-                detected_onvif_port=payload.get("onvif_port"),
-                prefill_user=user,
-                prefill_pass=pwd,
-                prefill_rtsp_port=payload.get("rtsp_port"),
-            )
-        else:
-            self.open_add_camera_dialog(
-                prefill_ip=ip,
-                detected_path=payload.get("path"),
-                detected_full_url=payload.get("full_url"),
-                prefill_user=user,
-                prefill_pass=pwd,
-                prefill_port=payload.get("rtsp_port"),
-            )
-        self._advance_detect_queue()
-
-    def _on_device_detect_failed(self, msg):
-        ip = self._detect_ip
-        self._reset_detect_ui()
-        user, pwd = self._scan_credentials()
-
-        # تشخیص خودکار با نام کاربری/رمز واردشده ممکن است روی دستگاه‌هایی با
-        # اطلاعات ورود متفاوت شکست بخورد؛ در این حالت کاربر می‌تواند به‌صورت
-        # دستی و با وارد کردن رمز درست، نوع دستگاه را انتخاب کند.
-        box = QMessageBox(self)
-        box.setWindowTitle("تشخیص خودکار ناموفق بود")
-        box.setText(f"{msg}\n\nنوع دستگاه {ip} را به‌صورت دستی مشخص کنید:")
-        camera_btn = box.addButton("دوربین تکی", QMessageBox.ButtonRole.AcceptRole)
-        nvr_btn = box.addButton("NVR (چند کاناله)", QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("انصراف", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-
-        if box.clickedButton() == camera_btn:
-            self.open_add_camera_dialog(prefill_ip=ip, prefill_user=user, prefill_pass=pwd)
-        elif box.clickedButton() == nvr_btn:
-            self.open_add_nvr_dialog(prefill_ip=ip, prefill_user=user, prefill_pass=pwd)
-        self._advance_detect_queue()
 
 
 if __name__ == "__main__":

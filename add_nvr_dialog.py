@@ -140,18 +140,9 @@ class AddNVRDialog(QDialog):
         )
         self.scan_thread.progress_signal.connect(self.status_label.setText)
         self.scan_thread.channel_found_signal.connect(self._on_channel_found)
-        self.scan_thread.port_detected_signal.connect(self._on_port_detected)
         self.scan_thread.finished_signal.connect(self._on_scan_finished)
         self.scan_thread.failed_signal.connect(self._on_scan_failed)
         self.scan_thread.start()
-
-    def _on_port_detected(self, port):
-        # رفع باگ «کانال‌ها پیدا می‌شوند اما بعداً پخش نمی‌شوند»: کانال‌ها روی
-        # پورتی غیر از مقدار فعلی این فیلد پیدا شده‌اند (fallback)؛ فیلد را با
-        # همان پورت واقعی هماهنگ می‌کنیم تا هنگام ذخیره‌ی NVR (get_nvr_data)،
-        # پورت درست ثبت شود - چون همه‌ی کانال‌های یک NVR از همین یک فیلد
-        # پورت مشترک استفاده می‌کنند (رجوع کنید به camera_store.add_channel_camera).
-        self.rtsp_port_input.setText(port)
 
     def _on_channel_found(self, channel, name, path_or_url):
         is_full_url = path_or_url.startswith("rtsp://")
