@@ -650,12 +650,19 @@ class MainWindow(QMainWindow):
         splitter.addWidget(left_widget)
         splitter.addWidget(grid_widget)
         splitter.addWidget(face_panel_group)
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 5)
+        # رفع درخواست: عرض ستون سمت چپ (اسکن شبکه، دوربین‌ها و NVRهای من،
+        # Face Library) باید نصف اندازه‌ی قبلی‌اش باشد تا فضای بیشتری به
+        # تصویر دوربین‌ها در وسط برسد؛ پنل سمت راست (تشخیص چهره) بدون تغییر
+        # باقی می‌ماند. قبلاً هر سه ستون با نسبت 2:5:2 (از 9 سهم) شروع می‌شدند؛
+        # با نصف کردن سهم چپ (2 -> 1) و اضافه شدن همان یک سهم آزادشده به ستون
+        # وسط، نسبت جدید 1:6:2 می‌شود.
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 6)
         splitter.setStretchFactor(2, 2)
         total_w = max(self.width(), 1500)
-        left_w = total_w * 2 // 9
-        splitter.setSizes([left_w, total_w - 2 * left_w, left_w])
+        right_w = total_w * 2 // 9        # عرض قبلی/بدون‌تغییرِ پنل راست
+        left_w = right_w // 2              # نصف عرض قبلی برای پنل چپ
+        splitter.setSizes([left_w, total_w - left_w - right_w, right_w])
 
         main_layout.addWidget(splitter)
 
@@ -744,6 +751,7 @@ class MainWindow(QMainWindow):
                 name=data["name"], ip=data["ip"], rtsp_port=data["rtsp_port"],
                 onvif_port=data["onvif_port"], user=data["user"],
                 pwd=data["pass"], brand=data["brand"],
+                camera_brand=data["camera_brand"],
             )
             added_cams = [
                 self._add_channel_from_entry(nvr, entry, default_name)
@@ -785,6 +793,9 @@ class MainWindow(QMainWindow):
         idx = dialog.brand_combo.findData(nvr.get("brand", "auto"))
         if idx >= 0:
             dialog.brand_combo.setCurrentIndex(idx)
+        cam_brand_idx = dialog.camera_brand_combo.findData(nvr.get("camera_brand", "auto"))
+        if cam_brand_idx >= 0:
+            dialog.camera_brand_combo.setCurrentIndex(cam_brand_idx)
 
         if dialog.exec():
             data = dialog.get_nvr_data()

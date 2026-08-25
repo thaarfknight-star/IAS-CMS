@@ -158,7 +158,8 @@ class NVRScanThread(QThread):
     finished_signal = pyqtSignal(int)                  # تعداد کل کانال‌های یافت‌شده
     failed_signal = pyqtSignal(str)
 
-    def __init__(self, ip, rtsp_port, onvif_port, user, pwd, brand="auto", max_channels=16, parent=None):
+    def __init__(self, ip, rtsp_port, onvif_port, user, pwd, brand="auto",
+                 camera_brand="auto", max_channels=16, parent=None):
         super().__init__(parent)
         self.ip = ip
         self.rtsp_port = rtsp_port
@@ -166,6 +167,17 @@ class NVRScanThread(QThread):
         self.user = user
         self.pwd = pwd
         self.brand = brand
+        # رفع درخواست: علاوه بر برند خود دستگاه NVR، برند دوربین‌های متصل به
+        # آن هم به‌عنوان معیار جستجوی الگوی URL هر کانال در نظر گرفته می‌شود
+        # (دقیقاً مثل بخش تشخیص خودکار مسیر یک دوربین تکی در add_camera_dialog.py).
+        # چرا لازم است: برند NVR فقط تعیین‌کننده‌ی نرم‌افزار/رابط خود NVR است؛
+        # در عمل خیلی از NVRها (به‌خصوص مدل‌های عمومی/OEM) از دوربین‌های
+        # برندهای دیگر هم پشتیبانی می‌کنند و مسیر واقعی استریم هر کانال از
+        # الگوی برند *دوربین* متصل پیروی می‌کند، نه لزوماً برند NVR. قبلاً فقط
+        # الگوهای برند NVR (یا در حالت "auto" همه‌ی الگوها) امتحان می‌شد و اگر
+        # دوربین‌های متصل برند دیگری داشتند، کانال‌ها اشتباهاً «یافت نشد»
+        # گزارش می‌شدند.
+        self.camera_brand = camera_brand
         self.max_channels = max_channels
         self._is_cancelled = False
 
@@ -181,6 +193,30 @@ class NVRScanThread(QThread):
         # می‌کند، و هم چند بار تلاش می‌کند تا اولین کی‌فریم برسد (رفع false
         # negative که باعث «کانال هست ولی پیدا نمی‌شود» بود).
         return probe_stream(self._build_url(path))
+
+    def _resolve_brands_to_try(self):
+        """رفع درخواست: ترکیب برند NVR و برند دوربین‌های متصل به‌عنوان معیار
+        جستجوی الگوی هر کانال (رجوع کنید به توضیح camera_brand در __init__).
+
+        - اگر هر دو برند صراحتاً انتخاب شده باشند (نه "auto")، الگوهای هر دو
+          برند به‌ترتیب امتحان می‌شوند (بدون تکرار اگر یکسان باشند).
+        - اگر حداقل یکی از این دو روی "auto" باشد، الگوهای برند(های)
+          صراحتاً انتخاب‌شده ابتدا (اولویت) و سپس بقیه‌ی برندهای شناخته‌شده هم
+          امتحان می‌شوند تا هیچ کانال واقعی از قلم نیفتد.
+        """
+        all_brands = ["dahua_iap", "hikvision", "sunell", "generic"]
+
+        ordered = []
+        for b in (self.brand, self.camera_brand):
+            if b and b != "auto" and b not in ordered:
+                ordered.append(b)
+
+        if self.brand == "auto" or self.camera_brand == "auto":
+            for b in all_brands:
+                if b not in ordered:
+                    ordered.append(b)
+
+        return ordered or all_brands
 
     def _probe_channel(self, ch, brands_to_try):
         """یک کانال را با تمام الگوهای برندهای موردنظر تست می‌کند.
@@ -220,10 +256,9 @@ class NVRScanThread(QThread):
             return
 
         # ۲) روش جایگزین: تست الگوهای RTSP شناخته‌شده برای هر کانال، به‌صورت موازی.
-        if self.brand == "auto":
-            brands_to_try = ["dahua_iap", "hikvision", "sunell", "generic"]
-        else:
-            brands_to_try = [self.brand]
+        # الگوهای امتحان‌شده هم برند خود NVR و هم برند دوربین‌های متصل را
+        # پوشش می‌دهند (رجوع کنید به _resolve_brands_to_try).
+        brands_to_try = self._resolve_brands_to_try()
 
         self.progress_signal.emit(f"در حال بررسی {self.max_channels} کانال به‌صورت هم‌زمان...")
         channels = list(range(1, self.max_channels + 1))

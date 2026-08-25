@@ -34,6 +34,15 @@ class AddNVRDialog(QDialog):
         for key, label in BRAND_LABELS.items():
             self.brand_combo.addItem(label, key)
 
+        # رفع درخواست: علاوه بر برند خود دستگاه NVR، برند دوربین‌های متصل به
+        # آن هم به‌عنوان معیار جستجوی الگوی مسیر هر کانال قابل انتخاب است
+        # (دقیقاً مثل بخش تشخیص خودکار مسیر یک دوربین تکی) - چون در عمل ممکن
+        # است NVR یک برند باشد ولی دوربین‌های متصل به آن برند دیگری داشته
+        # باشند و مسیر واقعی استریم هر کانال از الگوی برند دوربین پیروی کند.
+        self.camera_brand_combo = QComboBox()
+        for key, label in BRAND_LABELS.items():
+            self.camera_brand_combo.addItem(label, key)
+
         self.max_channels_input = QSpinBox()
         self.max_channels_input.setRange(1, 128)
         self.max_channels_input.setValue(16)
@@ -46,6 +55,7 @@ class AddNVRDialog(QDialog):
         form.addRow("نام کاربری:", self.user_input)
         form.addRow("رمز عبور:", self.pass_input)
         form.addRow("برند NVR:", self.brand_combo)
+        form.addRow("برند دوربین‌های متصل:", self.camera_brand_combo)
         form.addRow("حداکثر تعداد کانال برای بررسی:", self.max_channels_input)
 
         self.scan_btn = QPushButton("جستجوی کانال‌های متصل")
@@ -136,6 +146,7 @@ class AddNVRDialog(QDialog):
             user=self.user_input.text().strip(),
             pwd=self.pass_input.text().strip(),
             brand=self.brand_combo.currentData(),
+            camera_brand=self.camera_brand_combo.currentData(),
             max_channels=self.max_channels_input.value(),
         )
         self.scan_thread.progress_signal.connect(self.status_label.setText)
@@ -247,6 +258,7 @@ class AddNVRDialog(QDialog):
             "user": self.user_input.text().strip(),
             "pass": self.pass_input.text().strip(),
             "brand": self.brand_combo.currentData(),
+            "camera_brand": self.camera_brand_combo.currentData(),
         }
 
     def get_selected_channels(self):
