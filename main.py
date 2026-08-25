@@ -8,10 +8,10 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QListWidget, QListWidgetItem, QMessageBox,
     QGroupBox, QMenu, QTreeWidget, QTreeWidgetItem, QInputDialog,
-    QGridLayout, QComboBox, QScrollArea, QSizePolicy
+    QGridLayout, QComboBox, QScrollArea, QSizePolicy, QSplitter
 )
-from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon, QDrag
+from PyQt6.QtCore import Qt, QSize, QMimeData
 
 from face_engine import FaceEngine
 from scanner import NetworkScanThread
@@ -65,7 +65,8 @@ class CameraSlotWidget(QWidget):
     یک دوربین را پخش کند. با کلیک انتخاب (highlight) می‌شود تا فریم زنده‌اش
     برای «ثبت چهره از تصویر زنده» در دسترس باشد."""
 
-    def __init__(self, on_clicked, on_close_requested, on_double_clicked=None, parent=None):
+    def __init__(self, on_clicked, on_close_requested, on_double_clicked=None,
+                 on_slot_drag_swap=None, on_camera_drag_drop=None, parent=None):
         super().__init__(parent)
         self.cam = None
         self.stream_thread = None
@@ -76,6 +77,15 @@ class CameraSlotWidget(QWidget):
         # رفع درخواست: با دابل‌کلیک روی تصویر دوربین، این خانه بزرگ‌نمایی
         # می‌شود و با دابل‌کلیک دوباره به اندازه‌ی قبل (چیدمان شبکه‌ای) برمی‌گردد.
         self._on_double_clicked = on_double_clicked
+        # رفع درخواست: امکان جابه‌جایی محل نمایش دوربین‌ها با درگ (Drag & Drop) -
+        # هم بین دو خانه‌ی شبکه (جابه‌جایی) و هم از لیست دوربین‌ها روی یک خانه
+        # (افزودن/جایگزینی). index این خانه در CameraGridWidget.set_grid_size
+        # مقداردهی می‌شود.
+        self._on_slot_drag_swap = on_slot_drag_swap
+        self._on_camera_drag_drop = on_camera_drag_drop
+        self.slot_index = None
+        self._drag_start_pos = None
+        self.setAcceptDrops(True)
 
         self.setMinimumSize(140, 110)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -103,6 +113,14 @@ class CameraSlotWidget(QWidget):
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video_label.setStyleSheet("background-color:#1e1e1e; color:#888888; border-radius:6px; font-size:10px;")
         self.video_label.setMinimumSize(100, 80)
+        # رفع باگ: وقتی یک QLabel با setPixmap() یک فریم بزرگ (مثلاً حالت
+        # بزرگ‌نمایی‌شده با دابل‌کلیک) نمایش می‌دهد، sizeHint/minimumSizeHint
+        # داخلی آن برابر همان اندازه‌ی بزرگ باقی می‌ماند و چیدمان (QGridLayout)
+        # دیگر اجازه نمی‌دهد این خانه پس از بازگشت به حالت شبکه‌ای، کوچک شود -
+        # همان مشکل «تصویر دوربین بعد از دابل‌کلیک دوم به اندازه‌ی قبل برنمی‌گردد».
+        # با Ignored، چیدمان این sizeHint را نادیده می‌گیرد و صرفاً فضای واقعی
+        # داده‌شده به خانه را ملاک قرار می‌دهد.
+        self.video_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
 
         outer.addLayout(header)
         outer.addWidget(self.status_label)
@@ -120,8 +138,33 @@ class CameraSlotWidget(QWidget):
         self._apply_frame_style()
 
     def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_start_pos = event.position().toPoint()
         self._on_clicked(self)
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        # رفع درخواست: با گرفتن و کشیدن (درگ) یک خانه‌ی دارای دوربین، محل
+        # نمایش آن با خانه‌ی مقصد جابه‌جا می‌شود (رجوع کنید به dropEvent و
+        # CameraGridWidget.swap_slots).
+        if (
+            self.cam is not None
+            and self._drag_start_pos is not None
+            and (event.buttons() & Qt.MouseButton.LeftButton)
+            and (event.position().toPoint() - self._drag_start_pos).manhattanLength()
+            >= QApplication.startDragDistance()
+        ):
+            drag = QDrag(self)
+            mime = QMimeData()
+            mime.setData("application/x-ias-slot-index", str(self.slot_index).encode("utf-8"))
+            drag.setMimeData(mime)
+            pixmap = self.video_label.pixmap()
+            if pixmap is not None and not pixmap.isNull():
+                drag.setPixmap(pixmap.scaled(96, 72, Qt.AspectRatioMode.KeepAspectRatio))
+            self._drag_start_pos = None
+            drag.exec(Qt.DropAction.MoveAction)
+            return
+        super().mouseMoveEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         # رفع درخواست: دابل‌کلیک روی تصویر دوربین، بزرگ/کوچک‌نمایی (toggle) را
@@ -129,6 +172,29 @@ class CameraSlotWidget(QWidget):
         if self._on_double_clicked is not None:
             self._on_double_clicked(self)
         super().mouseDoubleClickEvent(event)
+
+    # ------------------------------------------------------- drag & drop --
+
+    def dragEnterEvent(self, event):
+        md = event.mimeData()
+        if md.hasFormat("application/x-ias-slot-index") or md.hasFormat("application/x-ias-camera-id"):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        md = event.mimeData()
+        if md.hasFormat("application/x-ias-slot-index"):
+            try:
+                src_index = int(bytes(md.data("application/x-ias-slot-index")).decode("utf-8"))
+            except (TypeError, ValueError):
+                return
+            if self._on_slot_drag_swap is not None:
+                self._on_slot_drag_swap(src_index, self.slot_index)
+            event.acceptProposedAction()
+        elif md.hasFormat("application/x-ias-camera-id"):
+            cam_id = bytes(md.data("application/x-ias-camera-id")).decode("utf-8")
+            if self._on_camera_drag_drop is not None:
+                self._on_camera_drag_drop(cam_id, self.slot_index)
+            event.acceptProposedAction()
 
     # --------------------------------------------------------------- start -
 
@@ -185,10 +251,14 @@ class CameraGridWidget(QWidget):
     (1، 4، 9، 16، 32 یا 64). با تغییر تعداد، دوربین‌های از قبل باز تا حد
     امکان در چیدمان جدید حفظ می‌شوند."""
 
-    def __init__(self, face_engine: FaceEngine, on_face_event, parent=None):
+    def __init__(self, face_engine: FaceEngine, on_face_event, on_external_camera_drop=None, parent=None):
         super().__init__(parent)
         self.face_engine = face_engine
         self.on_face_event = on_face_event
+        # رفع درخواست: وقتی موردی از لیست دوربین‌ها (خارج از شبکه‌ی نمایش) روی
+        # یک خانه رها (drop) شود، این callback (در MainWindow) صدا زده می‌شود
+        # تا رمز عبور را در صورت نیاز بپرسد و آدرس RTSP را بسازد.
+        self.on_external_camera_drop = on_external_camera_drop
         self.slots = []
         self.selected_index = None
         # رفع درخواست: با دابل‌کلیک روی یک خانه، آن خانه تمام فضای شبکه را
@@ -230,8 +300,11 @@ class CameraGridWidget(QWidget):
         for r in range(rows):
             for c in range(cols):
                 slot = CameraSlotWidget(
-                    self._on_slot_clicked, self._on_slot_close_requested, self._on_slot_double_clicked
+                    self._on_slot_clicked, self._on_slot_close_requested, self._on_slot_double_clicked,
+                    on_slot_drag_swap=self._on_slot_drag_swap,
+                    on_camera_drag_drop=self._on_camera_drag_drop,
                 )
+                slot.slot_index = len(self.slots)
                 self._layout.addWidget(slot, r, c)
                 self.slots.append(slot)
                 self._slot_positions.append((r, c))
@@ -261,6 +334,60 @@ class CameraGridWidget(QWidget):
 
     def is_camera_open(self, cam_id) -> bool:
         return any(slot.cam is not None and slot.cam["id"] == cam_id for slot in self.slots)
+
+    def assign_camera_to_slot(self, cam: dict, rtsp_url: str, slot_index: int):
+        """رفع درخواست: دوربین را دقیقاً در خانه‌ی مشخص‌شده (مثلاً همان خانه‌ای
+        که کاربر آیتم را روی آن رها/drop کرده) باز می‌کند. اگر همان دوربین از
+        قبل در خانه‌ی دیگری باز است، به‌جای باز کردن یک اتصال تکراری، فقط
+        محل نمایش آن به خانه‌ی مقصد منتقل (جابه‌جا) می‌شود."""
+        if not (0 <= slot_index < len(self.slots)):
+            return
+        for i, slot in enumerate(self.slots):
+            if slot.cam is not None and slot.cam["id"] == cam["id"]:
+                if i != slot_index:
+                    self.swap_slots(i, slot_index)
+                self._select_index(slot_index)
+                return
+        target = self.slots[slot_index]
+        target.stop()
+        target.start(cam, rtsp_url, self.face_engine, self.on_face_event)
+        self._select_index(slot_index)
+
+    def swap_slots(self, idx_a: int, idx_b: int):
+        """رفع درخواست: جابه‌جا کردن محل نمایش دو خانه با درگ‌کردن. چون هر ترد
+        پخش (CameraStreamThread) مستقیماً به سیگنال‌های همان خانه وصل است، به
+        جای جابه‌جایی فیزیکی ویجت‌ها در چیدمان (که منطق بزرگ‌نمایی/بازگشت را
+        پیچیده می‌کرد)، محتوای دو خانه (دوربین + اتصال) با هم جابه‌جا می‌شود -
+        از دید کاربر دقیقاً همان «عوض شدن جای پنجره‌ی نمایش» است."""
+        if idx_a == idx_b or not (0 <= idx_a < len(self.slots)) or not (0 <= idx_b < len(self.slots)):
+            return
+        slot_a, slot_b = self.slots[idx_a], self.slots[idx_b]
+        if slot_a.cam is None and slot_b.cam is None:
+            return
+
+        cam_a = slot_a.cam
+        url_a = slot_a.stream_thread.rtsp_url if slot_a.stream_thread else None
+        cam_b = slot_b.cam
+        url_b = slot_b.stream_thread.rtsp_url if slot_b.stream_thread else None
+
+        slot_a.stop()
+        slot_b.stop()
+        if cam_b is not None:
+            slot_a.start(cam_b, url_b, self.face_engine, self.on_face_event)
+        if cam_a is not None:
+            slot_b.start(cam_a, url_a, self.face_engine, self.on_face_event)
+
+        if self.selected_index == idx_a:
+            self._select_index(idx_b)
+        elif self.selected_index == idx_b:
+            self._select_index(idx_a)
+
+    def _on_slot_drag_swap(self, src_index, dst_index):
+        self.swap_slots(src_index, dst_index)
+
+    def _on_camera_drag_drop(self, cam_id, dst_index):
+        if self.on_external_camera_drop is not None:
+            self.on_external_camera_drop(cam_id, dst_index)
 
     # --------------------------------------------------------- selection --
 
@@ -319,6 +446,31 @@ class CameraGridWidget(QWidget):
             slot.stop()
 
 
+class CameraTreeWidget(QTreeWidget):
+    """درخت «دوربین‌ها و NVRهای من» با پشتیبانی از Drag: رفع درخواست - کاربر
+    می‌تواند یک دوربین را از این لیست گرفته و روی خانه‌ی موردنظر در شبکه‌ی
+    نمایش رها (drop) کند تا همان‌جا باز شود. فقط آیتم‌های «دوربین» قابل درگ
+    هستند (نه گره‌های NVR که خودشان قابل پخش مستقیم نیستند)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QTreeWidget.DragDropMode.DragOnly)
+
+    def startDrag(self, supportedActions):
+        item = self.currentItem()
+        if item is None:
+            return
+        data = item.data(0, Qt.ItemDataRole.UserRole)
+        if not data or data.get("type") != "camera":
+            return
+        mime = QMimeData()
+        mime.setData("application/x-ias-camera-id", str(data["id"]).encode("utf-8"))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.CopyAction)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -342,6 +494,23 @@ class MainWindow(QMainWindow):
         main_layout = QHBoxLayout()
 
         left_panel = QVBoxLayout()
+
+        # رفع درخواست: کادر یوزرنیم/پسورد بالای پنل اسکن شبکه. این مقادیر فقط
+        # در حافظه نگه‌داشته می‌شوند (هیچ‌جا روی دیسک ذخیره نمی‌شوند) و برای
+        # اتصال به دستگاه‌های یافت‌شده در اسکن شبکه (چه برای تشخیص خودکار نوع
+        # دستگاه، چه برای پرشدن خودکار فیلد یوزرنیم/پسورد دیالوگ افزودن
+        # دوربین/NVR) استفاده می‌شوند. با بستن برنامه (closeEvent) پاک می‌شوند.
+        scan_cred_group = QGroupBox("اطلاعات ورود برای اتصال به دوربین‌ها")
+        scan_cred_layout = QVBoxLayout()
+        self.scan_user_input = QLineEdit("admin")
+        self.scan_user_input.setPlaceholderText("نام کاربری")
+        self.scan_pass_input = QLineEdit()
+        self.scan_pass_input.setPlaceholderText("رمز عبور")
+        self.scan_pass_input.setEchoMode(QLineEdit.EchoMode.Password)
+        scan_cred_layout.addWidget(self.scan_user_input)
+        scan_cred_layout.addWidget(self.scan_pass_input)
+        scan_cred_group.setLayout(scan_cred_layout)
+        left_panel.addWidget(scan_cred_group)
 
         # بخش اسکن شبکه
         # نکته: قبلاً این بخش «اسکن دستگاه‌های مداربسته» نام داشت و صرفاً پورت‌های
@@ -401,7 +570,7 @@ class MainWindow(QMainWindow):
         add_btn_row.addWidget(self.add_nvr_btn)
 
         # دوربین‌های متصل به یک NVR به‌صورت زیرمجموعه‌ی همان NVR نمایش داده می‌شوند.
-        self.camera_list = QTreeWidget()
+        self.camera_list = CameraTreeWidget()
         self.camera_list.setHeaderHidden(True)
         self.camera_list.itemDoubleClicked.connect(self.on_camera_item_activated)
         self.camera_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -439,7 +608,9 @@ class MainWindow(QMainWindow):
         grid_toolbar.addWidget(self.grid_size_combo)
         grid_toolbar.addStretch()
 
-        self.camera_grid = CameraGridWidget(self.face_engine, self.on_face_event)
+        self.camera_grid = CameraGridWidget(
+            self.face_engine, self.on_face_event, on_external_camera_drop=self.on_camera_dropped_on_grid
+        )
         grid_scroll = QScrollArea()
         grid_scroll.setWidgetResizable(True)
         grid_scroll.setWidget(self.camera_grid)
@@ -462,9 +633,31 @@ class MainWindow(QMainWindow):
         face_panel_layout.addWidget(self.face_panel_list)
         face_panel_group.setLayout(face_panel_layout)
 
-        main_layout.addLayout(left_panel, 2)
-        main_layout.addLayout(grid_column, 5)
-        main_layout.addWidget(face_panel_group, 2)
+        # رفع درخواست: عرض پنل سمت راست (پنل تشخیص چهره) باید دقیقاً هم‌اندازه‌ی
+        # پنل سمت چپ باشد تا فضای بیشتری به تصویر دوربین‌ها در وسط برسد. قبلاً
+        # با addLayout/addWidget + ضریب کشش (stretch factor) این کار انجام
+        # می‌شد، اما چون QVBoxLayout سمت چپ و QGroupBox سمت راست حداقل‌اندازه‌ی
+        # (minimumSizeHint) متفاوتی داشتند، ضریب کشش یکسان همیشه به عرض واقعاً
+        # یکسان منجر نمی‌شد. با QSplitter و تنظیم صریح اندازه‌ی اولیه، عرض دو
+        # ستون کناری همیشه یکسان شروع می‌شود (کاربر همچنان می‌تواند با کشیدن
+        # لبه‌ی splitter عرض را دستی تغییر دهد).
+        left_widget = QWidget()
+        left_widget.setLayout(left_panel)
+        grid_widget = QWidget()
+        grid_widget.setLayout(grid_column)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(left_widget)
+        splitter.addWidget(grid_widget)
+        splitter.addWidget(face_panel_group)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 5)
+        splitter.setStretchFactor(2, 2)
+        total_w = max(self.width(), 1500)
+        left_w = total_w * 2 // 9
+        splitter.setSizes([left_w, total_w - 2 * left_w, left_w])
+
+        main_layout.addWidget(splitter)
 
         main_widget.setLayout(main_layout)
         self.setCentralWidget(main_widget)
@@ -496,24 +689,53 @@ class MainWindow(QMainWindow):
             cam_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "camera", "id": cam["id"]})
             self.camera_list.addTopLevelItem(cam_item)
 
-    def open_add_camera_dialog(self, prefill_ip=None, detected_path=None, detected_full_url=None):
+    def _scan_credentials(self):
+        """رفع درخواست: نام‌کاربری/رمز کادر بالای پنل اسکن شبکه را برمی‌گرداند
+        (این مقادیر هرگز روی دیسک ذخیره نمی‌شوند - فقط در حافظه‌ی همین کادر)."""
+        user = self.scan_user_input.text().strip() or "admin"
+        pwd = self.scan_pass_input.text()
+        return user, pwd
+
+    def _auto_display_camera(self, cam) -> bool:
+        """رفع درخواست: بعد از افزوده‌شدن هر دوربین، به‌صورت خودکار در اولین
+        خانه‌ی خالی شبکه‌ی نمایش باز می‌شود. اگر رمز عبور لازم و نامعلوم باشد
+        از کاربر پرسیده می‌شود؛ صرف‌نظر کردن از رمز به‌معنای «جای خالی نبود»
+        نیست، پس True برمی‌گرداند (خطای واقعی فقط پر بودن شبکه‌ی نمایش است)."""
+        if not self._ensure_password(cam):
+            return True
+        rtsp_url = self.camera_store.build_rtsp_url(cam)
+        return self.camera_grid.assign_camera(cam, rtsp_url)
+
+    def open_add_camera_dialog(self, prefill_ip=None, detected_path=None, detected_full_url=None,
+                                prefill_user=None, prefill_pass=None):
         dialog = AddCameraDialog(self)
         if prefill_ip:
             dialog.ip_input.setText(prefill_ip)
+        if prefill_user is not None:
+            dialog.user_input.setText(prefill_user)
+        if prefill_pass is not None:
+            dialog.pass_input.setText(prefill_pass)
         if detected_path is not None or detected_full_url is not None:
             dialog.set_detected_stream(path=detected_path, full_url=detected_full_url)
         if dialog.exec():
             data = dialog.get_camera_data()
-            self.camera_store.add_camera(
+            cam = self.camera_store.add_camera(
                 data["name"], data["ip"], data["port"], data["user"], data["pass"], data["path"],
                 full_url=data.get("full_url"),
             )
             self.reload_camera_list()
+            # رفع درخواست: دوربین تازه‌اضافه‌شده اتوماتیک به پنجره‌ی نمایش اضافه شود.
+            self.open_live_view(cam)
 
-    def open_add_nvr_dialog(self, prefill_ip=None, detected_brand=None, detected_onvif_port=None):
+    def open_add_nvr_dialog(self, prefill_ip=None, detected_brand=None, detected_onvif_port=None,
+                             prefill_user=None, prefill_pass=None):
         dialog = AddNVRDialog(self)
         if prefill_ip:
             dialog.ip_input.setText(prefill_ip)
+        if prefill_user is not None:
+            dialog.user_input.setText(prefill_user)
+        if prefill_pass is not None:
+            dialog.pass_input.setText(prefill_pass)
         if detected_brand:
             dialog.set_detected_brand(brand=detected_brand, onvif_port=detected_onvif_port)
         if dialog.exec():
@@ -523,23 +745,30 @@ class MainWindow(QMainWindow):
                 onvif_port=data["onvif_port"], user=data["user"],
                 pwd=data["pass"], brand=data["brand"],
             )
-            for entry, default_name in dialog.get_selected_channels():
+            added_cams = [
                 self._add_channel_from_entry(nvr, entry, default_name)
+                for entry, default_name in dialog.get_selected_channels()
+            ]
             self.reload_camera_list()
-            QMessageBox.information(
-                self, "NVR اضافه شد",
-                f"NVR «{nvr['name']}» با {len(dialog.get_selected_channels())} کانال اضافه شد."
-            )
+            # رفع درخواست: هر کانال تازه‌اضافه‌شده اتوماتیک به پنجره‌ی نمایش اضافه شود.
+            not_shown = sum(1 for cam in added_cams if not self._auto_display_camera(cam))
+            msg = f"NVR «{nvr['name']}» با {len(added_cams)} کانال اضافه شد."
+            if not_shown:
+                msg += (
+                    f"\n{not_shown} کانال به دلیل پر بودن شبکه‌ی نمایش به‌صورت خودکار باز "
+                    "نشدند؛ برای باز کردن آن‌ها، تعداد نمایش هم‌زمان را افزایش دهید یا "
+                    "روی آن‌ها در لیست دابل‌کلیک کنید."
+                )
+            QMessageBox.information(self, "NVR اضافه شد", msg)
 
     def _add_channel_from_entry(self, nvr, entry, default_name):
         if entry["is_full_url"]:
-            self.camera_store.add_channel_camera(
+            return self.camera_store.add_channel_camera(
                 nvr, entry["channel"], default_name, path="", full_url=entry["path_or_url"]
             )
-        else:
-            self.camera_store.add_channel_camera(
-                nvr, entry["channel"], default_name, path=entry["path_or_url"]
-            )
+        return self.camera_store.add_channel_camera(
+            nvr, entry["channel"], default_name, path=entry["path_or_url"]
+        )
 
     def rescan_nvr(self, nvr_id):
         nvr = self.camera_store.get_nvr(nvr_id)
@@ -561,14 +790,16 @@ class MainWindow(QMainWindow):
             data = dialog.get_nvr_data()
             self.camera_store.update_nvr(nvr_id, **data)
             existing_channels = {c.get("channel") for c in self.camera_store.cameras_for_nvr(nvr_id)}
-            added = 0
+            added_cams = []
             for entry, default_name in dialog.get_selected_channels():
                 if entry["channel"] in existing_channels:
                     continue  # این کانال قبلاً اضافه شده است
-                self._add_channel_from_entry(nvr, entry, default_name)
-                added += 1
+                added_cams.append(self._add_channel_from_entry(nvr, entry, default_name))
             self.reload_camera_list()
-            QMessageBox.information(self, "بازخوانی کامل شد", f"{added} کانال جدید اضافه شد.")
+            # رفع درخواست: کانال‌های تازه‌کشف‌شده هم اتوماتیک به پنجره‌ی نمایش اضافه شوند.
+            for cam in added_cams:
+                self._auto_display_camera(cam)
+            QMessageBox.information(self, "بازخوانی کامل شد", f"{len(added_cams)} کانال جدید اضافه شد.")
 
     def delete_nvr(self, nvr_id):
         confirm = QMessageBox.question(
@@ -682,12 +913,16 @@ class MainWindow(QMainWindow):
         self.add_selected_scan_btn.setEnabled(False)
         self.detect_status_label.setText(f"در حال تشخیص نوع دستگاه {ip}...")
 
+        # رفع درخواست: تشخیص نوع دستگاه (و در ادامه، اتصال به دوربین/NVR) با
+        # نام‌کاربری/رمز کادر بالای پنل اسکن شبکه انجام می‌شود، نه مقدار ثابت
+        # admin/بدون‌رمز.
+        scan_user, scan_pass = self._scan_credentials()
         self.detect_thread = DeviceDetectThread(
             ip=ip,
             open_ports=self._scan_ports_by_ip.get(ip, []),
             rtsp_port="554",
-            user="admin",
-            pwd="",
+            user=scan_user,
+            pwd=scan_pass,
             parent=self,
         )
         self.detect_thread.progress_signal.connect(self.detect_status_label.setText)
@@ -711,17 +946,22 @@ class MainWindow(QMainWindow):
     def _on_device_detected(self, kind, payload):
         ip = self._detect_ip
         self._reset_detect_ui()
+        scan_user, scan_pass = self._scan_credentials()
         if kind == "nvr":
             self.open_add_nvr_dialog(
                 prefill_ip=ip,
                 detected_brand=payload.get("brand"),
                 detected_onvif_port=payload.get("onvif_port"),
+                prefill_user=scan_user,
+                prefill_pass=scan_pass,
             )
         else:
             self.open_add_camera_dialog(
                 prefill_ip=ip,
                 detected_path=payload.get("path"),
                 detected_full_url=payload.get("full_url"),
+                prefill_user=scan_user,
+                prefill_pass=scan_pass,
             )
         self._advance_detect_queue()
 
@@ -740,10 +980,11 @@ class MainWindow(QMainWindow):
         box.addButton("انصراف", QMessageBox.ButtonRole.RejectRole)
         box.exec()
 
+        scan_user, scan_pass = self._scan_credentials()
         if box.clickedButton() == camera_btn:
-            self.open_add_camera_dialog(prefill_ip=ip)
+            self.open_add_camera_dialog(prefill_ip=ip, prefill_user=scan_user, prefill_pass=scan_pass)
         elif box.clickedButton() == nvr_btn:
-            self.open_add_nvr_dialog(prefill_ip=ip)
+            self.open_add_nvr_dialog(prefill_ip=ip, prefill_user=scan_user, prefill_pass=scan_pass)
         self._advance_detect_queue()
 
     # ------------------------------------------------------ live view -----
@@ -799,6 +1040,17 @@ class MainWindow(QMainWindow):
 
     def get_active_camera_frame(self):
         return self.camera_grid.get_selected_frame()
+
+    def on_camera_dropped_on_grid(self, cam_id, slot_index):
+        """رفع درخواست: وقتی کاربر یک دوربین را از لیست «دوربین‌ها و NVRهای
+        من» گرفته و روی یک خانه از شبکه‌ی نمایش رها کند، همان‌جا باز می‌شود."""
+        cam = self.camera_store.get_camera(cam_id)
+        if not cam:
+            return
+        if not self._ensure_password(cam):
+            return
+        rtsp_url = self.camera_store.build_rtsp_url(cam)
+        self.camera_grid.assign_camera_to_slot(cam, rtsp_url, slot_index)
 
     # ------------------------------------------------------ face library ---
 
@@ -882,6 +1134,11 @@ class MainWindow(QMainWindow):
         # کنید به camera_store.py) پاک می‌شوند؛ در اجرای بعدی دوباره پرسیده
         # خواهند شد.
         self.camera_store.clear_all_passwords()
+        # رفع درخواست: کادر یوزرنیم/پسوورد بالای پنل اسکن شبکه هم هرگز روی
+        # دیسک ذخیره نشده (فقط QLineEdit در حافظه بود) و هنگام خروج از
+        # برنامه صراحتاً پاک می‌شود.
+        self.scan_user_input.clear()
+        self.scan_pass_input.clear()
         event.accept()
 
 
