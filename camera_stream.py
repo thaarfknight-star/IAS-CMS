@@ -16,12 +16,28 @@ from rtsp_utils import open_capture, STREAM_FFMPEG_OPTS
 FFMPEG_LOW_LATENCY_OPTS = STREAM_FFMPEG_OPTS
 
 
+def _crop_face(frame, box):
+    """برش تصویر یک چهره از روی frame کامل بر اساس باکس (top, right, bottom, left).
+    برای نمایش thumbnail در پنل تشخیص چهره استفاده می‌شود. در صورت نامعتبر بودن
+    باکس (مثلاً بعد از resize شدن پنجره) None برمی‌گرداند."""
+    top, right, bottom, left = box
+    h, w = frame.shape[:2]
+    top = max(0, top)
+    left = max(0, left)
+    bottom = min(h, bottom)
+    right = min(w, right)
+    if bottom <= top or right <= left:
+        return None
+    return frame[top:bottom, left:right].copy()
+
+
 class CameraStreamThread(QThread):
     frame_ready = pyqtSignal(object, object)   # (frame_for_display, raw_frame)
     error_signal = pyqtSignal(str)
     connected_signal = pyqtSignal()
-    known_face_signal = pyqtSignal(dict)
-    unknown_face_signal = pyqtSignal()
+    # پنل تشخیص چهره (main.py) برای هر چهره‌ی دیده‌شده (چه تعریف‌شده چه تعریف‌نشده)
+    # یک رویداد دریافت می‌کند: (person dict یا None، تصویر برش‌خورده‌ی چهره یا None)
+    face_event_signal = pyqtSignal(object, object)
 
     def __init__(self, rtsp_url, face_engine, process_every_n=5, parent=None):
         super().__init__(parent)
@@ -56,12 +72,12 @@ class CameraStreamThread(QThread):
 
     def _run_recognition(self, frame):
         try:
-            results, unknown_alert, known_events = self.face_engine.recognize(frame)
+            results, unknown_event, known_events = self.face_engine.recognize(frame)
             self._last_results = results
-            if unknown_alert:
-                self.unknown_face_signal.emit()
-            for person in known_events:
-                self.known_face_signal.emit(person)
+            if unknown_event is not None:
+                self.face_event_signal.emit(None, _crop_face(frame, unknown_event))
+            for person, box in known_events:
+                self.face_event_signal.emit(person, _crop_face(frame, box))
         except Exception as e:
             # خطای تشخیص چهره نباید باعث توقف پخش زنده شود.
             print(f"خطا در تشخیص چهره: {e}")

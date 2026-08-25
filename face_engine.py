@@ -135,12 +135,15 @@ class FaceEngine:
     def recognize(self, frame, downscale=0.5):
         """Detect + match every face in a frame.
 
-        Returns (results, unknown_alert, known_events):
+        Returns (results, unknown_event, known_events):
           - results: [{"box": (top,right,bottom,left) in full-frame coords, "person": dict|None}]
-          - unknown_alert: True once when an unmatched face has been seen and the
-            cooldown for a fresh "چهره تعریف نشده" notice has elapsed.
-          - known_events: list of person dicts newly re-confirmed (cooldown-limited,
-            so the same person doesn't spam a notice every frame).
+          - unknown_event: باکس (top,right,bottom,left) یکی از چهره‌های تعریف‌نشده‌ی
+            همین فریم، فقط وقتی کول‌داون یک اعلان تازه‌ی "چهره تعریف نشده" سپری شده
+            باشد؛ در غیر این صورت None. این باکس برای برش تصویر همان چهره و نمایش
+            در پنل تشخیص چهره استفاده می‌شود.
+          - known_events: لیستی از تاپل‌های (person, box) که تازه (با رعایت
+            کول‌داون - تا از اسپم‌شدن پنل با هر فریم جلوگیری شود) دوباره تایید
+            شده‌اند.
         """
         # این متد به‌طور مداوم از ترد(های) پخش زنده صدا زده می‌شود؛ قفل تضمین می‌کند که
         # هم‌زمان با ثبت/ویرایش/حذف چهره (که از ترد UI اجرا می‌شود) به dlib یا
@@ -156,7 +159,7 @@ class FaceEngine:
             now = time.time()
 
             results = []
-            saw_unknown = False
+            first_unknown_box = None
             known_events = []
 
             for (top, right, bottom, left), enc in zip(locations, encodings):
@@ -173,18 +176,19 @@ class FaceEngine:
                     last_seen = self._last_seen_person.get(person["id"], 0)
                     if now - last_seen >= self.known_alert_cooldown:
                         self._last_seen_person[person["id"]] = now
-                        known_events.append(person)
+                        known_events.append((person, box))
                 else:
-                    saw_unknown = True
+                    if first_unknown_box is None:
+                        first_unknown_box = box
 
                 results.append({"box": box, "person": person})
 
-            unknown_alert = False
-            if saw_unknown and (now - self._last_unknown_alert) >= self.unknown_alert_cooldown:
+            unknown_event = None
+            if first_unknown_box is not None and (now - self._last_unknown_alert) >= self.unknown_alert_cooldown:
                 self._last_unknown_alert = now
-                unknown_alert = True
+                unknown_event = first_unknown_box
 
-            return results, unknown_alert, known_events
+            return results, unknown_event, known_events
 
     def draw_results(self, frame, results):
         """Overlay boxes + labels in-place. Unmatched faces are explicitly

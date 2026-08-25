@@ -7,10 +7,11 @@ import cv2
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QListWidget, QListWidgetItem, QMessageBox,
-    QGroupBox, QTabWidget, QMenu, QTreeWidget, QTreeWidgetItem, QInputDialog
+    QGroupBox, QMenu, QTreeWidget, QTreeWidgetItem, QInputDialog,
+    QGridLayout, QComboBox, QScrollArea, QSizePolicy
 )
-from PyQt6.QtGui import QImage, QPixmap, QAction
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon
+from PyQt6.QtCore import Qt, QSize
 
 from face_engine import FaceEngine
 from scanner import NetworkScanThread
@@ -34,61 +35,122 @@ cv2.setNumThreads(max(1, (os.cpu_count() or 4) // 2))
 # را کمی بیشتر می‌کنیم تا CPU بیشتری برای خود پخش زنده (decode ویدیو) بماند.
 _PROCESS_EVERY_N = 5 if (os.cpu_count() or 4) >= 6 else 8
 
+# نگاشت تعداد نمایش هم‌زمان دوربین‌ها به چیدمان (ردیف, ستون) شبکه‌ی نمایش.
+# اعداد دقیقاً همان مقادیر درخواستی هستند: 1، 4، 9، 16، 32، 64.
+GRID_LAYOUTS = {
+    1: (1, 1),
+    4: (2, 2),
+    9: (3, 3),
+    16: (4, 4),
+    32: (4, 8),
+    64: (8, 8),
+}
 
-class CameraTabWidget(QWidget):
-    """یک تب نمایش زنده برای یک دوربین مشخص."""
 
-    def __init__(self, cam: dict, face_engine: FaceEngine, parent=None):
+def _bgr_to_pixmap(frame):
+    """تبدیل یک فریم OpenCV (BGR، numpy) به QPixmap برای نمایش در UI."""
+    if frame is None or frame.size == 0:
+        return None
+    rgb_image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    h, w, ch = rgb_image.shape
+    bytes_per_line = ch * w
+    # .copy() الزامی است؛ بدون آن QImage به بافر موقت numpy اشاره می‌کند که ممکن
+    # است پیش از رندر شدن، توسط پایتون آزاد/بازچرخانی شود.
+    qt_img = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
+    return QPixmap.fromImage(qt_img)
+
+
+class CameraSlotWidget(QWidget):
+    """یک خانه (slot) در شبکه‌ی نمایش هم‌زمان دوربین‌ها. می‌تواند خالی باشد یا
+    یک دوربین را پخش کند. با کلیک انتخاب (highlight) می‌شود تا فریم زنده‌اش
+    برای «ثبت چهره از تصویر زنده» در دسترس باشد."""
+
+    def __init__(self, on_clicked, on_close_requested, parent=None):
         super().__init__(parent)
-        self.cam = cam
-        self.face_engine = face_engine
-        self.latest_raw_frame = None
+        self.cam = None
         self.stream_thread = None
+        self.latest_raw_frame = None
+        self._selected = False
+        self._on_clicked = on_clicked
+        self._on_close_requested = on_close_requested
 
-        layout = QVBoxLayout()
-        self.status_label = QLabel(f"در حال اتصال به «{cam['name']}»...")
-        self.status_label.setStyleSheet("color: #aaaaaa; font-size: 11px;")
-        self.video_label = QLabel("در انتظار تصویر...")
+        self.setMinimumSize(140, 110)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(3, 3, 3, 3)
+        outer.setSpacing(2)
+
+        header = QHBoxLayout()
+        self.name_label = QLabel("خالی")
+        self.name_label.setStyleSheet("color:#dddddd; font-size:11px; font-weight:bold;")
+        self.close_btn = QPushButton("✕")
+        self.close_btn.setFixedSize(18, 18)
+        self.close_btn.setStyleSheet("QPushButton{color:#ccc; background:#333; border-radius:9px;}")
+        self.close_btn.setVisible(False)
+        self.close_btn.clicked.connect(lambda: self._on_close_requested(self))
+        header.addWidget(self.name_label, 1)
+        header.addWidget(self.close_btn)
+
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color:#888888; font-size:9px;")
+
+        self.video_label = QLabel("خالی — برای افزودن دوربین،\nدر لیست سمت چپ دابل‌کلیک کنید")
+        self.video_label.setWordWrap(True)
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.video_label.setStyleSheet("background-color: #1e1e1e; color: #ffffff; border-radius: 8px;")
-        self.video_label.setMinimumSize(800, 480)
+        self.video_label.setStyleSheet("background-color:#1e1e1e; color:#888888; border-radius:6px; font-size:10px;")
+        self.video_label.setMinimumSize(100, 80)
 
-        layout.addWidget(self.status_label)
-        layout.addWidget(self.video_label)
-        self.setLayout(layout)
+        outer.addLayout(header)
+        outer.addWidget(self.status_label)
+        outer.addWidget(self.video_label, 1)
+        self._apply_frame_style()
 
-    def start(self, rtsp_url, log_callback):
-        self.stream_thread = CameraStreamThread(rtsp_url, self.face_engine, process_every_n=_PROCESS_EVERY_N)
+    # ---------------------------------------------------------- selection --
+
+    def _apply_frame_style(self):
+        border = "2px solid #3498db" if self._selected else "1px solid #3a3a3a"
+        self.setStyleSheet(f"CameraSlotWidget {{ border: {border}; border-radius: 8px; background-color: #262626; }}")
+
+    def set_selected(self, value: bool):
+        self._selected = value
+        self._apply_frame_style()
+
+    def mousePressEvent(self, event):
+        self._on_clicked(self)
+        super().mousePressEvent(event)
+
+    # --------------------------------------------------------------- start -
+
+    def start(self, cam: dict, rtsp_url: str, face_engine: FaceEngine, face_event_cb):
+        self.cam = cam
+        self.name_label.setText(cam["name"])
+        self.close_btn.setVisible(True)
+        self.status_label.setText("در حال اتصال...")
+        self.video_label.setText("در انتظار تصویر...")
+
+        self.stream_thread = CameraStreamThread(rtsp_url, face_engine, process_every_n=_PROCESS_EVERY_N)
         self.stream_thread.frame_ready.connect(self.on_frame_ready)
         self.stream_thread.error_signal.connect(self.on_error)
         self.stream_thread.connected_signal.connect(self.on_connected)
-        self.stream_thread.known_face_signal.connect(
-            lambda person: log_callback("known", self.cam["name"], person)
-        )
-        self.stream_thread.unknown_face_signal.connect(
-            lambda: log_callback("unknown", self.cam["name"], None)
+        self.stream_thread.face_event_signal.connect(
+            lambda person, crop: face_event_cb(cam["name"], person, crop)
         )
         self.stream_thread.start()
 
     def on_connected(self):
-        self.status_label.setText(f"وضعیت: متصل - پخش زنده «{self.cam['name']}»")
+        self.status_label.setText("متصل - پخش زنده")
 
     def on_error(self, msg):
         self.status_label.setText(f"خطا: {msg}")
 
     def on_frame_ready(self, display_frame, raw_frame):
         self.latest_raw_frame = raw_frame
-        import cv2
-        rgb_image = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb_image.shape
-        bytes_per_line = ch * w
-        # نکته: .copy() الزامی است. بدون آن، QImage صرفاً به بافر numpy موقتِ rgb_image
-        # اشاره می‌کند؛ به محض بازگشت از این تابع پایتون می‌تواند آن حافظه را آزاد/بازچرخانی
-        # کند و رندر بعدی (scaled/QPixmap.fromImage) به حافظه‌ی نامعتبر دسترسی پیدا کند —
-        # یکی دیگر از منابع کرش تصادفی برنامه هنگام پخش زنده.
-        qt_img = QImage(rgb_image.data, w, h, bytes_per_line, QImage.Format.Format_RGB888).copy()
+        pixmap = _bgr_to_pixmap(display_frame)
+        if pixmap is None:
+            return
         self.video_label.setPixmap(
-            QPixmap.fromImage(qt_img).scaled(
+            pixmap.scaled(
                 self.video_label.width(), self.video_label.height(),
                 Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
             )
@@ -97,13 +159,117 @@ class CameraTabWidget(QWidget):
     def stop(self):
         if self.stream_thread and self.stream_thread.isRunning():
             self.stream_thread.stop()
+        self.stream_thread = None
+        self.cam = None
+        self.latest_raw_frame = None
+        self.name_label.setText("خالی")
+        self.close_btn.setVisible(False)
+        self.status_label.setText("")
+        self.video_label.clear()
+        self.video_label.setText("خالی — برای افزودن دوربین،\nدر لیست سمت چپ دابل‌کلیک کنید")
+        self.set_selected(False)
+
+
+class CameraGridWidget(QWidget):
+    """شبکه‌ی نمایش هم‌زمان دوربین‌ها با تعداد خانه‌ی قابل انتخاب
+    (1، 4، 9، 16، 32 یا 64). با تغییر تعداد، دوربین‌های از قبل باز تا حد
+    امکان در چیدمان جدید حفظ می‌شوند."""
+
+    def __init__(self, face_engine: FaceEngine, on_face_event, parent=None):
+        super().__init__(parent)
+        self.face_engine = face_engine
+        self.on_face_event = on_face_event
+        self.slots = []
+        self.selected_index = None
+
+        self._layout = QGridLayout(self)
+        self._layout.setSpacing(4)
+        self._layout.setContentsMargins(2, 2, 2, 2)
+
+        self.set_grid_size(4)
+
+    # ------------------------------------------------------------- layout --
+
+    def set_grid_size(self, count: int):
+        rows, cols = GRID_LAYOUTS.get(count, (2, 2))
+
+        # حفظ دوربین‌های در حال پخش (تا حد ظرفیت چیدمان جدید).
+        previous = [(slot.cam, slot.stream_thread.rtsp_url if slot.stream_thread else None)
+                    for slot in self.slots if slot.cam is not None]
+
+        for slot in self.slots:
+            slot.stop()
+            self._layout.removeWidget(slot)
+            slot.setParent(None)
+            slot.deleteLater()
+        self.slots = []
+        self.selected_index = None
+
+        total = rows * cols
+        for r in range(rows):
+            for c in range(cols):
+                slot = CameraSlotWidget(self._on_slot_clicked, self._on_slot_close_requested)
+                self._layout.addWidget(slot, r, c)
+                self.slots.append(slot)
+
+        for cam, rtsp_url in previous[:total]:
+            if rtsp_url:
+                self.assign_camera(cam, rtsp_url)
+
+    # -------------------------------------------------------- assignment --
+
+    def assign_camera(self, cam: dict, rtsp_url: str) -> bool:
+        """دوربین را در اولین خانه‌ی خالی باز می‌کند. اگر همان دوربین از قبل
+        باز است، فقط آن خانه را انتخاب می‌کند. اگر خانه‌ی خالی نباشد، False
+        برمی‌گرداند تا پیام مناسب به کاربر نمایش داده شود."""
+        for i, slot in enumerate(self.slots):
+            if slot.cam is not None and slot.cam["id"] == cam["id"]:
+                self._select_index(i)
+                return True
+
+        for i, slot in enumerate(self.slots):
+            if slot.cam is None:
+                slot.start(cam, rtsp_url, self.face_engine, self.on_face_event)
+                self._select_index(i)
+                return True
+
+        return False
+
+    def is_camera_open(self, cam_id) -> bool:
+        return any(slot.cam is not None and slot.cam["id"] == cam_id for slot in self.slots)
+
+    # --------------------------------------------------------- selection --
+
+    def _on_slot_clicked(self, slot):
+        self._select_index(self.slots.index(slot))
+
+    def _select_index(self, idx):
+        if self.selected_index is not None and 0 <= self.selected_index < len(self.slots):
+            self.slots[self.selected_index].set_selected(False)
+        self.selected_index = idx
+        self.slots[idx].set_selected(True)
+
+    def _on_slot_close_requested(self, slot):
+        idx = self.slots.index(slot)
+        slot.stop()
+        if idx == self.selected_index:
+            self.selected_index = None
+
+    def get_selected_frame(self):
+        if self.selected_index is not None:
+            return self.slots[self.selected_index].latest_raw_frame
+        return None
+
+    def stop_all(self):
+        for slot in self.slots:
+            slot.stop()
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("CCTV Management System (CMS) & Face Recognition")
-        self.setGeometry(100, 100, 1300, 720)
+        self.setGeometry(100, 100, 1500, 780)
 
         self.face_engine = FaceEngine()
         self.camera_store = CameraStore()
@@ -119,7 +285,6 @@ class MainWindow(QMainWindow):
 
     def init_ui(self):
         main_widget = QWidget()
-        outer_layout = QVBoxLayout()
         main_layout = QHBoxLayout()
 
         left_panel = QVBoxLayout()
@@ -204,38 +369,54 @@ class MainWindow(QMainWindow):
         left_panel.addWidget(face_group)
         left_panel.addStretch()
 
-        # پنل راست: تب‌های پخش زنده هر دوربین
-        right_panel = QVBoxLayout()
-        self.alert_banner = QLabel("")
-        self.alert_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.alert_banner.setFixedHeight(28)
-        self.alert_banner.setStyleSheet("font-weight: bold;")
-        self.tabs = QTabWidget()
-        self.tabs.setTabsClosable(True)
-        self.tabs.tabCloseRequested.connect(self.close_camera_tab)
-        right_panel.addWidget(self.alert_banner)
-        right_panel.addWidget(self.tabs)
+        # ------------------------------------------------ ستون میانی: شبکه‌ی
+        # نمایش هم‌زمان دوربین‌ها با تعداد خانه‌ی قابل انتخاب.
+        grid_column = QVBoxLayout()
+        grid_toolbar = QHBoxLayout()
+        grid_toolbar_label = QLabel("تعداد نمایش هم‌زمان دوربین‌ها:")
+        grid_toolbar_label.setStyleSheet("font-size: 11px;")
+        self.grid_size_combo = QComboBox()
+        for n in (1, 4, 9, 16, 32, 64):
+            self.grid_size_combo.addItem(str(n), n)
+        self.grid_size_combo.setCurrentIndex(1)  # پیش‌فرض: 4
+        self.grid_size_combo.currentIndexChanged.connect(self._on_grid_size_changed)
+        grid_toolbar.addWidget(grid_toolbar_label)
+        grid_toolbar.addWidget(self.grid_size_combo)
+        grid_toolbar.addStretch()
 
-        main_layout.addLayout(left_panel, 1)
-        main_layout.addLayout(right_panel, 3)
+        self.camera_grid = CameraGridWidget(self.face_engine, self.on_face_event)
+        grid_scroll = QScrollArea()
+        grid_scroll.setWidgetResizable(True)
+        grid_scroll.setWidget(self.camera_grid)
 
-        # لاگ رویدادها (شناسایی چهره‌های شناخته‌شده/ناشناس)
-        log_group = QGroupBox("رویدادهای شناسایی چهره")
-        log_layout = QVBoxLayout()
-        self.event_log = QListWidget()
-        self.event_log.setMaximumHeight(140)
-        log_layout.addWidget(self.event_log)
-        log_group.setLayout(log_layout)
+        grid_column.addLayout(grid_toolbar)
+        grid_column.addWidget(grid_scroll, 1)
 
-        outer_layout.addLayout(main_layout)
-        outer_layout.addWidget(log_group)
+        # ------------------------------------------------ ستون راست: پنل
+        # تشخیص چهره. رفع درخواست: پنل قبلی «رویدادهای شناسایی چهره» که در
+        # پایین پنجره و به‌صورت یک لیست متنی ساده بود حذف شد؛ به‌جای آن این
+        # پنل، سمت راست تصویر دوربین‌ها قرار گرفته و برای هر چهره‌ای که هر
+        # کدام از دوربین‌ها می‌بیند (چه شناخته‌شده چه تعریف‌نشده)، یک ردیف با
+        # تصویر برش‌خورده‌ی همان چهره و برچسب «تعریف شده» یا «تعریف نشده»
+        # ثبت می‌کند.
+        face_panel_group = QGroupBox("پنل تشخیص چهره")
+        face_panel_layout = QVBoxLayout()
+        self.face_panel_list = QListWidget()
+        self.face_panel_list.setIconSize(QSize(64, 64))
+        self.face_panel_list.setWordWrap(True)
+        face_panel_layout.addWidget(self.face_panel_list)
+        face_panel_group.setLayout(face_panel_layout)
 
-        main_widget.setLayout(outer_layout)
+        main_layout.addLayout(left_panel, 2)
+        main_layout.addLayout(grid_column, 5)
+        main_layout.addWidget(face_panel_group, 2)
+
+        main_widget.setLayout(main_layout)
         self.setCentralWidget(main_widget)
 
-        self._banner_timer = QTimer(self)
-        self._banner_timer.setSingleShot(True)
-        self._banner_timer.timeout.connect(lambda: self.alert_banner.setText(""))
+    def _on_grid_size_changed(self, _index):
+        count = self.grid_size_combo.currentData()
+        self.camera_grid.set_grid_size(count)
 
     # ------------------------------------------------------- camera list ---
 
@@ -388,7 +569,7 @@ class MainWindow(QMainWindow):
             return
         cam = self.camera_store.get_camera(data["id"])
         if cam:
-            self.open_live_tab(cam)
+            self.open_live_view(cam)
 
     def on_scan_result_selected(self, item):
         text = item.text()
@@ -504,24 +685,24 @@ class MainWindow(QMainWindow):
             self.open_add_nvr_dialog(prefill_ip=ip)
         self._advance_detect_queue()
 
-    # ------------------------------------------------------------ tabs ----
+    # ------------------------------------------------------ live view -----
 
-    def open_live_tab(self, cam: dict):
-        # اگر همین دوربین از قبل باز است، فقط به آن تب سوییچ کن.
-        for i in range(self.tabs.count()):
-            widget = self.tabs.widget(i)
-            if isinstance(widget, CameraTabWidget) and widget.cam["id"] == cam["id"]:
-                self.tabs.setCurrentIndex(i)
-                return
-
+    def open_live_view(self, cam: dict):
+        """دوربین انتخاب‌شده را در اولین خانه‌ی خالی شبکه‌ی نمایش باز می‌کند.
+        اگر همان دوربین از قبل باز باشد، فقط همان خانه انتخاب (highlight)
+        می‌شود. اگر هیچ خانه‌ی خالی نباشد، از کاربر می‌خواهد یکی را ببندد یا
+        تعداد نمایش هم‌زمان را افزایش دهد."""
         if not self._ensure_password(cam):
             return  # کاربر از وارد کردن رمز صرف‌نظر کرد
 
-        tab = CameraTabWidget(cam, self.face_engine)
-        index = self.tabs.addTab(tab, cam["name"])
-        self.tabs.setCurrentIndex(index)
         rtsp_url = self.camera_store.build_rtsp_url(cam)
-        tab.start(rtsp_url, self.log_face_event)
+        ok = self.camera_grid.assign_camera(cam, rtsp_url)
+        if not ok:
+            QMessageBox.information(
+                self, "جایی خالی نیست",
+                "همه‌ی خانه‌های شبکه‌ی نمایش پر است. ابتدا یکی را ببندید یا "
+                "تعداد نمایش هم‌زمان را از بالای شبکه افزایش دهید."
+            )
 
     def _ensure_password(self, cam: dict) -> bool:
         """رفع درخواست امنیتی: رمزهای عبور دیگر روی دیسک ذخیره نمی‌شوند
@@ -555,17 +736,8 @@ class MainWindow(QMainWindow):
                 sibling["pass"] = pwd
         return True
 
-    def close_camera_tab(self, index):
-        widget = self.tabs.widget(index)
-        if isinstance(widget, CameraTabWidget):
-            widget.stop()
-        self.tabs.removeTab(index)
-
     def get_active_camera_frame(self):
-        widget = self.tabs.currentWidget()
-        if isinstance(widget, CameraTabWidget):
-            return widget.latest_raw_frame
-        return None
+        return self.camera_grid.get_selected_frame()
 
     # ------------------------------------------------------ face library ---
 
@@ -573,18 +745,27 @@ class MainWindow(QMainWindow):
         dialog = FaceLibraryDialog(self.face_engine, self.get_active_camera_frame, self)
         dialog.exec()
 
-    def log_face_event(self, kind, camera_name, person):
+    def on_face_event(self, camera_name, person, crop_frame):
+        """برای هر چهره‌ای که هر یک از دوربین‌ها ببیند (شناخته‌شده یا
+        تعریف‌نشده) فراخوانی می‌شود و یک ردیف جدید - با تصویر برش‌خورده‌ی
+        همان چهره - در بالای پنل تشخیص چهره (سمت راست تصویر دوربین‌ها) اضافه
+        می‌کند."""
         timestamp = time.strftime("%H:%M:%S")
-        if kind == "known":
-            text = f"[{timestamp}] {camera_name}: چهره شناسایی شد - {person.get('name', '')}"
-            self.alert_banner.setStyleSheet("font-weight: bold; color: #2ecc71;")
+        if person:
+            text = f"[{timestamp}] {camera_name}\n{person.get('name', '')} — تعریف شده ✅"
         else:
-            text = f"[{timestamp}] {camera_name}: ⚠ چهره تعریف نشده شناسایی شد!"
-            self.alert_banner.setStyleSheet("font-weight: bold; color: #e74c3c;")
+            text = f"[{timestamp}] {camera_name}\n⚠ تعریف نشده"
 
-        self.event_log.insertItem(0, text)
-        self.alert_banner.setText(text)
-        self._banner_timer.start(5000)
+        item = QListWidgetItem(text)
+        pixmap = _bgr_to_pixmap(crop_frame) if crop_frame is not None else None
+        if pixmap is not None:
+            item.setIcon(QIcon(pixmap))
+        item.setForeground(Qt.GlobalColor.green if person else Qt.GlobalColor.red)
+
+        self.face_panel_list.insertItem(0, item)
+        # جلوگیری از رشد بی‌حد پنل در نشست‌های طولانی.
+        while self.face_panel_list.count() > 300:
+            self.face_panel_list.takeItem(self.face_panel_list.count() - 1)
 
     # ------------------------------------------------------------- scan ---
 
@@ -620,10 +801,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ close ---
 
     def closeEvent(self, event):
-        for i in range(self.tabs.count()):
-            widget = self.tabs.widget(i)
-            if isinstance(widget, CameraTabWidget):
-                widget.stop()
+        self.camera_grid.stop_all()
         # جلوگیری از کرش هنگام بستن برنامه در حین اسکن شبکه/تشخیص نوع دستگاه:
         # Qt هنگام تخریب یک QThread که هنوز در حال اجراست، کرش می‌کند.
         if self.network_scan_thread is not None and self.network_scan_thread.isRunning():
