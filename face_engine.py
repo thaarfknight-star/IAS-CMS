@@ -20,12 +20,17 @@ class FaceEngine:
         self,
         db_path="face_db.json",
         faces_dir="faces",
+        unknown_faces_dir="unknown_faces",
         tolerance=0.5,
         unknown_alert_cooldown=6.0,
         known_alert_cooldown=15.0,
     ):
         self.db_path = db_path
         self.faces_dir = faces_dir
+        # رفع درخواست: چهره‌های شناسایی‌شده که در بانک چهره‌ها تعریف نشده‌اند
+        # (تعریف‌نشده) به‌صورت خودکار بر اساس تاریخ و ساعت در این پوشه ذخیره
+        # می‌شوند - رجوع کنید به save_unknown_face پایین‌تر.
+        self.unknown_faces_dir = unknown_faces_dir
         self.tolerance = tolerance
         self.unknown_alert_cooldown = unknown_alert_cooldown
         self.known_alert_cooldown = known_alert_cooldown
@@ -46,6 +51,7 @@ class FaceEngine:
         self._lock = threading.RLock()
 
         os.makedirs(self.faces_dir, exist_ok=True)
+        os.makedirs(self.unknown_faces_dir, exist_ok=True)
         self.load()
 
     # ---------- persistence ----------
@@ -108,6 +114,27 @@ class FaceEngine:
             self.people.append(person)
             self.save()
             return person
+
+    def save_unknown_face(self, image_frame):
+        """رفع درخواست: چهره‌ی شناسایی‌شده‌ای که در بانک چهره‌ها تعریف نشده
+        («چهره تعریف نشده») را روی دیسک، داخل یک زیرپوشه بر اساس تاریخ
+        (مثلاً unknown_faces/2026-08-25) و با نامی بر اساس ساعت دقیق دیدن آن
+        (مثلاً 14-05-32_ab12cd34.jpg) ذخیره می‌کند تا بعداً قابل بازبینی
+        باشد. در صورت موفقیت مسیر فایل ذخیره‌شده را برمی‌گرداند، در غیر این
+        صورت None."""
+        if image_frame is None:
+            return None
+        try:
+            now = time.localtime()
+            day_dir = os.path.join(self.unknown_faces_dir, time.strftime("%Y-%m-%d", now))
+            os.makedirs(day_dir, exist_ok=True)
+            filename = f"{time.strftime('%H-%M-%S', now)}_{uuid.uuid4().hex[:8]}.jpg"
+            path = os.path.join(day_dir, filename)
+            cv2.imwrite(path, image_frame)
+            return path
+        except Exception as e:
+            print(f"خطا در ذخیره‌ی چهره‌ی تعریف‌نشده: {e}")
+            return None
 
     def update_person(self, person_id, **fields):
         with self._lock:

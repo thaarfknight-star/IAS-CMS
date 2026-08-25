@@ -65,7 +65,7 @@ class CameraSlotWidget(QWidget):
     یک دوربین را پخش کند. با کلیک انتخاب (highlight) می‌شود تا فریم زنده‌اش
     برای «ثبت چهره از تصویر زنده» در دسترس باشد."""
 
-    def __init__(self, on_clicked, on_close_requested, parent=None):
+    def __init__(self, on_clicked, on_close_requested, on_double_clicked=None, parent=None):
         super().__init__(parent)
         self.cam = None
         self.stream_thread = None
@@ -73,6 +73,9 @@ class CameraSlotWidget(QWidget):
         self._selected = False
         self._on_clicked = on_clicked
         self._on_close_requested = on_close_requested
+        # رفع درخواست: با دابل‌کلیک روی تصویر دوربین، این خانه بزرگ‌نمایی
+        # می‌شود و با دابل‌کلیک دوباره به اندازه‌ی قبل (چیدمان شبکه‌ای) برمی‌گردد.
+        self._on_double_clicked = on_double_clicked
 
         self.setMinimumSize(140, 110)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -119,6 +122,13 @@ class CameraSlotWidget(QWidget):
     def mousePressEvent(self, event):
         self._on_clicked(self)
         super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        # رفع درخواست: دابل‌کلیک روی تصویر دوربین، بزرگ/کوچک‌نمایی (toggle) را
+        # فعال می‌کند - منطق واقعیِ چیدمان در CameraGridWidget.toggle_maximize است.
+        if self._on_double_clicked is not None:
+            self._on_double_clicked(self)
+        super().mouseDoubleClickEvent(event)
 
     # --------------------------------------------------------------- start -
 
@@ -181,6 +191,13 @@ class CameraGridWidget(QWidget):
         self.on_face_event = on_face_event
         self.slots = []
         self.selected_index = None
+        # رفع درخواست: با دابل‌کلیک روی یک خانه، آن خانه تمام فضای شبکه را
+        # اشغال می‌کند (بزرگ‌نمایی) و بقیه‌ی خانه‌ها مخفی می‌شوند؛ برای بازگشت
+        # به حالت قبل، موقعیت اصلی (ردیف/ستون) هر خانه را نگه می‌داریم.
+        self._slot_positions = []  # index -> (row, col)
+        self._rows = 0
+        self._cols = 0
+        self._maximized_index = None
 
         self._layout = QGridLayout(self)
         self._layout.setSpacing(4)
@@ -204,13 +221,20 @@ class CameraGridWidget(QWidget):
             slot.deleteLater()
         self.slots = []
         self.selected_index = None
+        self._slot_positions = []
+        self._rows = rows
+        self._cols = cols
+        self._maximized_index = None
 
         total = rows * cols
         for r in range(rows):
             for c in range(cols):
-                slot = CameraSlotWidget(self._on_slot_clicked, self._on_slot_close_requested)
+                slot = CameraSlotWidget(
+                    self._on_slot_clicked, self._on_slot_close_requested, self._on_slot_double_clicked
+                )
                 self._layout.addWidget(slot, r, c)
                 self.slots.append(slot)
+                self._slot_positions.append((r, c))
 
         for cam, rtsp_url in previous[:total]:
             if rtsp_url:
@@ -254,6 +278,36 @@ class CameraGridWidget(QWidget):
         slot.stop()
         if idx == self.selected_index:
             self.selected_index = None
+        if idx == self._maximized_index:
+            self.toggle_maximize(idx)
+
+    # ----------------------------------------------------------- maximize --
+
+    def _on_slot_double_clicked(self, slot):
+        self.toggle_maximize(self.slots.index(slot))
+
+    def toggle_maximize(self, idx):
+        """رفع درخواست: با دابل‌کلیک روی تصویر یک دوربین، آن خانه بزرگ می‌شود
+        (کل فضای شبکه را می‌گیرد و بقیه‌ی خانه‌ها مخفی می‌شوند) و با دابل‌کلیک
+        دوباره روی همان خانه، به اندازه و چیدمان قبلی (شبکه‌ای) برمی‌گردد."""
+        if self._maximized_index == idx:
+            # بازگشت به چیدمان عادی شبکه‌ای.
+            for i, s in enumerate(self.slots):
+                self._layout.removeWidget(s)
+                r, c = self._slot_positions[i]
+                self._layout.addWidget(s, r, c)
+                s.setVisible(True)
+            self._maximized_index = None
+        else:
+            for i, s in enumerate(self.slots):
+                self._layout.removeWidget(s)
+                if i == idx:
+                    self._layout.addWidget(s, 0, 0, self._rows, self._cols)
+                    s.setVisible(True)
+                else:
+                    s.setVisible(False)
+            self._maximized_index = idx
+        self._select_index(idx)
 
     def get_selected_frame(self):
         if self.selected_index is not None:
@@ -306,11 +360,12 @@ class MainWindow(QMainWindow):
         self.scan_btn = QPushButton("اسکن شبکه")
         self.scan_btn.clicked.connect(self.run_network_scan)
         self.scan_result_list = QListWidget()
-        # رفع درخواست: قبلاً فقط دابل‌کلیک روی یک ردیف ممکن بود (انتخاب تکی).
-        # حالا با نگه‌داشتن Ctrl یا Shift هنگام کلیک، چند دستگاه هم‌زمان قابل
-        # انتخاب است و با دکمه‌ی «افزودن دستگاه‌های انتخاب‌شده» زیر، همه‌ی
-        # آن‌ها پشت‌سرهم (یکی پس از دیگری) تشخیص داده و اضافه می‌شوند.
-        self.scan_result_list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        # رفع درخواست: به‌جای نگه‌داشتن Ctrl/Shift هنگام کلیک برای انتخاب چندتایی،
+        # کنار هر دستگاه یک چک‌باکس نمایش داده می‌شود (هنگام افزودن آیتم‌ها در
+        # _on_network_scan_finished تنظیم می‌شود) و کاربر با تیک زدن آن‌ها،
+        # دستگاه‌های موردنظر برای اتصال را مشخص می‌کند. دابل‌کلیک همچنان برای
+        # افزودن سریع یک دستگاه تکی کار می‌کند.
+        self.scan_result_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         self.scan_result_list.itemDoubleClicked.connect(self.on_scan_result_selected)
         self.add_selected_scan_btn = QPushButton("+ افزودن دستگاه‌های انتخاب‌شده")
         self.add_selected_scan_btn.clicked.connect(self.on_add_selected_scan_results)
@@ -321,8 +376,8 @@ class MainWindow(QMainWindow):
         # نکته: دیگر از کاربر پرسیده نمی‌شود دستگاه دوربین تکی است یا NVR؛ با
         # دابل‌کلیک، نوع دستگاه به‌صورت خودکار تشخیص داده می‌شود (device_detect.py).
         scan_layout.addWidget(QLabel(
-            "روی یک نتیجه دابل‌کلیک کنید، یا با Ctrl/Shift چند مورد را انتخاب و "
-            "«افزودن دستگاه‌های انتخاب‌شده» را بزنید:"
+            "روی یک نتیجه دابل‌کلیک کنید، یا با تیک‌زدن چک‌باکس کنار هر دستگاه چند "
+            "مورد را انتخاب و «افزودن دستگاه‌های انتخاب‌شده» را بزنید:"
         ))
         scan_layout.addWidget(self.scan_result_list)
         scan_layout.addWidget(self.add_selected_scan_btn)
@@ -594,7 +649,13 @@ class MainWindow(QMainWindow):
             return
 
         ips = []
-        for item in self.scan_result_list.selectedItems():
+        # رفع درخواست: انتخاب چندتایی دیگر با Ctrl/Shift نیست؛ آیتم‌هایی که
+        # چک‌باکس‌شان تیک خورده (Qt.CheckState.Checked) به‌عنوان انتخاب‌شده
+        # در نظر گرفته می‌شوند.
+        for i in range(self.scan_result_list.count()):
+            item = self.scan_result_list.item(i)
+            if item.checkState() != Qt.CheckState.Checked:
+                continue
             text = item.text()
             if " " not in text:
                 continue
@@ -605,7 +666,7 @@ class MainWindow(QMainWindow):
         if not ips:
             QMessageBox.information(
                 self, "موردی انتخاب نشده",
-                "ابتدا با Ctrl/Shift یک یا چند دستگاه را از لیست نتایج اسکن انتخاب کنید."
+                "ابتدا چک‌باکس کنار یک یا چند دستگاه را از لیست نتایج اسکن تیک بزنید."
             )
             return
 
@@ -796,7 +857,13 @@ class MainWindow(QMainWindow):
         for dev in devices:
             self._scan_ports_by_ip[dev["ip"]] = dev["ports"]
             ports_str = ",".join(map(str, dev["ports"]))
-            self.scan_result_list.addItem(f"{dev['ip']} (پورت‌ها: {ports_str})")
+            item = QListWidgetItem(f"{dev['ip']} (پورت‌ها: {ports_str})")
+            # رفع درخواست: به‌جای انتخاب با Ctrl/Shift، کنار هر دستگاه یک
+            # چک‌باکس قرار می‌گیرد تا کاربر با تیک زدن، دستگاه‌های موردنظر
+            # برای اتصال هم‌زمان را مشخص کند.
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            self.scan_result_list.addItem(item)
 
     # ------------------------------------------------------------ close ---
 

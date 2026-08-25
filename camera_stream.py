@@ -75,7 +75,14 @@ class CameraStreamThread(QThread):
             results, unknown_event, known_events = self.face_engine.recognize(frame)
             self._last_results = results
             if unknown_event is not None:
-                self.face_event_signal.emit(None, _crop_face(frame, unknown_event))
+                unknown_crop = _crop_face(frame, unknown_event)
+                # رفع درخواست: چهره‌ی تعریف‌نشده علاوه بر نمایش در پنل، بر اساس
+                # تاریخ و ساعت روی دیسک هم ذخیره می‌شود (رجوع کنید به
+                # FaceEngine.save_unknown_face). چون خود recognize() یک
+                # کول‌داون برای این رویداد دارد، این ذخیره‌سازی هم به‌طور
+                # خودکار محدود می‌شود و باعث انباشت بی‌رویه فایل نمی‌شود.
+                self.face_engine.save_unknown_face(unknown_crop)
+                self.face_event_signal.emit(None, unknown_crop)
             for person, box in known_events:
                 self.face_event_signal.emit(person, _crop_face(frame, box))
         except Exception as e:
