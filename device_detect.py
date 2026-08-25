@@ -15,9 +15,14 @@
      دوربین تکی است.
 """
 
+import concurrent.futures
+import os
+
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from rtsp_utils import build_rtsp_url, frames_look_identical, probe_stream
+from rtsp_utils import (
+    build_rtsp_url, frames_look_identical, probe_stream, COMMON_RTSP_PORT_FALLBACKS,
+)
 from nvr_scanner import CHANNEL_TEMPLATES, _format_templates, try_onvif_discovery
 
 # بعد از کانال ۱، این کانال‌ها هم برای تایید چندکاناله بودن دستگاه امتحان
@@ -35,8 +40,22 @@ _EXTRA_CHANNELS_TO_CHECK = (2, 3, 4)
 # 8554، 1554) اجرا می‌کنند؛ روی چنین دستگاه‌هایی، تک‌تک probeهای کانال ۱ تا
 # پایان لیست برندها با پورت اشتباه انجام می‌شد و همیشه شکست می‌خورد - دقیقاً
 # رفتار «هیچ کانالی یافت نشد». حالا علاوه بر پورتی که کاربر/اسکن مشخص کرده،
-# چند پورت رایج جایگزین RTSP هم امتحان می‌شوند.
-COMMON_RTSP_PORT_FALLBACKS = ["554", "555", "8554", "1554"]
+# چند پورت رایج جایگزین RTSP هم امتحان می‌شوند (ثابت مشترک - رجوع کنید به
+# rtsp_utils.COMMON_RTSP_PORT_FALLBACKS - تا هم اینجا و هم nvr_scanner.py
+# دقیقاً همان پورت‌ها را امتحان کنند).
+
+# رفع باگ «برنامه حین تشخیص/افزودن دستگاه‌های تیک‌خورده قفل می‌کند»: قبلاً
+# ترکیب پورت×برند×الگو به‌صورت کاملاً سریالی (یکی‌یکی) تست می‌شد. در بدترین
+# حالت (دستگاهی که اصلاً پاسخ نمی‌دهد یا پورت/الگویش با هیچ‌کدام از برندهای
+# شناخته‌شده جور نیست) این یعنی 4 پورت × 4 برند × تا 7 الگو = ده‌ها probe
+# پیاپی که هرکدام تا HARD_PROBE_TIMEOUT_SEC (6 ثانیه) طول می‌کشند - جمعاً تا
+# چند دقیقه برای فقط یک IP، بدون هیچ نشانه‌ای از پیشرفت و بدون امکان لغو؛
+# دقیقاً همان چیزی که کاربر «قفل‌کردن برنامه» حس می‌کند، به‌خصوص وقتی چند
+# دستگاه هم‌زمان تیک خورده و باید یکی‌پس‌از‌دیگری پردازش شوند. حالا الگوهای
+# هر پورت به‌صورت موازی (چند ترد هم‌زمان) تست می‌شوند تا این بدترین حالت از
+# چند دقیقه به چند ثانیه برسد؛ کاربر هم می‌تواند از طریق دکمه‌ی «لغو تشخیص»
+# در پنجره‌ی اصلی، در هر لحظه عملیات را متوقف کند (رجوع کنید به main.py).
+_DETECT_PROBE_WORKERS = max(3, min(8, (os.cpu_count() or 4) * 2))
 
 
 class DeviceDetectThread(QThread):
@@ -99,6 +118,31 @@ class DeviceDetectThread(QThread):
                 return path
         return None
 
+    def _probe_channel1_all_brands(self, rtsp_port, brands):
+        """کانال ۱ را روی یک پورت مشخص، هم‌زمان (موازی) با تمام برندهای
+        کاندید تست می‌کند و اولین برندی که موفق شود را برمی‌گرداند.
+        رجوع کنید به توضیح _DETECT_PROBE_WORKERS بالای فایل: قبلاً این کار
+        برند به برند و کاملاً سریالی انجام می‌شد که در بدترین حالت (دستگاه
+        بی‌پاسخ) چند دقیقه طول می‌کشید و برنامه را «قفل‌کرده» نشان می‌داد."""
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(_DETECT_PROBE_WORKERS, len(brands))
+        ) as executor:
+            future_to_brand = {
+                executor.submit(self._probe_channel, brand, 1, rtsp_port): brand
+                for brand in brands
+            }
+            for future in concurrent.futures.as_completed(future_to_brand):
+                if self._is_cancelled:
+                    continue
+                brand = future_to_brand[future]
+                try:
+                    path = future.result()
+                except Exception:
+                    path = None
+                if path:
+                    return brand, path
+        return None
+
     def run(self):
         # ۱) تلاش با ONVIF: تعداد پروفایل‌ها مستقیماً نوع دستگاه را مشخص می‌کند.
         self.progress_signal.emit("در حال تشخیص نوع دستگاه (ONVIF)...")
@@ -134,42 +178,45 @@ class DeviceDetectThread(QThread):
         for rtsp_port in self._rtsp_port_candidates():
             if self._is_cancelled:
                 return
-            for brand in ("dahua_iap", "hikvision", "sunell", "generic"):
+            self.progress_signal.emit(f"در حال بررسی کانال ۱ روی پورت {rtsp_port}...")
+            found = self._probe_channel1_all_brands(
+                rtsp_port, ("dahua_iap", "hikvision", "sunell", "generic")
+            )
+            if self._is_cancelled:
+                return
+            if not found:
+                continue
+            brand, path_ch1 = found
+
+            self.progress_signal.emit("دستگاه یافت شد، در حال بررسی تعداد کانال...")
+            url_ch1 = build_rtsp_url(self.ip, rtsp_port, self.user, self.pwd, path_ch1)
+
+            # رفع باگ «دوربین تکی به‌اشتباه NVR تشخیص داده می‌شود»: صرف باز
+            # شدن URL کانال ۲ (یا بعدی) کافی نیست - خیلی از دوربین‌های تکی
+            # پارامتر channel را نادیده می‌گیرند و همیشه همان یک فید را
+            # برمی‌گردانند. اینجا محتوای واقعی تصویر کانال ۱ و کانال کاندید
+            # مقایسه می‌شود (rtsp_utils.frames_look_identical)؛ فقط وقتی
+            # تصویر واقعاً متفاوت باشد، کانال جداگانه (و در نتیجه NVR) تایید
+            # می‌شود.
+            is_multi_channel = False
+            for ch in _EXTRA_CHANNELS_TO_CHECK:
                 if self._is_cancelled:
                     return
-                path_ch1 = self._probe_channel(brand, 1, rtsp_port)
-                if not path_ch1:
+                path_ch_n = self._probe_channel(brand, ch, rtsp_port)
+                if not path_ch_n:
                     continue
+                url_ch_n = build_rtsp_url(self.ip, rtsp_port, self.user, self.pwd, path_ch_n)
+                if not frames_look_identical(url_ch1, url_ch_n):
+                    is_multi_channel = True
+                    break
 
-                self.progress_signal.emit("دستگاه یافت شد، در حال بررسی تعداد کانال...")
-                url_ch1 = build_rtsp_url(self.ip, rtsp_port, self.user, self.pwd, path_ch1)
-
-                # رفع باگ «دوربین تکی به‌اشتباه NVR تشخیص داده می‌شود»: صرف باز
-                # شدن URL کانال ۲ (یا بعدی) کافی نیست - خیلی از دوربین‌های تکی
-                # پارامتر channel را نادیده می‌گیرند و همیشه همان یک فید را
-                # برمی‌گردانند. اینجا محتوای واقعی تصویر کانال ۱ و کانال کاندید
-                # مقایسه می‌شود (rtsp_utils.frames_look_identical)؛ فقط وقتی
-                # تصویر واقعاً متفاوت باشد، کانال جداگانه (و در نتیجه NVR) تایید
-                # می‌شود.
-                is_multi_channel = False
-                for ch in _EXTRA_CHANNELS_TO_CHECK:
-                    if self._is_cancelled:
-                        return
-                    path_ch_n = self._probe_channel(brand, ch, rtsp_port)
-                    if not path_ch_n:
-                        continue
-                    url_ch_n = build_rtsp_url(self.ip, rtsp_port, self.user, self.pwd, path_ch_n)
-                    if not frames_look_identical(url_ch1, url_ch_n):
-                        is_multi_channel = True
-                        break
-
-                if is_multi_channel:
-                    self.detected_signal.emit("nvr", {"brand": brand, "onvif_port": "", "rtsp_port": str(rtsp_port)})
-                else:
-                    self.detected_signal.emit(
-                        "camera", {"path": path_ch1, "full_url": None, "rtsp_port": str(rtsp_port)}
-                    )
-                return
+            if is_multi_channel:
+                self.detected_signal.emit("nvr", {"brand": brand, "onvif_port": "", "rtsp_port": str(rtsp_port)})
+            else:
+                self.detected_signal.emit(
+                    "camera", {"path": path_ch1, "full_url": None, "rtsp_port": str(rtsp_port)}
+                )
+            return
 
         self.failed_signal.emit(
             "تشخیص خودکار نوع دستگاه ممکن نشد. لطفاً نام کاربری/رمز عبور را بررسی "

@@ -1,9 +1,10 @@
+import collections
 import concurrent.futures
 import os
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from rtsp_utils import build_rtsp_url, probe_stream
+from rtsp_utils import build_rtsp_url, probe_stream, COMMON_RTSP_PORT_FALLBACKS
 
 # --------------------------------------------------------------------------
 # الگوهای استاندارد RTSP برای هر کانال یک NVR، به تفکیک برند.
@@ -33,6 +34,12 @@ CHANNEL_TEMPLATES = {
         "video{ch}",
         "onvif{ch}",
         "profile{ch}",
+        # رفع درخواست «کانال‌های/دوربین‌های متصل به NVR پیدا نمی‌شوند»: چند
+        # الگوی رایج دیگر که روی NVR/DVRهای ژنریک مبتنی بر Xiongmai/XM، TVT و
+        # Uniview/UNV هم دیده می‌شوند و قبلاً هیچ‌کدام امتحان نمی‌شدند.
+        "user=admin&password=&channel={ch}&stream=0.sdp",  # Xiongmai/XM
+        "unicast/c{ch}/s0/live",                            # Uniview/UNV
+        "media/video{ch}",
     ],
 }
 
@@ -167,6 +174,12 @@ class NVRScanThread(QThread):
     channel_found_signal = pyqtSignal(int, str, str)   # channel, name, path/url
     finished_signal = pyqtSignal(int)                  # تعداد کل کانال‌های یافت‌شده
     failed_signal = pyqtSignal(str)
+    # رفع باگ «کانال‌ها پیدا می‌شوند اما بعداً پخش نمی‌شوند»: چون camera_store
+    # پورت RTSP هر کانال را از خودِ NVR (nvr["rtsp_port"]) می‌گیرد نه از هر
+    # کانال جداگانه، وقتی کانال‌ها روی پورتی غیر از مقدار فرم پیدا شوند باید
+    # فرم/تنظیمات NVR هم با همان پورت واقعی هماهنگ شود؛ این سیگنال همان پورت
+    # واقعاً کارآمد را به دیالوگ اطلاع می‌دهد.
+    port_detected_signal = pyqtSignal(str)
 
     def __init__(self, ip, rtsp_port, onvif_port, user, pwd, brand="auto", max_channels=16, parent=None):
         super().__init__(parent)
@@ -182,30 +195,48 @@ class NVRScanThread(QThread):
     def cancel(self):
         self._is_cancelled = True
 
-    def _build_url(self, path):
-        return build_rtsp_url(self.ip, self.rtsp_port, self.user, self.pwd, path)
+    def _rtsp_port_candidates(self):
+        """لیست پورت‌های RTSP کاندید برای اسکن کانال‌ها: پورتی که کاربر در
+        فرم افزودن NVR وارد کرده همیشه اول است؛ سپس چند پورت رایج جایگزین.
+        رفع باگ اصلیِ «بعد از پیدا/افزودن NVR، کانال‌ها/دوربین‌های متصل به آن
+        پیدا نمی‌شوند»: قبلاً فقط دقیقاً همان یک پورت وارد‌شده (پیش‌فرض 554)
+        امتحان می‌شد؛ خیلی از NVR/DVRهای ژنریک RTSP را روی پورتی غیر از 554
+        اجرا می‌کنند - رجوع کنید به rtsp_utils.COMMON_RTSP_PORT_FALLBACKS و
+        توضیح مشابه در device_detect.py."""
+        candidates = [str(self.rtsp_port)] if self.rtsp_port else []
+        for p in COMMON_RTSP_PORT_FALLBACKS:
+            if p not in candidates:
+                candidates.append(p)
+        return candidates
 
-    def _probe_path(self, path):
+    def _build_url(self, path, rtsp_port=None):
+        return build_rtsp_url(self.ip, rtsp_port or self.rtsp_port, self.user, self.pwd, path)
+
+    def _probe_path(self, path, rtsp_port=None):
         # probe_stream (رجوع کنید به rtsp_utils.py): هم از تداخل (race condition)
         # با پخش زنده‌ی هم‌زمان سایر دوربین‌ها روی متغیر محیطی FFmpeg جلوگیری
         # می‌کند، و هم چند بار تلاش می‌کند تا اولین کی‌فریم برسد (رفع false
         # negative که باعث «کانال هست ولی پیدا نمی‌شود» بود).
-        return probe_stream(self._build_url(path))
+        return probe_stream(self._build_url(path, rtsp_port))
 
     def _probe_channel(self, ch, brands_to_try):
-        """یک کانال را با تمام الگوهای برندهای موردنظر تست می‌کند.
-        خروجی: (channel, name, path) در صورت موفقیت، یا None."""
-        for brand in brands_to_try:
+        """یک کانال را با تمام الگوهای برندهای موردنظر، روی تمام پورت‌های
+        RTSP کاندید تست می‌کند. خروجی: (channel, name, path, rtsp_port) در
+        صورت موفقیت، یا None."""
+        for rtsp_port in self._rtsp_port_candidates():
             if self._is_cancelled:
                 return None
-            for path in _format_templates(CHANNEL_TEMPLATES[brand], ch):
+            for brand in brands_to_try:
                 if self._is_cancelled:
                     return None
-                try:
-                    if self._probe_path(path):
-                        return (ch, f"کانال {ch}", path)
-                except Exception:
-                    continue
+                for path in _format_templates(CHANNEL_TEMPLATES[brand], ch):
+                    if self._is_cancelled:
+                        return None
+                    try:
+                        if self._probe_path(path, rtsp_port):
+                            return (ch, f"کانال {ch}", path, rtsp_port)
+                    except Exception:
+                        continue
         return None
 
     def run(self):
@@ -258,8 +289,22 @@ class NVRScanThread(QThread):
                 if result:
                     results[ch] = result
 
+            # رفع باگ «کانال‌ها پیدا می‌شوند اما بعداً پخش نمی‌شوند»: اگر
+            # پورت واقعاً کارآمد (که ممکن است از طریق fallback پیدا شده
+            # باشد - رجوع کنید به _rtsp_port_candidates) با پورت وارد‌شده در
+            # فرم فرق دارد، پیش از افزودن کانال‌ها به دیالوگ اطلاع داده
+            # می‌شود تا خودِ فیلد «پورت RTSP» را هم به‌روزرسانی کند - چون
+            # camera_store پورت هر کانال را از تنظیمات خودِ NVR می‌خواند، نه
+            # جداگانه برای هر کانال.
+            if results:
+                port_counts = collections.Counter(r[3] for r in results.values())
+                effective_port = port_counts.most_common(1)[0][0]
+                if str(effective_port) != str(self.rtsp_port):
+                    self.rtsp_port = effective_port
+                    self.port_detected_signal.emit(str(effective_port))
+
             for ch in sorted(results):
-                found_ch, name, path = results[ch]
+                found_ch, name, path, _port = results[ch]
                 self.channel_found_signal.emit(found_ch, name, path)
                 found_count += 1
 

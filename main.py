@@ -387,6 +387,18 @@ class MainWindow(QMainWindow):
         self.add_selected_scan_btn.clicked.connect(self.on_add_selected_scan_results)
         self.detect_status_label = QLabel("")
         self.detect_status_label.setStyleSheet("color: #aaaaaa; font-size: 11px;")
+        # رفع درخواست «برنامه قفل می‌کند»: تشخیص خودکار نوع دستگاه (به‌خصوص
+        # برای دستگاه‌هایی که اصلاً پاسخ نمی‌دهند یا اطلاعات ورودشان اشتباه
+        # است) می‌تواند طول بکشد و قبلاً هیچ راهی برای لغو آن از پنجره‌ی
+        # اصلی وجود نداشت - کاربر فقط منتظر می‌ماند و برنامه را «قفل‌شده»
+        # حس می‌کند. این دکمه در طول تشخیص فعال می‌شود و با کلیک، هم دستگاه
+        # فعلی و هم صف باقی‌مانده‌ی «افزودن دستگاه‌های تیک‌خورده» لغو می‌شود.
+        self.cancel_detect_btn = QPushButton("لغو تشخیص")
+        self.cancel_detect_btn.setVisible(False)
+        self.cancel_detect_btn.clicked.connect(self._cancel_detection)
+        detect_status_row = QHBoxLayout()
+        detect_status_row.addWidget(self.detect_status_label, 1)
+        detect_status_row.addWidget(self.cancel_detect_btn)
         scan_layout.addWidget(self.subnet_input)
         scan_layout.addWidget(self.scan_btn)
         # نکته: دیگر از کاربر پرسیده نمی‌شود دستگاه دوربین تکی است یا NVR؛ با
@@ -405,7 +417,7 @@ class MainWindow(QMainWindow):
         scan_check_row.addWidget(select_none_scan_btn)
         scan_layout.addLayout(scan_check_row)
         scan_layout.addWidget(self.add_selected_scan_btn)
-        scan_layout.addWidget(self.detect_status_label)
+        scan_layout.addLayout(detect_status_row)
         scan_group.setLayout(scan_layout)
         left_panel.addWidget(scan_group)
 
@@ -921,6 +933,8 @@ class MainWindow(QMainWindow):
         self._detect_ip = ip
         self.scan_result_list.setEnabled(False)
         self.add_selected_scan_btn.setEnabled(False)
+        self.cancel_detect_btn.setVisible(True)
+        self.cancel_detect_btn.setEnabled(True)
         self.detect_status_label.setText(f"در حال تشخیص نوع دستگاه {ip}...")
 
         user, pwd = self._scan_credentials()
@@ -940,6 +954,20 @@ class MainWindow(QMainWindow):
     def _reset_detect_ui(self):
         self.scan_result_list.setEnabled(True)
         self.detect_status_label.setText("")
+        self.cancel_detect_btn.setVisible(False)
+
+    def _cancel_detection(self):
+        """رفع درخواست «برنامه قفل می‌کند»: کاربر می‌تواند در هر لحظه از
+        تشخیص خودکار (و کل صف باقی‌مانده‌ی افزودن چندتایی) صرف‌نظر کند، به‌جای
+        اینکه مجبور به انتظار تا پایان طبیعی/ناموفق آن باشد."""
+        self.cancel_detect_btn.setEnabled(False)
+        if self.detect_thread is not None and self.detect_thread.isRunning():
+            self.detect_thread.cancel()
+            self.detect_status_label.setText("در حال لغو...")
+            self.detect_thread.wait(3000)
+        self._detect_queue = []
+        self._reset_detect_ui()
+        self.add_selected_scan_btn.setEnabled(True)
 
     def _advance_detect_queue(self):
         """بعد از بسته‌شدن دیالوگ دستگاه فعلی، اگر مورد دیگری در صفِ انتخاب
