@@ -544,10 +544,6 @@ class MainWindow(QMainWindow):
         scan_layout.addWidget(self.scan_btn)
         # نکته: دیگر از کاربر پرسیده نمی‌شود دستگاه دوربین تکی است یا NVR؛ با
         # دابل‌کلیک، نوع دستگاه به‌صورت خودکار تشخیص داده می‌شود (device_detect.py).
-        scan_layout.addWidget(QLabel(
-            "روی یک نتیجه دابل‌کلیک کنید، یا با تیک‌زدن چک‌باکس کنار هر دستگاه چند "
-            "مورد را انتخاب و «افزودن دستگاه‌های انتخاب‌شده» را بزنید:"
-        ))
         scan_layout.addWidget(self.scan_result_list)
         scan_layout.addWidget(self.add_selected_scan_btn)
         scan_layout.addWidget(self.detect_status_label)
@@ -597,6 +593,17 @@ class MainWindow(QMainWindow):
         # نمایش هم‌زمان دوربین‌ها با تعداد خانه‌ی قابل انتخاب.
         grid_column = QVBoxLayout()
         grid_toolbar = QHBoxLayout()
+
+        # دکمه‌ی نمایش/مخفی‌کردن پنل کناری سمت چپ (اسکن شبکه، دوربین‌ها و
+        # NVRهای من، Face Library). با کلیک روی این دکمه، عرض پنل چپ صفر یا
+        # به اندازه‌ی قبلی‌اش برمی‌گردد تا کاربر در صورت نیاز فضای بیشتری
+        # برای تصویر دوربین‌ها در وسط داشته باشد.
+        self.sidebar_toggle_btn = QPushButton("☰")
+        self.sidebar_toggle_btn.setFixedWidth(32)
+        self.sidebar_toggle_btn.setToolTip("نمایش / مخفی کردن پنل کناری")
+        self.sidebar_toggle_btn.clicked.connect(self.toggle_sidebar)
+        grid_toolbar.addWidget(self.sidebar_toggle_btn)
+
         grid_toolbar_label = QLabel("تعداد نمایش هم‌زمان دوربین‌ها:")
         grid_toolbar_label.setStyleSheet("font-size: 11px;")
         self.grid_size_combo = QComboBox()
@@ -641,33 +648,52 @@ class MainWindow(QMainWindow):
         # یکسان منجر نمی‌شد. با QSplitter و تنظیم صریح اندازه‌ی اولیه، عرض دو
         # ستون کناری همیشه یکسان شروع می‌شود (کاربر همچنان می‌تواند با کشیدن
         # لبه‌ی splitter عرض را دستی تغییر دهد).
-        left_widget = QWidget()
-        left_widget.setLayout(left_panel)
+        # رفع درخواست: پنل سمت چپ کوچکتر شده (عرض ثابت و محدودتر به‌جای سهم
+        # کشیدنی از splitter) و یک دکمه‌ی sidebar اضافه شده که با کلیک روی آن
+        # کل پنل چپ باز/بسته می‌شود (toggle_sidebar).
+        self.left_widget = QWidget()
+        self.left_widget.setLayout(left_panel)
+        self.left_widget.setMaximumWidth(230)
         grid_widget = QWidget()
         grid_widget.setLayout(grid_column)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(left_widget)
-        splitter.addWidget(grid_widget)
-        splitter.addWidget(face_panel_group)
-        # رفع درخواست: عرض ستون سمت چپ (اسکن شبکه، دوربین‌ها و NVRهای من،
-        # Face Library) باید نصف اندازه‌ی قبلی‌اش باشد تا فضای بیشتری به
-        # تصویر دوربین‌ها در وسط برسد؛ پنل سمت راست (تشخیص چهره) بدون تغییر
-        # باقی می‌ماند. قبلاً هر سه ستون با نسبت 2:5:2 (از 9 سهم) شروع می‌شدند؛
-        # با نصف کردن سهم چپ (2 -> 1) و اضافه شدن همان یک سهم آزادشده به ستون
-        # وسط، نسبت جدید 1:6:2 می‌شود.
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 6)
-        splitter.setStretchFactor(2, 2)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.splitter.addWidget(self.left_widget)
+        self.splitter.addWidget(grid_widget)
+        self.splitter.addWidget(face_panel_group)
+        # پنل چپ اکنون کوچکتر و با عرض محدود (ثابت‌تر) است، پنل وسط (شبکه‌ی
+        # دوربین‌ها) بیشترین سهم را می‌گیرد و پنل راست (تشخیص چهره) بدون تغییر
+        # باقی می‌ماند.
+        self.splitter.setStretchFactor(0, 0)
+        self.splitter.setStretchFactor(1, 7)
+        self.splitter.setStretchFactor(2, 2)
         total_w = max(self.width(), 1500)
         right_w = total_w * 2 // 9        # عرض قبلی/بدون‌تغییرِ پنل راست
-        left_w = right_w // 2              # نصف عرض قبلی برای پنل چپ
-        splitter.setSizes([left_w, total_w - left_w - right_w, right_w])
+        left_w = 200                       # عرض کوچک و ثابت پنل چپ
+        self.splitter.setSizes([left_w, total_w - left_w - right_w, right_w])
+        # عرضی که پنل چپ قبل از مخفی‌شدن داشت، برای بازگرداندن آن هنگام کلیک
+        # مجدد روی دکمه‌ی sidebar نگه‌داشته می‌شود.
+        self._left_panel_width = left_w
 
-        main_layout.addWidget(splitter)
+        main_layout.addWidget(self.splitter)
 
         main_widget.setLayout(main_layout)
         self.setCentralWidget(main_widget)
+
+    def toggle_sidebar(self):
+        """رفع درخواست: نمایش/مخفی‌کردن پنل کناری سمت چپ با کلیک روی دکمه‌ی
+        sidebar. وقتی پنل باز است با کلیک بسته می‌شود (عرض صفر) و وقتی بسته
+        است با کلیک، به آخرین عرضی که داشت باز می‌گردد."""
+        sizes = self.splitter.sizes()
+        if sizes[0] > 0:
+            self._left_panel_width = sizes[0]
+            sizes[1] += sizes[0]
+            sizes[0] = 0
+        else:
+            restore_w = getattr(self, "_left_panel_width", 200) or 200
+            sizes[1] = max(0, sizes[1] - restore_w)
+            sizes[0] = restore_w
+        self.splitter.setSizes(sizes)
 
     def _on_grid_size_changed(self, _index):
         count = self.grid_size_combo.currentData()
