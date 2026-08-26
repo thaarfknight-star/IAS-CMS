@@ -16,6 +16,55 @@ from rtsp_utils import open_capture, STREAM_FFMPEG_OPTS
 FFMPEG_LOW_LATENCY_OPTS = STREAM_FFMPEG_OPTS
 
 
+# ---------------------------------------------------------------------------
+# شمارش افراد (Real Time People Counting)
+# ---------------------------------------------------------------------------
+# از HOG + SVM پیش‌فرض OpenCV برای تشخیص افراد ایستاده/در حال حرکت استفاده
+# می‌شود؛ چون از قبل با خود OpenCV (که در این پروژه استفاده می‌شود) همراه است
+# و نیازی به نصب/دانلود مدل اضافه ندارد. Detector فقط یک‌بار (lazy) ساخته
+# می‌شود و بین همه‌ی تردهای پخش دوربین مشترک است.
+_PEOPLE_HOG = None
+_PEOPLE_HOG_LOCK = threading.Lock()
+
+
+def _get_people_detector():
+    global _PEOPLE_HOG
+    if _PEOPLE_HOG is None:
+        with _PEOPLE_HOG_LOCK:
+            if _PEOPLE_HOG is None:
+                hog = cv2.HOGDescriptor()
+                hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+                _PEOPLE_HOG = hog
+    return _PEOPLE_HOG
+
+
+def _detect_people(frame):
+    """تشخیص افراد داخل frame. برای سرعت بیشتر، ابتدا تصویر به عرض کوچک‌تری
+    resize می‌شود (HOG روی تصاویر بزرگ بسیار کند است)، سپس باکس‌های یافت‌شده
+    به مقیاس تصویر اصلی برگردانده می‌شوند تا برای رسم روی frame واقعی هم قابل
+    استفاده باشند. خروجی: لیستی از باکس‌ها به شکل (x, y, w, h)."""
+    h, w = frame.shape[:2]
+    target_w = 480
+    if w <= 0:
+        return []
+    scale = target_w / w if w > target_w else 1.0
+    small = cv2.resize(frame, (int(w * scale), int(h * scale))) if scale != 1.0 else frame
+
+    hog = _get_people_detector()
+    boxes, _weights = hog.detectMultiScale(
+        small, winStride=(8, 8), padding=(8, 8), scale=1.05
+    )
+
+    if scale != 1.0:
+        boxes = [
+            (int(x / scale), int(y / scale), int(bw / scale), int(bh / scale))
+            for (x, y, bw, bh) in boxes
+        ]
+    else:
+        boxes = [tuple(b) for b in boxes]
+    return boxes
+
+
 def _crop_face(frame, box):
     """برش تصویر یک چهره از روی frame کامل بر اساس باکس (top, right, bottom, left).
     برای نمایش thumbnail در پنل تشخیص چهره استفاده می‌شود. در صورت نامعتبر بودن
@@ -38,6 +87,10 @@ class CameraStreamThread(QThread):
     # پنل تشخیص چهره (main.py) برای هر چهره‌ی دیده‌شده (چه تعریف‌شده چه تعریف‌نشده)
     # یک رویداد دریافت می‌کند: (person dict یا None، تصویر برش‌خورده‌ی چهره یا None)
     face_event_signal = pyqtSignal(object, object)
+    # رفع درخواست: شمارش افراد Real Time. هر بار تعداد افراد تازه شمارش‌شده
+    # تغییر کند (یا هربار محاسبه شود)، تعداد فعلی از این سیگنال ارسال می‌شود
+    # تا در بالای پنجره‌ی همان دوربین نمایش داده شود.
+    people_count_signal = pyqtSignal(int)
 
     def __init__(self, rtsp_url, face_engine, process_every_n=5, parent=None):
         super().__init__(parent)
@@ -61,6 +114,30 @@ class CameraStreamThread(QThread):
         # ویدیو را متوقف کند.
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self._recognize_busy = threading.Event()
+
+        # --- شمارش افراد (اختیاری، پیش‌فرض خاموش) ---
+        # دقیقاً به همان روش تشخیص چهره (async، غیرمسدودکننده) پیاده‌سازی شده تا
+        # روشن‌کردن شمارش افراد باعث افت نرخ فریم پخش زنده نشود. چون HOG کمی
+        # سنگین‌تر از استخراج امبدینگ چهره است، با فاصله‌ی بیشتری (نسبت به
+        # تشخیص چهره) اجرا می‌شود - رجوع کنید به run().
+        self.count_people_enabled = False
+        self._people_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self._people_busy = threading.Event()
+        self._last_people_boxes = []
+        self._last_people_count = 0
+        # فاصله‌ی اجرای تشخیص افراد (بر حسب تعداد فریم)؛ کمی بیشتر از فاصله‌ی
+        # تشخیص چهره تا فشار کمتری روی CPU وارد شود.
+        self._people_interval = max(self.process_every_n * 3, 10)
+
+    def set_people_counting(self, enabled: bool):
+        """روشن/خاموش کردن شمارش افراد Real Time برای این دوربین. غیرفعال
+        کردن، شمارش و باکس‌های قبلی را هم پاک می‌کند تا چیزی روی تصویر باقی
+        نماند."""
+        self.count_people_enabled = bool(enabled)
+        if not self.count_people_enabled:
+            self._last_people_boxes = []
+            self._last_people_count = 0
+            self.people_count_signal.emit(0)
 
     def _submit_recognition(self, frame):
         if self._recognize_busy.is_set():
@@ -91,6 +168,25 @@ class CameraStreamThread(QThread):
         finally:
             self._recognize_busy.clear()
 
+    def _submit_people_count(self, frame):
+        if self._people_busy.is_set():
+            return  # محاسبه‌ی قبلی هنوز تمام نشده؛ این فریم رد می‌شود
+        self._people_busy.set()
+        frame_copy = frame.copy()
+        self._people_executor.submit(self._run_people_count, frame_copy)
+
+    def _run_people_count(self, frame):
+        try:
+            boxes = _detect_people(frame)
+            self._last_people_boxes = boxes
+            self._last_people_count = len(boxes)
+            self.people_count_signal.emit(self._last_people_count)
+        except Exception as e:
+            # خطای شمارش افراد نباید باعث توقف پخش زنده یا تشخیص چهره شود.
+            print(f"خطا در شمارش افراد: {e}")
+        finally:
+            self._people_busy.clear()
+
     def run(self):
         cap = open_capture(self.rtsp_url, FFMPEG_LOW_LATENCY_OPTS)
         try:
@@ -102,6 +198,7 @@ class CameraStreamThread(QThread):
         if not cap.isOpened():
             self.error_signal.emit("خطا در برقراری ارتباط با استریم RTSP.")
             self._executor.shutdown(wait=False)
+            self._people_executor.shutdown(wait=False)
             return
 
         self.connected_signal.emit()
@@ -121,14 +218,23 @@ class CameraStreamThread(QThread):
             if frame_counter % self.process_every_n == 0:
                 self._submit_recognition(frame)
 
+            # شمارش افراد هم فقط وقتی کاربر آن را برای این دوربین روشن کرده باشد
+            # اجرا می‌شود؛ دقیقاً مثل تشخیص چهره، ناهمزمان و بدون مسدودکردن پخش.
+            if self.count_people_enabled and frame_counter % self._people_interval == 0:
+                self._submit_people_count(frame)
+
             display_frame = frame.copy()
             self.face_engine.draw_results(display_frame, self._last_results)
+            if self.count_people_enabled:
+                for (x, y, bw, bh) in self._last_people_boxes:
+                    cv2.rectangle(display_frame, (x, y), (x + bw, y + bh), (0, 165, 255), 2)
 
             # frame خام (بدون باکس) هم ارسال می‌شود تا برای «ثبت چهره از تصویر زنده» استفاده شود.
             self.frame_ready.emit(display_frame, frame)
 
         cap.release()
         self._executor.shutdown(wait=False)
+        self._people_executor.shutdown(wait=False)
 
     def stop(self):
         self._run_flag = False

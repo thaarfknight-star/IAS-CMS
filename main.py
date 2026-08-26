@@ -74,6 +74,11 @@ class CameraSlotWidget(QWidget):
         self._selected = False
         self._on_clicked = on_clicked
         self._on_close_requested = on_close_requested
+        # رفع درخواست: وضعیت روشن/خاموش بودن «شمارش افراد Real Time» برای این
+        # خانه؛ چون خانه‌ها هنگام عوض شدن تعداد شبکه (set_grid_size) از نو
+        # ساخته می‌شوند، این وضعیت فقط تا وقتی همین خانه/دوربین برقرار است
+        # حفظ می‌شود.
+        self._people_counting_enabled = False
         # رفع درخواست: با دابل‌کلیک روی تصویر دوربین، این خانه بزرگ‌نمایی
         # می‌شود و با دابل‌کلیک دوباره به اندازه‌ی قبل (چیدمان شبکه‌ای) برمی‌گردد.
         self._on_double_clicked = on_double_clicked
@@ -97,12 +102,30 @@ class CameraSlotWidget(QWidget):
         header = QHBoxLayout()
         self.name_label = QLabel("خالی")
         self.name_label.setStyleSheet("color:#dddddd; font-size:11px; font-weight:bold;")
+        # رفع درخواست: نمایش Real Time تعداد افراد شناسایی‌شده، بالای همان
+        # پنجره‌ی دوربین (کنار نام دوربین). فقط وقتی شمارش برای این خانه
+        # روشن باشد مقداری دارد (رجوع کنید به on_people_count).
+        self.people_count_label = QLabel("")
+        self.people_count_label.setStyleSheet("color:#f39c12; font-size:11px; font-weight:bold;")
+        # رفع درخواست: دکمه‌ی روشن/خاموش کردن شمارش افراد Real Time برای این
+        # دوربین به‌طور مستقل از بقیه‌ی دوربین‌ها (هر خانه دکمه‌ی خودش را دارد).
+        self.people_toggle_btn = QPushButton("👥")
+        self.people_toggle_btn.setCheckable(True)
+        self.people_toggle_btn.setFixedSize(24, 18)
+        self.people_toggle_btn.setToolTip("روشن/خاموش کردن شمارش افراد (Real Time)")
+        self.people_toggle_btn.setStyleSheet(
+            "QPushButton{background:#333; color:#ccc; border-radius:4px; font-size:10px;}"
+            "QPushButton:checked{background:#e67e22; color:#fff;}"
+        )
+        self.people_toggle_btn.toggled.connect(self._on_people_toggle)
         self.close_btn = QPushButton("✕")
         self.close_btn.setFixedSize(18, 18)
         self.close_btn.setStyleSheet("QPushButton{color:#ccc; background:#333; border-radius:9px;}")
         self.close_btn.setVisible(False)
         self.close_btn.clicked.connect(lambda: self._on_close_requested(self))
         header.addWidget(self.name_label, 1)
+        header.addWidget(self.people_count_label)
+        header.addWidget(self.people_toggle_btn)
         header.addWidget(self.close_btn)
 
         self.status_label = QLabel("")
@@ -136,6 +159,18 @@ class CameraSlotWidget(QWidget):
     def set_selected(self, value: bool):
         self._selected = value
         self._apply_frame_style()
+
+    # ------------------------------------------------------ people count --
+
+    def _on_people_toggle(self, checked):
+        self._people_counting_enabled = checked
+        if self.stream_thread is not None:
+            self.stream_thread.set_people_counting(checked)
+        if not checked:
+            self.people_count_label.setText("")
+
+    def on_people_count(self, count):
+        self.people_count_label.setText(f"👤 {count} نفر")
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -209,10 +244,15 @@ class CameraSlotWidget(QWidget):
         self.stream_thread.frame_ready.connect(self.on_frame_ready)
         self.stream_thread.error_signal.connect(self.on_error)
         self.stream_thread.connected_signal.connect(self.on_connected)
+        self.stream_thread.people_count_signal.connect(self.on_people_count)
         self.stream_thread.face_event_signal.connect(
             lambda person, crop: face_event_cb(cam["name"], person, crop)
         )
         self.stream_thread.start()
+        # اگر کاربر پیش‌تر (برای همین خانه) شمارش افراد را روشن کرده باشد،
+        # روی ترد پخش جدید هم بلافاصله اعمال می‌شود.
+        if self._people_counting_enabled:
+            self.stream_thread.set_people_counting(True)
 
     def on_connected(self):
         self.status_label.setText("متصل - پخش زنده")
@@ -244,6 +284,11 @@ class CameraSlotWidget(QWidget):
         self.video_label.clear()
         self.video_label.setText("خالی — برای افزودن دوربین،\nدر لیست سمت چپ دابل‌کلیک کنید")
         self.set_selected(False)
+        # رفع درخواست: با بسته‌شدن/خالی‌شدن خانه، شمارش افراد هم خاموش و
+        # برچسب تعداد پاک می‌شود (setChecked(False) به‌طور خودکار
+        # _on_people_toggle را هم صدا می‌زند).
+        self.people_toggle_btn.setChecked(False)
+        self.people_count_label.setText("")
 
 
 class CameraGridWidget(QWidget):
