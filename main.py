@@ -103,21 +103,12 @@ class CameraSlotWidget(QWidget):
         self.name_label = QLabel("خالی")
         self.name_label.setStyleSheet("color:#dddddd; font-size:11px; font-weight:bold;")
         # رفع درخواست: نمایش Real Time تعداد افراد شناسایی‌شده، بالای همان
-        # پنجره‌ی دوربین (کنار نام دوربین). فقط وقتی شمارش برای این خانه
-        # روشن باشد مقداری دارد (رجوع کنید به on_people_count).
+        # پنجره‌ی دوربین (کنار نام دوربین). فقط وقتی شمارش افراد به‌صورت
+        # سراسری (یک دکمه‌ی واحد بالای همه‌ی پنجره‌های دوربین، در نوار ابزار
+        # وسط - رجوع کنید به MainWindow.people_toggle_btn) روشن باشد مقداری
+        # دارد (رجوع کنید به set_people_counting/on_people_count).
         self.people_count_label = QLabel("")
         self.people_count_label.setStyleSheet("color:#f39c12; font-size:11px; font-weight:bold;")
-        # رفع درخواست: دکمه‌ی روشن/خاموش کردن شمارش افراد Real Time برای این
-        # دوربین به‌طور مستقل از بقیه‌ی دوربین‌ها (هر خانه دکمه‌ی خودش را دارد).
-        self.people_toggle_btn = QPushButton("👥")
-        self.people_toggle_btn.setCheckable(True)
-        self.people_toggle_btn.setFixedSize(24, 18)
-        self.people_toggle_btn.setToolTip("روشن/خاموش کردن شمارش افراد (Real Time)")
-        self.people_toggle_btn.setStyleSheet(
-            "QPushButton{background:#333; color:#ccc; border-radius:4px; font-size:10px;}"
-            "QPushButton:checked{background:#e67e22; color:#fff;}"
-        )
-        self.people_toggle_btn.toggled.connect(self._on_people_toggle)
         self.close_btn = QPushButton("✕")
         self.close_btn.setFixedSize(18, 18)
         self.close_btn.setStyleSheet("QPushButton{color:#ccc; background:#333; border-radius:9px;}")
@@ -125,7 +116,6 @@ class CameraSlotWidget(QWidget):
         self.close_btn.clicked.connect(lambda: self._on_close_requested(self))
         header.addWidget(self.name_label, 1)
         header.addWidget(self.people_count_label)
-        header.addWidget(self.people_toggle_btn)
         header.addWidget(self.close_btn)
 
         self.status_label = QLabel("")
@@ -162,11 +152,15 @@ class CameraSlotWidget(QWidget):
 
     # ------------------------------------------------------ people count --
 
-    def _on_people_toggle(self, checked):
-        self._people_counting_enabled = checked
+    def set_people_counting(self, enabled: bool):
+        """رفع درخواست: شمارش افراد دیگر دکمه‌ی جداگانه برای هر خانه ندارد؛
+        این متد از بیرون (CameraGridWidget، بر اساس همان یک دکمه‌ی سراسری
+        بالای شبکه‌ی دوربین‌ها) صدا زده می‌شود تا شمارش برای این خانه هم
+        روشن/خاموش شود."""
+        self._people_counting_enabled = enabled
         if self.stream_thread is not None:
-            self.stream_thread.set_people_counting(checked)
-        if not checked:
+            self.stream_thread.set_people_counting(enabled)
+        if not enabled:
             self.people_count_label.setText("")
 
     def on_people_count(self, count):
@@ -249,8 +243,11 @@ class CameraSlotWidget(QWidget):
             lambda person, crop: face_event_cb(cam["name"], person, crop)
         )
         self.stream_thread.start()
-        # اگر کاربر پیش‌تر (برای همین خانه) شمارش افراد را روشن کرده باشد،
-        # روی ترد پخش جدید هم بلافاصله اعمال می‌شود.
+        # اگر شمارش افراد به‌صورت سراسری (دکمه‌ی بالای شبکه‌ی دوربین‌ها) از قبل
+        # روشن بوده، روی ترد پخش جدید هم بلافاصله اعمال می‌شود (رجوع کنید به
+        # CameraGridWidget که بلافاصله بعد از start() هم set_people_counting
+        # را صدا می‌زند؛ این خط فقط برای اطمینان از سازگاری با وضعیت فعلیِ
+        # همین خانه است).
         if self._people_counting_enabled:
             self.stream_thread.set_people_counting(True)
 
@@ -285,9 +282,8 @@ class CameraSlotWidget(QWidget):
         self.video_label.setText("خالی — برای افزودن دوربین،\nدر لیست سمت چپ دابل‌کلیک کنید")
         self.set_selected(False)
         # رفع درخواست: با بسته‌شدن/خالی‌شدن خانه، شمارش افراد هم خاموش و
-        # برچسب تعداد پاک می‌شود (setChecked(False) به‌طور خودکار
-        # _on_people_toggle را هم صدا می‌زند).
-        self.people_toggle_btn.setChecked(False)
+        # برچسب تعداد پاک می‌شود.
+        self._people_counting_enabled = False
         self.people_count_label.setText("")
 
 
@@ -313,6 +309,12 @@ class CameraGridWidget(QWidget):
         self._rows = 0
         self._cols = 0
         self._maximized_index = None
+        # رفع درخواست: به‌جای یک دکمه‌ی جداگانه‌ی شمارش افراد برای هر خانه،
+        # فقط یک دکمه‌ی سراسری بالای کل شبکه‌ی دوربین‌ها وجود دارد (رجوع کنید
+        # به MainWindow.people_toggle_btn و set_people_counting_all). این
+        # فلگ وضعیت همان دکمه‌ی سراسری را نگه می‌دارد تا خانه‌های تازه‌ساز
+        # (تغییر چیدمان) یا دوربین‌های تازه‌باز هم همان وضعیت را بگیرند.
+        self._people_counting_enabled = False
 
         self._layout = QGridLayout(self)
         self._layout.setSpacing(4)
@@ -358,6 +360,18 @@ class CameraGridWidget(QWidget):
             if rtsp_url:
                 self.assign_camera(cam, rtsp_url)
 
+    # ------------------------------------------------------ people count --
+
+    def set_people_counting_all(self, enabled: bool):
+        """رفع درخواست: یک گزینه‌ی واحد بالای تمام پنجره‌های دوربین‌ها که
+        شمارش افراد Real Time را برای همه‌ی دوربین‌های باز، هم‌زمان روشن/
+        خاموش می‌کند. تعداد نفرات هم‌چنان جداگانه، بالای پنجره‌ی هر دوربین
+        نمایش داده می‌شود (رجوع کنید به CameraSlotWidget.on_people_count)."""
+        self._people_counting_enabled = bool(enabled)
+        for slot in self.slots:
+            if slot.cam is not None:
+                slot.set_people_counting(self._people_counting_enabled)
+
     # -------------------------------------------------------- assignment --
 
     def assign_camera(self, cam: dict, rtsp_url: str) -> bool:
@@ -372,6 +386,9 @@ class CameraGridWidget(QWidget):
         for i, slot in enumerate(self.slots):
             if slot.cam is None:
                 slot.start(cam, rtsp_url, self.face_engine, self.on_face_event)
+                # اعمال وضعیت فعلیِ دکمه‌ی سراسریِ شمارش افراد روی دوربین
+                # تازه‌باز.
+                slot.set_people_counting(self._people_counting_enabled)
                 self._select_index(i)
                 return True
 
@@ -396,6 +413,7 @@ class CameraGridWidget(QWidget):
         target = self.slots[slot_index]
         target.stop()
         target.start(cam, rtsp_url, self.face_engine, self.on_face_event)
+        target.set_people_counting(self._people_counting_enabled)
         self._select_index(slot_index)
 
     def swap_slots(self, idx_a: int, idx_b: int):
@@ -419,8 +437,10 @@ class CameraGridWidget(QWidget):
         slot_b.stop()
         if cam_b is not None:
             slot_a.start(cam_b, url_b, self.face_engine, self.on_face_event)
+            slot_a.set_people_counting(self._people_counting_enabled)
         if cam_a is not None:
             slot_b.start(cam_a, url_a, self.face_engine, self.on_face_event)
+            slot_b.set_people_counting(self._people_counting_enabled)
 
         if self.selected_index == idx_a:
             self._select_index(idx_b)
@@ -658,6 +678,22 @@ class MainWindow(QMainWindow):
         self.grid_size_combo.currentIndexChanged.connect(self._on_grid_size_changed)
         grid_toolbar.addWidget(grid_toolbar_label)
         grid_toolbar.addWidget(self.grid_size_combo)
+
+        # رفع درخواست: به‌جای یک دکمه‌ی روشن/خاموش شمارش افراد برای هر
+        # دوربین جداگانه، فقط یک دکمه‌ی واحد بالای تمام پنجره‌های دوربین‌ها
+        # قرار دارد که شمارش را برای همه‌ی دوربین‌های باز هم‌زمان روشن/خاموش
+        # می‌کند. تعداد نفرات هم‌چنان جداگانه بالای پنجره‌ی هر دوربین نوشته
+        # می‌شود (رجوع کنید به CameraSlotWidget.people_count_label).
+        self.people_toggle_btn = QPushButton("👥 شمارش افراد (همه دوربین‌ها)")
+        self.people_toggle_btn.setCheckable(True)
+        self.people_toggle_btn.setToolTip("روشن/خاموش کردن شمارش افراد Real Time برای تمام دوربین‌های باز")
+        self.people_toggle_btn.setStyleSheet(
+            "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
+            "QPushButton:checked{background:#e67e22; color:#fff;}"
+        )
+        self.people_toggle_btn.toggled.connect(self._on_people_toggle_all)
+        grid_toolbar.addWidget(self.people_toggle_btn)
+
         grid_toolbar.addStretch()
 
         self.camera_grid = CameraGridWidget(
@@ -743,6 +779,13 @@ class MainWindow(QMainWindow):
     def _on_grid_size_changed(self, _index):
         count = self.grid_size_combo.currentData()
         self.camera_grid.set_grid_size(count)
+
+    def _on_people_toggle_all(self, checked):
+        """رفع درخواست: با این یک دکمه (بالای کل شبکه‌ی دوربین‌ها)، شمارش
+        افراد Real Time برای همه‌ی دوربین‌های باز هم‌زمان روشن/خاموش می‌شود؛
+        وضعیت روی دوربین‌هایی که بعداً باز شوند هم اعمال می‌ماند (رجوع کنید
+        به CameraGridWidget.set_people_counting_all)."""
+        self.camera_grid.set_people_counting_all(checked)
 
     # ------------------------------------------------------- camera list ---
 
