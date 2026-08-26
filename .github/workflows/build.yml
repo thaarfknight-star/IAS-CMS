@@ -17,10 +17,28 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: "3.10"
+        # کش کردن پکیج‌های pip بر اساس محتوای requirements.txt. اجرای بعدی که
+        # requirements.txt عوض نشده باشد، این پکیج‌ها را دوباره دانلود نمی‌کند.
+        cache: 'pip'
+        cache-dependency-path: requirements.txt
 
     - name: Install CMake
       run: |
-        choco install cmake --installargs "ADD_CMAKE_TO_PATH=System"
+        choco install cmake --installargs "ADD_CMAKE_TO_PATH=System" --no-progress
+
+    # dlib روی ویندوز wheel آماده در PyPI ندارد و هر بار از سورس با CMake
+    # کامپایل می‌شود (کندترین بخش این workflow). با کش کردن پوشه‌ی کش pip
+    # (جایی که wheel ساخته‌شده از سورس هم نگه‌داری می‌شود)، وقتی نسخه‌ی
+    # پایتون/dlib عوض نشده باشد، اجرای بعدی به‌جای کامپایل دوباره، همان
+    # wheel قبلی را از کش برمی‌دارد.
+    - name: Cache pip-built wheels (dlib و بقیه)
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~\AppData\Local\pip\Cache
+        key: pip-wheels-windows-py310-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          pip-wheels-windows-py310-
 
     - name: Install Dependencies
       run: |
@@ -30,12 +48,24 @@ jobs:
         pip install git+https://github.com/ageitgey/face_recognition_models
         pip install -r requirements.txt
 
+    # Nuitka برای هر build، کامپایلر MinGW64 را دانلود می‌کند و ماژول‌های
+    # پایتون را به C کامپایل می‌کند. کش‌کردن پوشه‌ی کش داخلی Nuitka
+    # (دانلود MinGW64 + کش کامپایل ماژول‌ها) از دانلود/کامپایل تکراری در
+    # اجراهای بعدی (وقتی سورس عوض نشده) جلوگیری می‌کند.
+    - name: Cache Nuitka (MinGW64 + ماژول‌های کامپایل‌شده)
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~\AppData\Local\Nuitka\Nuitka\Cache
+        key: nuitka-cache-windows-${{ hashFiles('**/*.py') }}
+        restore-keys: |
+          nuitka-cache-windows-
+
     - name: Build Executable with Nuitka (portable, compiled to machine code)
       run: |
         python -m pip install nuitka
         python -m nuitka `
           --onefile `
-          --standalone `
           --mingw64 `
           --enable-plugin=pyqt6 `
           --windows-console-mode=disable `
@@ -49,6 +79,7 @@ jobs:
           --output-dir=dist `
           --output-filename=CCTV_CMS.exe `
           --assume-yes-for-downloads `
+          --jobs=$Env:NUMBER_OF_PROCESSORS `
           main.py
 
     - name: Upload Build Artifact
