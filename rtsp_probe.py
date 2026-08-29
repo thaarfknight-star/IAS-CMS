@@ -119,12 +119,24 @@ def _digest_auth_header(user, pwd, method, uri, challenge, cnonce="ia5cms1", nc=
     nonce = challenge.get("nonce", "")
     qop = challenge.get("qop", "")
     algorithm = challenge.get("algorithm", "MD5")
+    # رفع باگ: بسیاری از NVRهای Dahua/Hikvision (و مشتقات آن‌ها) در چالش 401
+    # اولیه یک پارامتر "opaque" هم برمی‌گردانند. طبق RFC 2617 کلاینت موظف
+    # است این مقدار را عیناً در پاسخ Authorization خود echo کند؛ اگر این کار
+    # انجام نشود سرور پاسخ Digest را رد می‌کند و دوباره 401 می‌دهد - حتی اگر
+    # نام‌کاربری/رمز کاملاً درست باشند. قبلاً این مقدار نادیده گرفته می‌شد.
+    opaque = challenge.get("opaque")
 
     def md5(s):
         return hashlib.md5(s.encode("utf-8")).hexdigest()
 
     ha1 = md5(f"{user}:{realm}:{pwd}")
+    # رفع باگ: الگوریتم MD5-sess با MD5 ساده تفاوت دارد (HA1 باید با
+    # nonce/cnonce ترکیب شود)؛ بعضی دستگاه‌ها این را در چالش اعلام می‌کنند.
+    if algorithm.lower() == "md5-sess":
+        ha1 = md5(f"{ha1}:{nonce}:{cnonce}")
     ha2 = md5(f"{method}:{uri}")
+
+    opaque_part = f', opaque="{opaque}"' if opaque else ""
 
     if qop:
         qop_value = qop.split(",")[0].strip()
@@ -132,12 +144,12 @@ def _digest_auth_header(user, pwd, method, uri, challenge, cnonce="ia5cms1", nc=
         return (
             f'Digest username="{user}", realm="{realm}", nonce="{nonce}", '
             f'uri="{uri}", qop={qop_value}, nc={nc}, cnonce="{cnonce}", '
-            f'response="{response}", algorithm={algorithm}'
+            f'response="{response}", algorithm={algorithm}{opaque_part}'
         )
     response = md5(f"{ha1}:{nonce}:{ha2}")
     return (
         f'Digest username="{user}", realm="{realm}", nonce="{nonce}", '
-        f'uri="{uri}", response="{response}", algorithm={algorithm}'
+        f'uri="{uri}", response="{response}", algorithm={algorithm}{opaque_part}'
     )
 
 
@@ -186,8 +198,19 @@ def describe_probe(ip, port, path, user="", pwd="", timeout=DEFAULT_TIMEOUT) -> 
                 f"User-Agent: IAS-CMS-Probe\r\n"
                 f"\r\n"
             )
-            sock.sendall(req2.encode("utf-8"))
-            status2, _ = _parse_status_and_headers(_recv_headers(sock, timeout))
+            try:
+                sock.sendall(req2.encode("utf-8"))
+                status2, _ = _parse_status_and_headers(_recv_headers(sock, timeout))
+            except OSError:
+                # رفع باگ: بعضی از NVRها بعد از چالش 401 همان اتصال TCP را
+                # می‌بندند و انتظار دارند درخواستِ حاویِ Authorization روی یک
+                # اتصال تازه فرستاده شود. بدون این fallback، چنین دستگاه‌هایی
+                # حتی با رمز درست هم به‌اشتباه "unauthorized/error" گزارش
+                # می‌شدند چون ارسال دوم روی سوکت بسته‌شده شکست می‌خورد.
+                sock.close()
+                sock = socket.create_connection((ip, int(port)), timeout=timeout)
+                sock.sendall(req2.encode("utf-8"))
+                status2, _ = _parse_status_and_headers(_recv_headers(sock, timeout))
             if status2 == 200:
                 return RtspProbeResult("ok", "200 OK (بعد از احراز هویت)")
             if status2 in (401, 403):
