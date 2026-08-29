@@ -229,7 +229,16 @@ class CameraSlotWidget(QWidget):
 
     def start(self, cam: dict, rtsp_url: str, face_engine: FaceEngine, face_event_cb):
         self.cam = cam
-        self.name_label.setText(cam["name"])
+        # نمایش اسم دوربین همراه با IP (کنار هم، جلوی شمارش افراد در همین
+        # هدر). اگر کاربر برای دوربین اسمی وارد نکرده باشد، cam["name"] از
+        # قبل برابر همان IP است (رجوع کنید به camera_store.py) که در این حالت
+        # از تکرار IP در پرانتز جلوگیری می‌شود.
+        cam_name = cam.get("name") or cam.get("ip", "")
+        cam_ip = cam.get("ip", "")
+        if cam_ip and cam_ip != cam_name:
+            self.name_label.setText(f"{cam_name} ({cam_ip})")
+        else:
+            self.name_label.setText(cam_name)
         self.close_btn.setVisible(True)
         self.status_label.setText("در حال اتصال...")
         self.video_label.setText("در انتظار تصویر...")
