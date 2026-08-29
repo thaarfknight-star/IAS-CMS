@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QMenu, QTreeWidget, QTreeWidgetItem, QInputDialog,
     QGridLayout, QComboBox, QScrollArea, QSizePolicy, QSplitter
 )
-from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon, QDrag
+from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon, QDrag, QFontMetrics
 from PyQt6.QtCore import Qt, QSize, QMimeData
 
 from face_engine import FaceEngine
@@ -102,6 +102,17 @@ class CameraSlotWidget(QWidget):
         header = QHBoxLayout()
         self.name_label = QLabel("خالی")
         self.name_label.setStyleSheet("color:#dddddd; font-size:11px; font-weight:bold;")
+        # رفع باگ: وقتی اسم دوربین طولانی است (مثلاً اسم + IP)، در خانه‌های
+        # کوچک (چیدمان‌های شلوغ مثل 9/16/32 دوربین) sizeHint کامل متن باعث
+        # می‌شد کل عرض هدر را اشغال کند و برچسب تعداد نفرات/دکمه‌ی بستن را از
+        # فضای قابل‌مشاهده بیرون براند (بدون خطا، فقط دیده نمی‌شدند). با
+        # Ignored از layout می‌خواهیم sizeHint این لیبل را نادیده بگیرد و
+        # فضای باقی‌مانده (بعد از رزرو فضای ثابت برای بقیه‌ی ویجت‌های هدر) را
+        # به آن بدهد؛ متن هم با «...» بر اساس همان فضای واقعی کوتاه می‌شود
+        # (رجوع کنید به _refresh_name_label/resizeEvent) تا چیزی از هدر گم
+        # نشود.
+        self.name_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._name_full_text = "خالی"
         # رفع درخواست: نمایش Real Time تعداد افراد شناسایی‌شده، بالای همان
         # پنجره‌ی دوربین (کنار نام دوربین). فقط وقتی شمارش افراد به‌صورت
         # سراسری (یک دکمه‌ی واحد بالای همه‌ی پنجره‌های دوربین، در نوار ابزار
@@ -145,6 +156,25 @@ class CameraSlotWidget(QWidget):
     def _apply_frame_style(self):
         border = "2px solid #3498db" if self._selected else "1px solid #3a3a3a"
         self.setStyleSheet(f"CameraSlotWidget {{ border: {border}; border-radius: 8px; background-color: #262626; }}")
+
+    def _set_name_text(self, full_text: str):
+        """متن کامل اسم دوربین را نگه می‌دارد و نسخه‌ی کوتاه‌شده (بر اساس
+        عرض واقعی فعلیِ لیبل) را نمایش می‌دهد. تولتیپ همیشه متن کامل را
+        نشان می‌دهد تا حتی وقتی کوتاه شده، اطلاعات کامل (اسم + IP) در دسترس
+        بماند."""
+        self._name_full_text = full_text
+        self.name_label.setToolTip(full_text)
+        self._refresh_name_label()
+
+    def _refresh_name_label(self):
+        fm = QFontMetrics(self.name_label.font())
+        avail_w = max(20, self.name_label.width())
+        elided = fm.elidedText(self._name_full_text, Qt.TextElideMode.ElideRight, avail_w)
+        self.name_label.setText(elided)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh_name_label()
 
     def set_selected(self, value: bool):
         self._selected = value
@@ -236,9 +266,9 @@ class CameraSlotWidget(QWidget):
         cam_name = cam.get("name") or cam.get("ip", "")
         cam_ip = cam.get("ip", "")
         if cam_ip and cam_ip != cam_name:
-            self.name_label.setText(f"{cam_name} ({cam_ip})")
+            self._set_name_text(f"{cam_name} ({cam_ip})")
         else:
-            self.name_label.setText(cam_name)
+            self._set_name_text(cam_name)
         self.close_btn.setVisible(True)
         self.status_label.setText("در حال اتصال...")
         self.video_label.setText("در انتظار تصویر...")
@@ -284,7 +314,7 @@ class CameraSlotWidget(QWidget):
         self.stream_thread = None
         self.cam = None
         self.latest_raw_frame = None
-        self.name_label.setText("خالی")
+        self._set_name_text("خالی")
         self.close_btn.setVisible(False)
         self.status_label.setText("")
         self.video_label.clear()
