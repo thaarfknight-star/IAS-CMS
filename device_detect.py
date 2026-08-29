@@ -5,19 +5,24 @@
 دیالوگ (AddCameraDialog / AddNVRDialog) به‌صورت دستی باز می‌شد. این ماژول
 آن پرسش را حذف می‌کند: با اتصال آزمایشی به دستگاه، خودش تشخیص می‌دهد.
 
-منطق تشخیص:
-  1) ONVIF: اگر دستگاه از ONVIF پشتیبانی کند، تعداد «پروفایل‌های رسانه»
+منطق تشخیص (بازنویسی‌شده - هماهنگ با معماری جدید nvr_scanner.py):
+  1) API وب سازنده: اگر دستگاه API پیکربندی Hikvision/Dahua را پشتیبانی
+     کند، تعداد کانال واقعی مستقیماً از پیکربندی خودش خوانده می‌شود - نه
+     حدس. سریع‌ترین و دقیق‌ترین روش.
+  2) ONVIF: اگر دستگاه از ONVIF پشتیبانی کند، تعداد «پروفایل‌های رسانه»
      دقیقاً برابر تعداد کانال‌های واقعی دستگاه است — یک دوربین تکی همیشه
      ۱ پروفایل دارد، NVR بیش از ۱ پروفایل (یکی به‌ازای هر کانال متصل).
-  2) اگر ONVIF در دسترس نبود: با الگوهای شناخته‌شده‌ی برندها، ابتدا کانال ۱
-     تست می‌شود. اگر کانال ۱ باز شد، کانال ۲ (با همان الگوی برند) هم تست
-     می‌شود؛ وجود کانال ۲ یعنی دستگاه چندکاناله (NVR) است، نبودش یعنی
-     دوربین تکی است.
+  3) اگر هیچ‌کدام در دسترس نبود: با الگوهای شناخته‌شده‌ی برندها، ابتدا
+     کانال ۱ با یک DESCRIBE سریع (rtsp_probe) تست می‌شود. اگر کانال ۱ باز
+     شد، کانال ۲ به بعد (با همان الگوی برند) هم تست می‌شود؛ وجود کانال
+     دیگر یعنی دستگاه چندکاناله (NVR) است، نبودش یعنی دوربین تکی است.
 """
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from rtsp_utils import build_rtsp_url, frames_look_identical, probe_stream
+from rtsp_probe import describe_probe
+from nvr_http_api import discover_channels_http, COMMON_HTTP_PORTS
 from nvr_scanner import CHANNEL_TEMPLATES, _format_templates, try_onvif_discovery
 
 # بعد از کانال ۱، این کانال‌ها هم برای تایید چندکاناله بودن دستگاه امتحان
@@ -64,16 +69,57 @@ class DeviceDetectThread(QThread):
         return candidates
 
     def _probe_channel(self, brand, ch):
+        # هر مسیر ابتدا با یک DESCRIBE سریع بررسی می‌شود (بدون نیاز به دیکود
+        # کامل جریان)؛ فقط اگر نتیجه نامشخص بود (نه رد قطعی 401/404)، یک بار
+        # هم با OpenCV/FFmpeg تایید می‌شود - رجوع کنید به rtsp_probe.py.
         for path in _format_templates(CHANNEL_TEMPLATES[brand], ch):
             if self._is_cancelled:
                 return None
-            url = build_rtsp_url(self.ip, self.rtsp_port, self.user, self.pwd, path)
-            if probe_stream(url):
+            result = describe_probe(self.ip, self.rtsp_port, path, self.user, self.pwd)
+            if result:
                 return path
+            if result.status in ("timeout", "error", "refused"):
+                url = build_rtsp_url(self.ip, self.rtsp_port, self.user, self.pwd, path)
+                if probe_stream(url):
+                    return path
         return None
 
+    def _http_ports(self):
+        ports = list(COMMON_HTTP_PORTS)
+        for p in self.open_ports:
+            if p not in ports:
+                ports.append(p)
+        return ports
+
+    def _try_http_api(self):
+        """رجوع کنید به nvr_http_api.py. در صورت موفقیت، سریع‌ترین و
+        دقیق‌ترین راه برای فهمیدن دوربین‌تکی/NVR بودن دستگاه است: تعداد
+        کانال واقعی مستقیماً از پیکربندی دستگاه خوانده می‌شود."""
+        try:
+            channels = discover_channels_http(self.ip, self.user, self.pwd, ports=self._http_ports())
+        except Exception:
+            channels = None
+        if not channels:
+            return None
+
+        if len(channels) > 1:
+            self.detected_signal.emit("nvr", {"brand": "auto", "onvif_port": ""})
+        else:
+            only = channels[0]
+            full_url = build_rtsp_url(self.ip, self.rtsp_port, self.user, self.pwd, only["path"])
+            self.detected_signal.emit("camera", {"path": only["path"], "full_url": full_url})
+        return True
+
     def run(self):
-        # ۱) تلاش با ONVIF: تعداد پروفایل‌ها مستقیماً نوع دستگاه را مشخص می‌کند.
+        # ۱) سریع‌ترین و دقیق‌ترین روش: API وب سازنده.
+        self.progress_signal.emit("در حال بررسی API وب دستگاه...")
+        if not self._is_cancelled and self._try_http_api():
+            return
+
+        if self._is_cancelled:
+            return
+
+        # ۲) تلاش با ONVIF: تعداد پروفایل‌ها مستقیماً نوع دستگاه را مشخص می‌کند.
         self.progress_signal.emit("در حال تشخیص نوع دستگاه (ONVIF)...")
         for onvif_port in self._onvif_candidate_ports():
             if self._is_cancelled:
@@ -93,7 +139,7 @@ class DeviceDetectThread(QThread):
         if self._is_cancelled:
             return
 
-        # ۲) بدون ONVIF: کانال ۱ را با الگوهای هر برند تست می‌کن؛ به محض یافتن
+        # ۳) بدون ONVIF: کانال ۱ را با الگوهای هر برند تست می‌کن؛ به محض یافتن
         # الگوی برند درست، چند کانال بعدی همان برند را هم تست کن تا مشخص شود
         # تک‌کاناله است یا چندکاناله.
         self.progress_signal.emit("در حال بررسی کانال‌ها...")

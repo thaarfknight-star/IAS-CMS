@@ -1,16 +1,34 @@
 import concurrent.futures
 import os
+import threading
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
+from nvr_http_api import discover_channels_http, COMMON_HTTP_PORTS
+from rtsp_probe import describe_probe
 from rtsp_utils import build_rtsp_url, probe_stream
 
 # --------------------------------------------------------------------------
-# الگوهای استاندارد RTSP برای هر کانال یک NVR، به تفکیک برند.
-# {ch}   -> شماره کانال یک‌مبنایی (1, 2, 3, ...)
-# {ch0}  -> شماره کانال صفرمبنایی (0, 1, 2, ...)
-# {ch2}  -> شماره کانال با دو رقم (01, 02, ...)
+# معماری جدید جست‌وجو (بازنویسی کامل - قبلاً فقط ONVIF -> brute-force RTSP بود):
+#
+#   ۱) API وب سازنده (nvr_http_api.discover_channels_http): سریع‌ترین و
+#      دقیق‌ترین روش - تعداد/نام واقعی کانال‌ها را مستقیم از پیکربندی خود
+#      دستگاه می‌گیرد (Hikvision ISAPI / Dahua CGI)، سپس هر کانال با یک
+#      DESCRIBE سریع تایید می‌شود.
+#   ۲) ONVIF (try_onvif_discovery): در صورت پشتیبانی دستگاه، آدرس واقعی هر
+#      استریم را از طریق پروتکل استاندارد ONVIF می‌گیرد.
+#   ۳) brute-force الگوهای RTSP شناخته‌شده (CHANNEL_TEMPLATES): آخرین راه‌حل؛
+#      برای هر کانال ابتدا یک DESCRIBE سریع (rtsp_probe) و فقط در صورت
+#      پاسخ نامشخص (نه رد قطعی)، یک بار هم با OpenCV/FFmpeg (probe_stream)
+#      تایید می‌شود تا هم سرعت بالا برود و هم false-negative کم شود.
+#
+# در هر مرحله، اگر نتیجه‌ای پیدا نشود بی‌صدا به مرحله‌ی بعد سوییچ می‌شود؛
+# در پایان اگر هیچ‌کدام جواب ندهند، از تشخیص‌های جمع‌آوری‌شده (401/404/
+# timeout) یک پیام خطای دقیق به کاربر ساخته می‌شود (رجوع کنید به
+# _summarize_diagnostics) تا مشخص شود مشکل از رمز/کاربری، الگوی برند، یا
+# اصلاً دسترسی شبکه است.
 # --------------------------------------------------------------------------
+
 CHANNEL_TEMPLATES = {
     "dahua_iap": [
         "cam/realmonitor?channel={ch}&subtype=0",   # main stream
@@ -124,8 +142,7 @@ def try_onvif_discovery(ip, onvif_port, user, pwd, timeout=ONVIF_TIMEOUT_SEC):
 
     اگر کتابخانه‌ی onvif-zeep نصب نباشد، NVR از ONVIF پشتیبانی نکند، یا مهلت
     زمانی (timeout) به پایان برسد، None برمی‌گرداند تا کد فراخوان به روش
-    برندی (brute force) سوییچ کند. این روش دقیق‌ترین راه است چون تعداد و آدرس
-    واقعی کانال‌ها را مستقیماً از خود دستگاه می‌گیرد (نه حدس زدن الگوی URL).
+    بعدی سوییچ کند.
 
     رفع باگ: قبلاً فقط همان یک پورتی که کاربر در فیلد «پورت ONVIF» وارد کرده
     بود امتحان می‌شد؛ چون سرویس ONVIF واقعی اغلب روی پورتی غیر از 80 (که
@@ -145,12 +162,11 @@ def try_onvif_discovery(ip, onvif_port, user, pwd, timeout=ONVIF_TIMEOUT_SEC):
 class NVRScanThread(QThread):
     """کانال‌های (دوربین‌های) متصل به یک NVR را شناسایی می‌کند.
 
-    ابتدا ONVIF را امتحان می‌کند (سریع و دقیق، در صورت پشتیبانی NVR و نصب بودن
-    کتابخانه، با مهلت زمانی محدود)؛ در غیر این صورت هر کانال از 1 تا
-    max_channels را به‌صورت **موازی** (چند کانال هم‌زمان) با الگوهای RTSP
-    شناخته‌شده‌ی برندهای رایج تست می‌کند. اجرای موازی باعث می‌شود جستجو برای
-    NVRهایی با تعداد کانال زیاد به‌جای چند دقیقه، چند ثانیه طول بکشد و کاربر
-    احساس «قفل‌شدن»/«وصل نشدن» نکند.
+    به‌ترتیب سه روش را امتحان می‌کند (رجوع کنید به توضیح بالای فایل):
+    API وب سازنده -> ONVIF -> brute-force الگوهای RTSP (با پروب سریع
+    DESCRIBE + تایید نهایی OpenCV در صورت نیاز). اجرای موازی مرحله‌ی سوم
+    باعث می‌شود جستجو برای NVRهایی با تعداد کانال زیاد به‌جای چند دقیقه، چند
+    ثانیه طول بکشد و کاربر احساس «قفل‌شدن»/«وصل نشدن» نکند.
     """
 
     progress_signal = pyqtSignal(str)
@@ -170,16 +186,11 @@ class NVRScanThread(QThread):
         # رفع درخواست: علاوه بر برند خود دستگاه NVR، برند دوربین‌های متصل به
         # آن هم به‌عنوان معیار جستجوی الگوی URL هر کانال در نظر گرفته می‌شود
         # (دقیقاً مثل بخش تشخیص خودکار مسیر یک دوربین تکی در add_camera_dialog.py).
-        # چرا لازم است: برند NVR فقط تعیین‌کننده‌ی نرم‌افزار/رابط خود NVR است؛
-        # در عمل خیلی از NVRها (به‌خصوص مدل‌های عمومی/OEM) از دوربین‌های
-        # برندهای دیگر هم پشتیبانی می‌کنند و مسیر واقعی استریم هر کانال از
-        # الگوی برند *دوربین* متصل پیروی می‌کند، نه لزوماً برند NVR. قبلاً فقط
-        # الگوهای برند NVR (یا در حالت "auto" همه‌ی الگوها) امتحان می‌شد و اگر
-        # دوربین‌های متصل برند دیگری داشتند، کانال‌ها اشتباهاً «یافت نشد»
-        # گزارش می‌شدند.
         self.camera_brand = camera_brand
         self.max_channels = max_channels
         self._is_cancelled = False
+        self._diagnostics = []               # [(channel, detail_str), ...]
+        self._diagnostics_lock = threading.Lock()
 
     def cancel(self):
         self._is_cancelled = True
@@ -190,20 +201,54 @@ class NVRScanThread(QThread):
     def _probe_path(self, path):
         # probe_stream (رجوع کنید به rtsp_utils.py): هم از تداخل (race condition)
         # با پخش زنده‌ی هم‌زمان سایر دوربین‌ها روی متغیر محیطی FFmpeg جلوگیری
-        # می‌کند، و هم چند بار تلاش می‌کند تا اولین کی‌فریم برسد (رفع false
-        # negative که باعث «کانال هست ولی پیدا نمی‌شود» بود).
+        # می‌کند، و هم چند بار تلاش می‌کند تا اولین کی‌فریم برسد.
         return probe_stream(self._build_url(path))
 
-    def _resolve_brands_to_try(self):
-        """رفع درخواست: ترکیب برند NVR و برند دوربین‌های متصل به‌عنوان معیار
-        جستجوی الگوی هر کانال (رجوع کنید به توضیح camera_brand در __init__).
+    def _record_diagnostic(self, channel, detail):
+        with self._diagnostics_lock:
+            self._diagnostics.append((channel, detail))
 
-        - اگر هر دو برند صراحتاً انتخاب شده باشند (نه "auto")، الگوهای هر دو
-          برند به‌ترتیب امتحان می‌شوند (بدون تکرار اگر یکسان باشند).
-        - اگر حداقل یکی از این دو روی "auto" باشد، الگوهای برند(های)
-          صراحتاً انتخاب‌شده ابتدا (اولویت) و سپس بقیه‌ی برندهای شناخته‌شده هم
-          امتحان می‌شوند تا هیچ کانال واقعی از قلم نیفتد.
-        """
+    def _http_ports(self):
+        ports = list(COMMON_HTTP_PORTS)
+        try:
+            onvif_port_int = int(self.onvif_port)
+            if onvif_port_int not in ports:
+                ports.append(onvif_port_int)
+        except (TypeError, ValueError):
+            pass
+        return ports
+
+    # -------------------------------------------------- روش ۱: API وب ---
+
+    def _try_http_api(self):
+        """رجوع کنید به nvr_http_api.py. در صورت موفقیت، هر کانال پیشنهادی
+        با یک DESCRIBE سریع هم تایید می‌شود تا از پیکربندی نامعتبر/کانال
+        غیرفعال (که در تنظیمات هست ولی استریم نمی‌دهد) کاذب گزارش نشود."""
+        try:
+            api_channels = discover_channels_http(self.ip, self.user, self.pwd, ports=self._http_ports())
+        except Exception:
+            api_channels = None
+        if not api_channels or self._is_cancelled:
+            return []
+
+        self.progress_signal.emit("کانال‌ها از طریق API وب NVR پیدا شد؛ در حال تایید...")
+        verified = []
+        for ch in api_channels:
+            if self._is_cancelled:
+                break
+            result = describe_probe(self.ip, self.rtsp_port, ch["path"], self.user, self.pwd)
+            if result:
+                verified.append(ch)
+            else:
+                self._record_diagnostic(ch["channel"], result.detail)
+        return verified
+
+    # -------------------------------------------------- روش ۳: brute ---
+
+    def _resolve_brands_to_try(self):
+        """ترکیب برند NVR و برند دوربین‌های متصل به‌عنوان معیار جستجوی
+        الگوی هر کانال (چون در عمل برند NVR فقط رابط خودش را تعیین می‌کند؛
+        دوربین‌های متصل ممکن است برند دیگری داشته باشند)."""
         all_brands = ["dahua_iap", "hikvision", "sunell", "generic"]
 
         ordered = []
@@ -220,24 +265,87 @@ class NVRScanThread(QThread):
 
     def _probe_channel(self, ch, brands_to_try):
         """یک کانال را با تمام الگوهای برندهای موردنظر تست می‌کند.
+
+        هر مسیر ابتدا با یک DESCRIBE سریع (rtsp_probe) بررسی می‌شود؛ فقط
+        وقتی نتیجه نامشخص است (نه رد قطعی مثل 401/404) یک بار هم با روش
+        قدیمی‌تر OpenCV/FFmpeg (probe_stream) دوباره تایید می‌شود - برخی
+        دستگاه‌های عجیب به DESCRIBE خام درست پاسخ نمی‌دهند ولی پخش واقعی
+        کار می‌کند.
+
         خروجی: (channel, name, path) در صورت موفقیت، یا None."""
+        last_detail = None
         for brand in brands_to_try:
             if self._is_cancelled:
                 return None
             for path in _format_templates(CHANNEL_TEMPLATES[brand], ch):
                 if self._is_cancelled:
                     return None
-                try:
-                    if self._probe_path(path):
-                        return (ch, f"کانال {ch}", path)
-                except Exception:
-                    continue
+                result = describe_probe(self.ip, self.rtsp_port, path, self.user, self.pwd)
+                if result:
+                    return (ch, f"کانال {ch}", path)
+                if result.status in ("timeout", "error", "refused"):
+                    try:
+                        if self._probe_path(path):
+                            return (ch, f"کانال {ch}", path)
+                    except Exception:
+                        pass
+                last_detail = result.detail
+        if last_detail:
+            self._record_diagnostic(ch, last_detail)
         return None
+
+    def _summarize_diagnostics(self):
+        """از تشخیص‌های جمع‌آوری‌شده حین اسکن (401/404/timeout و ...) یک
+        پیام راهنمای دقیق‌تر از پیام عمومی «هیچ کانالی یافت نشد» می‌سازد."""
+        if not self._diagnostics:
+            return (
+                "هیچ کانالی یافت نشد. IP، پورت RTSP، نام کاربری/رمز عبور را بررسی "
+                "کنید یا برند NVR را به‌صورت دستی انتخاب کنید."
+            )
+
+        details = [d for _, d in self._diagnostics]
+        unauthorized = sum(1 for d in details if "401" in d or "رمز" in d)
+        refused_or_timeout = sum(1 for d in details if "timeout" in d.lower() or "رد شد" in d)
+
+        if unauthorized and unauthorized >= len(details) / 2:
+            return (
+                "هیچ کانالی تایید نشد: بیشتر پاسخ‌ها «نام کاربری/رمز عبور اشتباه» "
+                "(401) بودند. نام کاربری و رمز عبور را دوباره بررسی کنید."
+            )
+        if refused_or_timeout and refused_or_timeout >= len(details) / 2:
+            return (
+                "هیچ کانالی تایید نشد: بیشتر تلاش‌ها با timeout یا رد اتصال مواجه "
+                "شدند. IP/پورت RTSP و اتصال شبکه به NVR را بررسی کنید."
+            )
+        return (
+            "هیچ کانالی یافت نشد؛ مسیرهای امتحان‌شده برای این دستگاه معتبر "
+            "نبودند (404). ممکن است برند NVR/دوربین با الگوهای شناخته‌شده فرق "
+            "داشته باشد - برند را به‌صورت دستی امتحان کنید یا از ONVIF Device "
+            "Manager برای گرفتن آدرس دقیق کانال استفاده کنید."
+        )
 
     def run(self):
         found_count = 0
 
-        # ۱) تلاش برای کشف دقیق از طریق ONVIF (در صورت پشتیبانی، با مهلت زمانی محدود)
+        # ۱) سریع‌ترین و دقیق‌ترین روش: API وب سازنده (Hikvision ISAPI / Dahua CGI)
+        if not self._is_cancelled:
+            self.progress_signal.emit("در حال بررسی API وب NVR...")
+            http_channels = self._try_http_api()
+            if http_channels:
+                for ch in http_channels:
+                    if self._is_cancelled:
+                        break
+                    self.channel_found_signal.emit(ch["channel"], ch["name"], ch["path"])
+                    found_count += 1
+                self.finished_signal.emit(found_count)
+                return
+
+        if self._is_cancelled:
+            self.failed_signal.emit("جستجو لغو شد.")
+            self.finished_signal.emit(found_count)
+            return
+
+        # ۲) تلاش برای کشف دقیق از طریق ONVIF (در صورت پشتیبانی، با مهلت زمانی محدود)
         if self.onvif_port and not self._is_cancelled:
             self.progress_signal.emit("در حال تلاش برای کشف کانال‌ها از طریق ONVIF...")
             onvif_channels = try_onvif_discovery(self.ip, self.onvif_port, self.user, self.pwd)
@@ -255,9 +363,7 @@ class NVRScanThread(QThread):
             self.finished_signal.emit(found_count)
             return
 
-        # ۲) روش جایگزین: تست الگوهای RTSP شناخته‌شده برای هر کانال، به‌صورت موازی.
-        # الگوهای امتحان‌شده هم برند خود NVR و هم برند دوربین‌های متصل را
-        # پوشش می‌دهند (رجوع کنید به _resolve_brands_to_try).
+        # ۳) روش جایگزین: تست الگوهای RTSP شناخته‌شده برای هر کانال، به‌صورت موازی.
         brands_to_try = self._resolve_brands_to_try()
 
         self.progress_signal.emit(f"در حال بررسی {self.max_channels} کانال به‌صورت هم‌زمان...")
@@ -291,9 +397,6 @@ class NVRScanThread(QThread):
         if self._is_cancelled:
             self.failed_signal.emit("جستجو لغو شد.")
         elif found_count == 0:
-            self.failed_signal.emit(
-                "هیچ کانالی یافت نشد. IP، پورت RTSP، نام کاربری/رمز عبور را بررسی کنید "
-                "یا برند NVR را به‌صورت دستی انتخاب کنید."
-            )
+            self.failed_signal.emit(self._summarize_diagnostics())
 
         self.finished_signal.emit(found_count)
