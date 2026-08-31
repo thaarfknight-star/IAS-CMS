@@ -1,14 +1,10 @@
 import threading
 import concurrent.futures
-from urllib.parse import urlparse, parse_qs, unquote
 
 import cv2
-import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from rtsp_utils import open_capture, STREAM_FFMPEG_OPTS
-from annexb_extract import AnnexBAssembler
-from nvr_ws_protocol import NVRWebSocketSession, NVRWebSocketError
 
 # نکته کلیدی برای رفع مشکل «Live نبودن»:
 #   nobuffer / low_delay / max_delay کوچک از تجمع فریم در بافر داخلی FFmpeg جلوگیری می‌کنند.
@@ -191,35 +187,7 @@ class CameraStreamThread(QThread):
         finally:
             self._people_busy.clear()
 
-    def _process_and_emit(self, frame, frame_counter):
-        """منطق مشترک بین مسیر RTSP و مسیر WS: تشخیص چهره/شمارش افراد
-        ناهمزمان + رسم باکس‌ها + ارسال سیگنال frame_ready. (رفع تکرار کد؛
-        قبلاً این منطق فقط داخل run() برای مسیر RTSP وجود داشت.)"""
-        if frame_counter % self.process_every_n == 0:
-            self._submit_recognition(frame)
-
-        if self.count_people_enabled and frame_counter % self._people_interval == 0:
-            self._submit_people_count(frame)
-
-        display_frame = frame.copy()
-        self.face_engine.draw_results(display_frame, self._last_results)
-        if self.count_people_enabled:
-            for (x, y, bw, bh) in self._last_people_boxes:
-                cv2.rectangle(display_frame, (x, y), (x + bw, y + bh), (0, 165, 255), 2)
-
-        # frame خام (بدون باکس) هم ارسال می‌شود تا برای «ثبت چهره از تصویر زنده» استفاده شود.
-        self.frame_ready.emit(display_frame, frame)
-
     def run(self):
-        scheme = urlparse(self.rtsp_url).scheme
-        if scheme in ("iasws", "iaswss"):
-            # پروتکل وب اختصاصی NVR (بدون RTSP استاندارد) -- رجوع کنید به
-            # nvr_ws_protocol.py و annexb_extract.py.
-            self._run_ws()
-        else:
-            self._run_rtsp()
-
-    def _run_rtsp(self):
         cap = open_capture(self.rtsp_url, FFMPEG_LOW_LATENCY_OPTS)
         try:
             # بافر داخلی OpenCV/FFmpeg را به حداقل می‌رسانیم تا همیشه جدیدترین فریم نمایش داده شود.
@@ -243,124 +211,30 @@ class CameraStreamThread(QThread):
                 continue
 
             frame_counter += 1
-            self._process_and_emit(frame, frame_counter)
+
+            # تشخیص چهره به‌صورت ناهمزمان (پس‌زمینه) ارسال می‌شود و حلقه‌ی خواندن فریم
+            # را هرگز مسدود (block) نمی‌کند؛ در نتیجه تصویر همیشه با کمترین تاخیر ممکن
+            # (فقط تاخیر شبکه) نمایش داده می‌شود.
+            if frame_counter % self.process_every_n == 0:
+                self._submit_recognition(frame)
+
+            # شمارش افراد هم فقط وقتی کاربر آن را برای این دوربین روشن کرده باشد
+            # اجرا می‌شود؛ دقیقاً مثل تشخیص چهره، ناهمزمان و بدون مسدودکردن پخش.
+            if self.count_people_enabled and frame_counter % self._people_interval == 0:
+                self._submit_people_count(frame)
+
+            display_frame = frame.copy()
+            self.face_engine.draw_results(display_frame, self._last_results)
+            if self.count_people_enabled:
+                for (x, y, bw, bh) in self._last_people_boxes:
+                    cv2.rectangle(display_frame, (x, y), (x + bw, y + bh), (0, 165, 255), 2)
+
+            # frame خام (بدون باکس) هم ارسال می‌شود تا برای «ثبت چهره از تصویر زنده» استفاده شود.
+            self.frame_ready.emit(display_frame, frame)
 
         cap.release()
         self._executor.shutdown(wait=False)
         self._people_executor.shutdown(wait=False)
-
-    # ------------------------------------------------------------- WS ---
-
-    def _run_ws(self):
-        """پخش زنده از طریق پروتکل وب اختصاصی NVR.
-
-        محدودیت شناخته‌شده: فرمت دقیق هدر فریم‌های باینری این پروتکل برای این
-        دستگاه هنوز تایید نشده (رجوع کنید به docstring nvr_ws_protocol.py).
-        اینجا فرض می‌شود payload حاوی NAL خام H.264/H.265 با Annex-B start
-        code است و با PyAV دیکود می‌شود. اگر این فرض درست نباشد، بعد از چند
-        فریم ناموفق پیاپی با یک پیام خطای روشن (نه سکوت/کرش) گزارش می‌شود و
-        فریم‌های خام برای بررسی دستی روی دیسک ذخیره می‌شوند.
-        """
-        try:
-            import av  # PyAV؛ رجوع کنید به requirements.txt
-        except ImportError:
-            self.error_signal.emit(
-                "برای پخش از طریق پروتکل وب اختصاصی NVR، کتابخانه‌ی PyAV لازم است: "
-                "pip install av"
-            )
-            self._executor.shutdown(wait=False)
-            self._people_executor.shutdown(wait=False)
-            return
-
-        parsed = urlparse(self.rtsp_url)
-        channel = int((parsed.path or "/1").lstrip("/") or 1)
-        stream_type = parse_qs(parsed.query).get("stream", ["video1"])[0]
-        use_tls = parsed.scheme == "iaswss"
-        user = unquote(parsed.username) if parsed.username else ""
-        pwd = unquote(parsed.password) if parsed.password else ""
-
-        session = NVRWebSocketSession(parsed.hostname, parsed.port or 80, user, pwd, use_tls=use_tls)
-        try:
-            session.connect_and_auth()
-            session.open_live(channel, stream_type)
-        except NVRWebSocketError as exc:
-            self.error_signal.emit(f"خطا در اتصال WS به NVR: {exc}")
-            session.close()
-            self._executor.shutdown(wait=False)
-            self._people_executor.shutdown(wait=False)
-            return
-
-        self.connected_signal.emit()
-
-        assembler = AnnexBAssembler()
-        codec_names = ["h264", "hevc"]  # هر دو کدک امتحان می‌شوند تا مشخص شود کدام درست است
-        codec_ctx = None
-        consecutive_decode_failures = 0
-        MAX_DECODE_FAILURES = 60  # قبل از گزارش خطای قطعی، این تعداد NAL ناموفق را نادیده بگیر
-        dump_fh = None
-        frame_counter = 0
-
-        try:
-            while self._run_flag:
-                try:
-                    chunk = session.recv_frame(timeout=2.0)
-                except NVRWebSocketError as exc:
-                    self.error_signal.emit(f"اتصال WS قطع شد: {exc}")
-                    break
-
-                if chunk is None:
-                    continue
-                if isinstance(chunk, dict):
-                    continue  # پیام کنترلی متنی (مثلاً تایید live) -- نادیده گرفته می‌شود
-
-                nals = assembler.feed(chunk)
-                if not nals:
-                    continue
-
-                if codec_ctx is None:
-                    codec_ctx = av.CodecContext.create(codec_names[0], "r")
-
-                for nal in nals:
-                    packet = av.packet.Packet(nal)
-                    try:
-                        decoded = codec_ctx.decode(packet)
-                    except Exception:
-                        decoded = []
-
-                    if not decoded:
-                        consecutive_decode_failures += 1
-                        if consecutive_decode_failures == 1 and len(codec_names) > 1:
-                            # اولین شکست: شاید کدک اشتباه انتخاب شده (h264 vs hevc) -- عوض کن.
-                            codec_names.append(codec_names.pop(0))
-                            codec_ctx = av.CodecContext.create(codec_names[0], "r")
-                        if consecutive_decode_failures >= MAX_DECODE_FAILURES:
-                            if dump_fh is None:
-                                dump_fh = open("nvr_ws_raw_frames.bin", "wb")
-                            dump_fh.write(len(chunk).to_bytes(4, "little"))
-                            dump_fh.write(chunk)
-                            self.error_signal.emit(
-                                "دیکود ویدیوی این NVR (پروتکل WS) ناموفق بود -- فرمت هدر فریم این "
-                                "دستگاه با فرض فعلی (Annex-B خام) مطابقت ندارد. فریم‌های خام در "
-                                "nvr_ws_raw_frames.bin ذخیره شدند؛ این فایل را برای تعیین دقیق هدر بررسی کنید."
-                            )
-                            self._run_flag = False
-                            break
-                        continue
-
-                    consecutive_decode_failures = 0
-                    for av_frame in decoded:
-                        frame_bgr = av_frame.to_ndarray(format="bgr24")
-                        if not isinstance(frame_bgr, np.ndarray):
-                            continue
-                        frame_counter += 1
-                        self._process_and_emit(frame_bgr, frame_counter)
-        finally:
-            if dump_fh is not None:
-                dump_fh.close()
-            session.close_live(channel, stream_type)
-            session.close()
-            self._executor.shutdown(wait=False)
-            self._people_executor.shutdown(wait=False)
 
     def stop(self):
         self._run_flag = False

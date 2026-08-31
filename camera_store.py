@@ -2,7 +2,7 @@ import json
 import os
 import uuid
 
-from rtsp_utils import build_rtsp_url as _build_rtsp_url, build_ws_url as _build_ws_url
+from rtsp_utils import build_rtsp_url as _build_rtsp_url
 
 
 class CameraStore:
@@ -92,8 +92,7 @@ class CameraStore:
 
     # ------------------------------------------------------------ cameras --
 
-    def add_camera(self, name, ip, port, user, pwd, path, nvr_id=None, channel=None,
-                    full_url=None, proto="rtsp", ws_port=None):
+    def add_camera(self, name, ip, port, user, pwd, path, nvr_id=None, channel=None, full_url=None):
         cam = {
             "id": str(uuid.uuid4()),
             "name": name or ip,
@@ -105,10 +104,6 @@ class CameraStore:
             "nvr_id": nvr_id,
             "channel": channel,
             "full_url": full_url,
-            # "rtsp" (پیش‌فرض) یا "ws" برای پروتکل وب اختصاصی NVR (رجوع کنید
-            # به nvr_ws_protocol.py / camera_stream.py).
-            "proto": proto,
-            "ws_port": ws_port,
         }
         self.cameras.append(cam)
         self.save()
@@ -141,8 +136,7 @@ class CameraStore:
 
     # --------------------------------------------------------------- nvrs --
 
-    def add_nvr(self, name, ip, rtsp_port, onvif_port, user, pwd, brand="", camera_brand="",
-                proto="rtsp", ws_port=None):
+    def add_nvr(self, name, ip, rtsp_port, onvif_port, user, pwd, brand="", camera_brand=""):
         nvr = {
             "id": str(uuid.uuid4()),
             "name": name or ip,
@@ -156,11 +150,6 @@ class CameraStore:
             # می‌شود تا هنگام «بازخوانی کانال‌ها» دوباره به‌صورت پیش‌فرض همان
             # انتخاب قبلی در دیالوگ بیاید (رجوع کنید به nvr_scanner.py).
             "camera_brand": camera_brand,
-            # "rtsp" (پیش‌فرض، از طریق ONVIF/brute-force) یا "ws" برای
-            # NVRهایی که فقط از طریق پروتکل وب اختصاصی (بدون RTSP استاندارد)
-            # پخش زنده می‌دهند (رجوع کنید به nvr_ws_protocol.py).
-            "proto": proto,
-            "ws_port": ws_port,
         }
         self.nvrs.append(nvr)
         self.save_nvrs()
@@ -189,19 +178,7 @@ class CameraStore:
         return None
 
     def add_channel_camera(self, nvr: dict, channel: int, name: str, path: str = "", full_url: str = None):
-        """یک کانال کشف‌شده‌ی NVR را به‌عنوان دوربین جدید (متصل به آن NVR) ثبت می‌کند.
-
-        اگر خود NVR با proto="ws" ثبت شده باشد (پروتکل وب اختصاصی -- رجوع
-        کنید به nvr_ws_protocol.py) و full_url از پیش داده نشده باشد، آدرس
-        iasws:// متناظر همین‌جا ساخته می‌شود؛ بقیه‌ی برنامه (camera_stream.py)
-        این آدرس را از روی اسکیمش تشخیص می‌دهد، بدون نیاز به تغییر جای دیگری.
-        """
-        proto = nvr.get("proto", "rtsp")
-        if proto == "ws" and not full_url:
-            full_url = _build_ws_url(
-                nvr["ip"], nvr.get("ws_port") or 80,
-                nvr.get("user", ""), nvr.get("pass", ""), channel=channel,
-            )
+        """یک کانال کشف‌شده‌ی NVR را به‌عنوان دوربین جدید (متصل به آن NVR) ثبت می‌کند."""
         return self.add_camera(
             name=name,
             ip=nvr["ip"],
@@ -212,8 +189,6 @@ class CameraStore:
             nvr_id=nvr["id"],
             channel=channel,
             full_url=full_url,
-            proto=proto,
-            ws_port=nvr.get("ws_port"),
         )
 
     @staticmethod

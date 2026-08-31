@@ -84,19 +84,6 @@ def build_rtsp_url(ip: str, port, user: str = "", pwd: str = "", path: str = "")
     return f"rtsp://{auth}{ip}:{port}/{path}" if path else f"rtsp://{auth}{ip}:{port}"
 
 
-def build_ws_url(ip: str, port, user: str = "", pwd: str = "",
-                  channel: int = 1, stream_type: str = "video1", use_tls: bool = False) -> str:
-    """آدرس داخلی (اسکیم ``iasws://``) برای پروتکل وب اختصاصی NVR می‌سازد
-    (رجوع کنید به nvr_ws_protocol.py). این آدرس واقعی نیست که به بیرون
-    فرستاده شود -- فقط راهی برای این است که camera_stream.py بدون نیاز به
-    تغییر امضای توابع/سیگنال‌های موجود در main.py، تشخیص دهد باید از مسیر
-    WebSocket به‌جای RTSP/OpenCV استفاده کند (رجوع کنید به CameraStreamThread.run).
-    """
-    scheme = "iaswss" if use_tls else "iasws"
-    auth = f"{quote(user, safe='')}:{quote(pwd, safe='')}@" if user or pwd else ""
-    return f"{scheme}://{auth}{ip}:{port}/{channel}?stream={stream_type}"
-
-
 def probe_stream(url: str, ffmpeg_options: str = PROBE_FFMPEG_OPTS, attempts: int = PROBE_READ_ATTEMPTS) -> bool:
     """بررسی می‌کند آیا یک آدرس RTSP معتبر است و فریم واقعی برمی‌گرداند یا نه.
 

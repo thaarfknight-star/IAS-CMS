@@ -19,6 +19,10 @@ from camera_store import CameraStore
 from camera_stream import CameraStreamThread
 from add_camera_dialog import AddCameraDialog
 from add_nvr_dialog import AddNVRDialog
+try:
+    from nvr_webview_dialog import NVRWebViewDialog, _WEBENGINE_AVAILABLE
+except ImportError:
+    NVRWebViewDialog, _WEBENGINE_AVAILABLE = None, False
 from face_library_dialog import FaceLibraryDialog
 from device_detect import DeviceDetectThread
 
@@ -888,7 +892,7 @@ class MainWindow(QMainWindow):
             self.open_live_view(cam)
 
     def open_add_nvr_dialog(self, prefill_ip=None, detected_brand=None, detected_onvif_port=None,
-                             prefill_user=None, prefill_pass=None, detected_ws_port=None):
+                             prefill_user=None, prefill_pass=None):
         dialog = AddNVRDialog(self)
         if prefill_ip:
             dialog.ip_input.setText(prefill_ip)
@@ -896,10 +900,8 @@ class MainWindow(QMainWindow):
             dialog.user_input.setText(prefill_user)
         if prefill_pass is not None:
             dialog.pass_input.setText(prefill_pass)
-        if detected_brand or detected_ws_port:
-            dialog.set_detected_brand(
-                brand=detected_brand, onvif_port=detected_onvif_port, ws_port=detected_ws_port
-            )
+        if detected_brand:
+            dialog.set_detected_brand(brand=detected_brand, onvif_port=detected_onvif_port)
         if dialog.exec():
             data = dialog.get_nvr_data()
             nvr = self.camera_store.add_nvr(
@@ -907,7 +909,6 @@ class MainWindow(QMainWindow):
                 onvif_port=data["onvif_port"], user=data["user"],
                 pwd=data["pass"], brand=data["brand"],
                 camera_brand=data["camera_brand"],
-                proto=data["proto"], ws_port=data["ws_port"],
             )
             added_cams = [
                 self._add_channel_from_entry(nvr, entry, default_name)
@@ -952,9 +953,6 @@ class MainWindow(QMainWindow):
         cam_brand_idx = dialog.camera_brand_combo.findData(nvr.get("camera_brand", "auto"))
         if cam_brand_idx >= 0:
             dialog.camera_brand_combo.setCurrentIndex(cam_brand_idx)
-        if nvr.get("proto") == "ws":
-            dialog.ws_protocol_checkbox.setChecked(True)
-            dialog.ws_port_input.setText(str(nvr.get("ws_port") or "80"))
 
         if dialog.exec():
             data = dialog.get_nvr_data()
@@ -979,6 +977,70 @@ class MainWindow(QMainWindow):
             self.camera_store.remove_nvr(nvr_id, cascade=True)
             self.reload_camera_list()
 
+    def open_nvr_webview(self, nvr_id):
+        """رفع درخواست: باز کردن پنل وب واقعی NVR داخل برنامه (با موتور
+        Chromium از طریق PyQt6-WebEngine)، برای دستگاه‌هایی که سرویس RTSP
+        آن‌ها به‌دلیل باگ فریمور با کلاینت‌های استاندارد (این برنامه، VLC،
+        live555) کار نمی‌کند. این پنل هم پخش زنده‌ی سالم را ممکن می‌کند و
+        هم لیست واقعی کانال‌های متصل به NVR را (با دکمه‌ی «دریافت لیست
+        کانال‌ها») مستقیماً از خودِ NVR می‌گیرد."""
+        if not _WEBENGINE_AVAILABLE:
+            QMessageBox.warning(
+                self, "بسته‌ی موردنیاز نصب نیست",
+                "برای این قابلیت باید بسته‌ی PyQt6-WebEngine نصب باشد:\n\n"
+                "pip install PyQt6-WebEngine\n\n"
+                "بعد از نصب، برنامه را دوباره اجرا کنید."
+            )
+            return
+        nvr = self.camera_store.get_nvr(nvr_id)
+        if not nvr:
+            return
+        dialog = NVRWebViewDialog(nvr, self)
+        dialog.channels_fetched.connect(lambda ch_list: self._on_nvr_channels_fetched(nvr, ch_list))
+        dialog.exec()
+
+    def _on_nvr_channels_fetched(self, nvr, ch_list):
+        """کانال‌هایی که از پنل وب NVR دریافت شده‌اند (via g_deviceList) را،
+        در صورت تأیید کاربر، به لیست دوربین‌های زیر همین NVR اضافه می‌کند.
+
+        نکته: چون سرویس RTSP این‌گونه NVRها معیوب است، دوربین‌های اضافه‌شده
+        از این مسیر را نمی‌توان با پخش‌کننده‌ی معمول RTSP این برنامه دید؛
+        برای دیدن پخش زنده‌شان همچنان باید از همان دیالوگ پنل وب NVR استفاده
+        کرد. این افزودن صرفاً برای نگه‌داشتن فهرست/نام‌گذاری کانال‌هاست.
+        """
+        if not ch_list:
+            return
+        existing_channels = {c.get("channel") for c in self.camera_store.cameras_for_nvr(nvr["id"])}
+        new_entries = []
+        for i, dev in enumerate(ch_list):
+            # ساختار دقیق آیتم‌های g_deviceList ممکن است بسته به مدل کمی
+            # فرق کند؛ چند نام کلید رایج را امتحان می‌کنیم.
+            chn = dev.get("chn") or dev.get("channel") or (i + 1)
+            if chn in existing_channels:
+                continue
+            name = dev.get("name") or dev.get("dev_name") or f"کانال {chn}"
+            new_entries.append((chn, name))
+
+        if not new_entries:
+            QMessageBox.information(self, "چیزی برای افزودن نیست",
+                                     "همه‌ی این کانال‌ها قبلاً به لیست شما اضافه شده‌اند.")
+            return
+
+        names = "\n".join(f"- کانال {c} ({n})" for c, n in new_entries)
+        confirm = QMessageBox.question(
+            self, "افزودن کانال‌ها",
+            f"{len(new_entries)} کانال جدید از این NVR پیدا شد:\n\n{names}\n\n"
+            "توجه: چون RTSP این NVR مشکل دارد، پخش زنده‌ی این کانال‌ها فقط از "
+            "طریق همان پنجره‌ی «پنل وب NVR» ممکن است، نه پخش‌کننده‌ی معمول.\n\n"
+            "آیا به لیست «دوربین‌ها و NVRهای من» اضافه شوند؟"
+        )
+        if confirm != QMessageBox.StandardButton.Yes:
+            return
+
+        for chn, name in new_entries:
+            self.camera_store.add_channel_camera(nvr, chn, name, path="")
+        self.reload_camera_list()
+
     def show_camera_context_menu(self, pos):
         item = self.camera_list.itemAt(pos)
         if not item:
@@ -997,9 +1059,17 @@ class MainWindow(QMainWindow):
         else:  # nvr
             rescan_action = QAction("بازخوانی کانال‌ها", self)
             rescan_action.triggered.connect(lambda: self.rescan_nvr(data["id"]))
+            # رفع درخواست: برای NVRهایی که سرویس RTSP‌شان مشکل فریمور دارد
+            # (پخش زنده و بازخوانی کانال از طریق RTSP/ONVIF جواب نمی‌دهد)،
+            # یک راه جایگزین: باز کردن پنل وب واقعی خود NVR داخل برنامه (با
+            # موتور Chromium) که هم پخش زنده در آن سالم کار می‌کند و هم
+            # می‌توان لیست کانال‌های واقعی را از همان‌جا گرفت.
+            webview_action = QAction("باز کردن پنل وب NVR (برای دستگاه‌های با RTSP خراب)", self)
+            webview_action.triggered.connect(lambda: self.open_nvr_webview(data["id"]))
             delete_action = QAction("حذف NVR و همه کانال‌ها", self)
             delete_action.triggered.connect(lambda: self.delete_nvr(data["id"]))
             menu.addAction(rescan_action)
+            menu.addAction(webview_action)
             menu.addAction(delete_action)
         menu.exec(self.camera_list.mapToGlobal(pos))
 
@@ -1117,12 +1187,11 @@ class MainWindow(QMainWindow):
         ip = self._detect_ip
         self._reset_detect_ui()
         scan_user, scan_pass = self._scan_credentials()
-        if kind in ("nvr", "nvr_ws"):
+        if kind == "nvr":
             self.open_add_nvr_dialog(
                 prefill_ip=ip,
                 detected_brand=payload.get("brand"),
                 detected_onvif_port=payload.get("onvif_port"),
-                detected_ws_port=payload.get("ws_port"),
                 prefill_user=scan_user,
                 prefill_pass=scan_pass,
             )
