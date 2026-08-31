@@ -2,7 +2,7 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QLabel,
     QComboBox, QSpinBox, QPushButton, QListWidget, QListWidgetItem,
-    QDialogButtonBox, QMessageBox
+    QDialogButtonBox, QMessageBox, QCheckBox
 )
 
 from nvr_scanner import NVRScanThread, BRAND_LABELS
@@ -47,6 +47,19 @@ class AddNVRDialog(QDialog):
         self.max_channels_input.setRange(1, 128)
         self.max_channels_input.setValue(16)
 
+        # رفع درخواست: پشتیبانی از NVRهایی که RTSP استاندارد ندارند و فقط از
+        # طریق پروتکل وب اختصاصی (WebSocket) پخش زنده می‌دهند -- رجوع کنید به
+        # nvr_ws_protocol.py. وقتی این گزینه فعال باشد، جستجوی کانال به‌جای
+        # ONVIF/RTSP، از طریق همان پروتکل انجام می‌شود (کانال‌ها با باز کردن
+        # پخش زنده روی هر شماره و بررسی رسیدن داده تشخیص داده می‌شوند).
+        self.ws_protocol_checkbox = QCheckBox(
+            "این NVR فقط از طریق پروتکل وب اختصاصی در دسترس است (بدون RTSP استاندارد)"
+        )
+        self.ws_port_input = QLineEdit("80")
+        self.ws_port_input.setPlaceholderText("پورت وب/WebSocket دستگاه (معمولاً همان پورت رابط تحت‌وب)")
+        self.ws_port_input.setEnabled(False)
+        self.ws_protocol_checkbox.toggled.connect(self.ws_port_input.setEnabled)
+
         form = QFormLayout()
         form.addRow("نام NVR:", self.name_input)
         form.addRow("آدرس IP:", self.ip_input)
@@ -57,6 +70,8 @@ class AddNVRDialog(QDialog):
         form.addRow("برند NVR:", self.brand_combo)
         form.addRow("برند دوربین‌های متصل:", self.camera_brand_combo)
         form.addRow("حداکثر تعداد کانال برای بررسی:", self.max_channels_input)
+        form.addRow(self.ws_protocol_checkbox)
+        form.addRow("پورت وب اختصاصی (WS):", self.ws_port_input)
 
         self.scan_btn = QPushButton("جستجوی کانال‌های متصل")
         self.scan_btn.clicked.connect(self.start_scan)
@@ -100,16 +115,23 @@ class AddNVRDialog(QDialog):
         layout.addWidget(self.buttons)
         self.setLayout(layout)
 
-    def set_detected_brand(self, brand=None, onvif_port=None):
+    def set_detected_brand(self, brand=None, onvif_port=None, ws_port=None):
         """نوع دستگاه از قبل (با device_detect.py) NVR تشخیص داده شده؛ برند/پورت
         ONVIF شناسایی‌شده را از پیش پر می‌کند و بلافاصله اسکن کانال‌ها را
-        شروع می‌کند تا کاربر مجبور به کلیک دوباره روی «جستجو» نباشد."""
-        if brand:
+        شروع می‌کند تا کاربر مجبور به کلیک دوباره روی «جستجو» نباشد.
+
+        اگر ws_port مقدار داشته باشد، یعنی device_detect.py این دستگاه را از
+        طریق پروتکل وب اختصاصی (نه ONVIF/RTSP) شناسایی کرده؛ در این حالت
+        گزینه‌ی «پروتکل وب اختصاصی» از پیش تیک زده می‌شود."""
+        if ws_port:
+            self.ws_protocol_checkbox.setChecked(True)
+            self.ws_port_input.setText(str(ws_port))
+        elif brand:
             idx = self.brand_combo.findData(brand)
             if idx != -1:
                 self.brand_combo.setCurrentIndex(idx)
-        if onvif_port:
-            self.onvif_port_input.setText(str(onvif_port))
+            if onvif_port:
+                self.onvif_port_input.setText(str(onvif_port))
         QTimer.singleShot(0, self.start_scan)
 
     # ------------------------------------------------------------- scan ---
@@ -148,6 +170,10 @@ class AddNVRDialog(QDialog):
             brand=self.brand_combo.currentData(),
             camera_brand=self.camera_brand_combo.currentData(),
             max_channels=self.max_channels_input.value(),
+            force_ws=self.ws_protocol_checkbox.isChecked(),
+            ws_port=(self.ws_port_input.text().strip() or "80") if (
+                self.ws_protocol_checkbox.isChecked() or self.ws_port_input.text().strip()
+            ) else None,
         )
         self.scan_thread.progress_signal.connect(self.status_label.setText)
         self.scan_thread.channel_found_signal.connect(self._on_channel_found)
@@ -156,7 +182,7 @@ class AddNVRDialog(QDialog):
         self.scan_thread.start()
 
     def _on_channel_found(self, channel, name, path_or_url):
-        is_full_url = path_or_url.startswith("rtsp://")
+        is_full_url = path_or_url.startswith(("rtsp://", "iasws://", "iaswss://"))
         entry = {
             "channel": channel,
             "name": name,
@@ -166,7 +192,13 @@ class AddNVRDialog(QDialog):
         self.found_channels.append(entry)
 
         default_name = f"{self.name_input.text().strip() or 'NVR'} - کانال {channel}"
-        item = QListWidgetItem(f"{default_name}   ({'ONVIF' if is_full_url else path_or_url})")
+        if path_or_url.startswith(("iasws://", "iaswss://")):
+            source_label = "پروتکل وب اختصاصی"
+        elif is_full_url:
+            source_label = "ONVIF"
+        else:
+            source_label = path_or_url
+        item = QListWidgetItem(f"{default_name}   ({source_label})")
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
         item.setCheckState(Qt.CheckState.Checked)
         item.setData(Qt.ItemDataRole.UserRole, entry)
@@ -259,6 +291,8 @@ class AddNVRDialog(QDialog):
             "pass": self.pass_input.text().strip(),
             "brand": self.brand_combo.currentData(),
             "camera_brand": self.camera_brand_combo.currentData(),
+            "proto": "ws" if self.ws_protocol_checkbox.isChecked() else "rtsp",
+            "ws_port": self.ws_port_input.text().strip() or "80",
         }
 
     def get_selected_channels(self):

@@ -24,6 +24,11 @@ from rtsp_utils import build_rtsp_url, frames_look_identical, probe_stream
 from rtsp_probe import describe_probe
 from nvr_http_api import discover_channels_http, COMMON_HTTP_PORTS
 from nvr_scanner import CHANNEL_TEMPLATES, _format_templates, try_onvif_discovery
+from nvr_ws_protocol import NVRWebSocketSession, NVRWebSocketError
+
+# پورت‌های رایج برای پروتکل وب اختصاصی برخی NVRها (رجوع کنید به
+# nvr_ws_protocol.py) -- معمولاً همان پورت رابط تحت‌وب دستگاه است.
+_WS_CANDIDATE_PORTS = (80, 8080, 443, 7681)
 
 # بعد از کانال ۱، این کانال‌ها هم برای تایید چندکاناله بودن دستگاه امتحان
 # می‌شوند (نه فقط کانال ۲): برخی NVRها کانال ۲ خالی/غیرفعال دارند و فقط
@@ -110,6 +115,34 @@ class DeviceDetectThread(QThread):
             self.detected_signal.emit("camera", {"path": only["path"], "full_url": full_url})
         return True
 
+    def _try_ws_protocol(self):
+        """رفع درخواست: لایه‌ی چهارم -- برخی NVRها (مثل دستگاهی که این پروتکل
+        از رویش reverse-engineer شد) اصلاً RTSP/ONVIF/API وب استاندارد ندارند
+        و فقط از طریق پروتکل وب اختصاصی WebSocket پخش زنده می‌دهند. اگر سه
+        روش قبلی هیچ‌کدام جواب ندادند، هندشیک این پروتکل روی چند پورت رایج
+        امتحان می‌شود؛ موفقیت در همان هندشیک (بدون نیاز به شمارش کامل کانال‌ها
+        در این مرحله) کافی است تا دستگاه را به‌عنوان NVR با این پروتکل معرفی
+        کند و کاربر را به دیالوگ افزودن NVR (با گزینه‌ی WS از پیش تیک‌خورده)
+        بفرستد؛ شمارش دقیق کانال‌ها همان‌جا با AddNVRDialog انجام می‌شود.
+        """
+        candidate_ports = [p for p in self.open_ports if p]
+        for p in _WS_CANDIDATE_PORTS:
+            if p not in candidate_ports:
+                candidate_ports.append(p)
+
+        for port in candidate_ports:
+            if self._is_cancelled:
+                return None
+            session = NVRWebSocketSession(self.ip, port, self.user, self.pwd, timeout=3.0)
+            try:
+                session.connect_and_auth()
+            except NVRWebSocketError:
+                continue
+            finally:
+                session.close()
+            return port
+        return None
+
     def run(self):
         # ۱) سریع‌ترین و دقیق‌ترین روش: API وب سازنده.
         self.progress_signal.emit("در حال بررسی API وب دستگاه...")
@@ -176,6 +209,17 @@ class DeviceDetectThread(QThread):
                 self.detected_signal.emit("nvr", {"brand": brand, "onvif_port": ""})
             else:
                 self.detected_signal.emit("camera", {"path": path_ch1, "full_url": None})
+            return
+
+        # ۴) آخرین راه‌حل: پروتکل وب اختصاصی WebSocket (رجوع کنید به
+        # nvr_ws_protocol.py) -- برای NVRهایی که هیچ‌کدام از سه روش استاندارد
+        # بالا رویشان جواب نمی‌دهد.
+        if self._is_cancelled:
+            return
+        self.progress_signal.emit("در حال بررسی پروتکل وب اختصاصی...")
+        ws_port = self._try_ws_protocol()
+        if ws_port:
+            self.detected_signal.emit("nvr_ws", {"ws_port": str(ws_port)})
             return
 
         self.failed_signal.emit(

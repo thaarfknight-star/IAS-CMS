@@ -6,7 +6,8 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from nvr_http_api import discover_channels_http, COMMON_HTTP_PORTS
 from rtsp_probe import describe_probe
-from rtsp_utils import build_rtsp_url, probe_stream
+from rtsp_utils import build_rtsp_url, build_ws_url, probe_stream
+from nvr_ws_protocol import probe_channels as ws_probe_channels
 
 # --------------------------------------------------------------------------
 # معماری جدید جست‌وجو (بازنویسی کامل - قبلاً فقط ONVIF -> brute-force RTSP بود):
@@ -175,7 +176,8 @@ class NVRScanThread(QThread):
     failed_signal = pyqtSignal(str)
 
     def __init__(self, ip, rtsp_port, onvif_port, user, pwd, brand="auto",
-                 camera_brand="auto", max_channels=16, parent=None):
+                 camera_brand="auto", max_channels=16, parent=None,
+                 force_ws=False, ws_port=None):
         super().__init__(parent)
         self.ip = ip
         self.rtsp_port = rtsp_port
@@ -188,6 +190,14 @@ class NVRScanThread(QThread):
         # (دقیقاً مثل بخش تشخیص خودکار مسیر یک دوربین تکی در add_camera_dialog.py).
         self.camera_brand = camera_brand
         self.max_channels = max_channels
+        # رفع درخواست: پشتیبانی از NVRهایی که RTSP استاندارد ندارند و فقط از
+        # طریق پروتکل وب اختصاصی (WebSocket) پخش زنده می‌دهند -- رجوع کنید به
+        # nvr_ws_protocol.py. اگر کاربر صریحاً این گزینه را در دیالوگ افزودن
+        # NVR فعال کرده باشد (force_ws=True)، هیچ‌کدام از سه لایه‌ی دیگر
+        # (که همگی روی RTSP/ONVIF بنا شده‌اند و روی این نوع دستگاه بی‌فایده‌اند)
+        # امتحان نمی‌شوند و مستقیم سراغ این پروتکل می‌رود.
+        self.force_ws = force_ws
+        self.ws_port = ws_port
         self._is_cancelled = False
         self._diagnostics = []               # [(channel, detail_str), ...]
         self._diagnostics_lock = threading.Lock()
@@ -294,6 +304,31 @@ class NVRScanThread(QThread):
             self._record_diagnostic(ch, last_detail)
         return None
 
+    # ---------------------------------------------- روش ۴: WS اختصاصی ---
+
+    def _try_ws_protocol(self):
+        """رجوع کنید به nvr_ws_protocol.py. برخلاف سه روش دیگر، این روش برای
+        NVRهایی است که اصلاً RTSP استاندارد ندارند -- کانال‌ها با باز کردن
+        پخش زنده روی یک اتصال WS مشترک و بررسی رسیدن داده‌ی باینری کشف
+        می‌شوند (نه با URLهای RTSP)."""
+        ws_port = self.ws_port or 80
+        self.progress_signal.emit("در حال بررسی پروتکل وب اختصاصی NVR...")
+        results = ws_probe_channels(
+            self.ip, ws_port, self.user, self.pwd,
+            max_channels=self.max_channels,
+            cancel_check=lambda: self._is_cancelled,
+        )
+        found = []
+        for r in results:
+            if self._is_cancelled:
+                break
+            if r.ok:
+                url = build_ws_url(self.ip, ws_port, self.user, self.pwd, channel=r.channel)
+                found.append({"channel": r.channel, "name": f"کانال {r.channel}", "url": url})
+            elif r.detail:
+                self._record_diagnostic(r.channel, r.detail)
+        return found
+
     def _summarize_diagnostics(self):
         """از تشخیص‌های جمع‌آوری‌شده حین اسکن (401/404/timeout و ...) یک
         پیام راهنمای دقیق‌تر از پیام عمومی «هیچ کانالی یافت نشد» می‌سازد."""
@@ -326,6 +361,23 @@ class NVRScanThread(QThread):
 
     def run(self):
         found_count = 0
+
+        # ۰) اگر کاربر صریحاً «پروتکل وب اختصاصی» را انتخاب کرده باشد، مستقیم
+        # همان امتحان می‌شود و سه روش دیگر (که همه روی RTSP/ONVIF متکی‌اند و
+        # روی چنین دستگاهی همیشه شکست می‌خورند) اصلاً امتحان نمی‌شوند.
+        if self.force_ws:
+            ws_channels = self._try_ws_protocol()
+            for ch in ws_channels:
+                if self._is_cancelled:
+                    break
+                self.channel_found_signal.emit(ch["channel"], ch["name"], ch["url"])
+                found_count += 1
+            if self._is_cancelled:
+                self.failed_signal.emit("جستجو لغو شد.")
+            elif found_count == 0:
+                self.failed_signal.emit(self._summarize_diagnostics())
+            self.finished_signal.emit(found_count)
+            return
 
         # ۱) سریع‌ترین و دقیق‌ترین روش: API وب سازنده (Hikvision ISAPI / Dahua CGI)
         if not self._is_cancelled:
@@ -392,6 +444,19 @@ class NVRScanThread(QThread):
             for ch in sorted(results):
                 found_ch, name, path = results[ch]
                 self.channel_found_signal.emit(found_ch, name, path)
+                found_count += 1
+
+        # ۴) آخرین راه‌حل: اگر هیچ‌کدام از سه روش مبتنی‌بر RTSP/ONVIF جواب
+        # ندادند و کاربر یک «پورت WS اختصاصی» وارد کرده (حتی بدون تیک زدن
+        # گزینه‌ی اجباری)، پیش از گزارش شکست کامل، پروتکل وب اختصاصی هم
+        # امتحان می‌شود -- برای NVRهایی مثل این دستگاه که اصلاً RTSP باز
+        # ندارند، این تنها راه واقعی کشف کانال‌هاست.
+        if found_count == 0 and not self._is_cancelled and self.ws_port:
+            ws_channels = self._try_ws_protocol()
+            for ch in ws_channels:
+                if self._is_cancelled:
+                    break
+                self.channel_found_signal.emit(ch["channel"], ch["name"], ch["url"])
                 found_count += 1
 
         if self._is_cancelled:

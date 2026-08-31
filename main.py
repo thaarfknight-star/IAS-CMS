@@ -888,7 +888,7 @@ class MainWindow(QMainWindow):
             self.open_live_view(cam)
 
     def open_add_nvr_dialog(self, prefill_ip=None, detected_brand=None, detected_onvif_port=None,
-                             prefill_user=None, prefill_pass=None):
+                             prefill_user=None, prefill_pass=None, detected_ws_port=None):
         dialog = AddNVRDialog(self)
         if prefill_ip:
             dialog.ip_input.setText(prefill_ip)
@@ -896,8 +896,10 @@ class MainWindow(QMainWindow):
             dialog.user_input.setText(prefill_user)
         if prefill_pass is not None:
             dialog.pass_input.setText(prefill_pass)
-        if detected_brand:
-            dialog.set_detected_brand(brand=detected_brand, onvif_port=detected_onvif_port)
+        if detected_brand or detected_ws_port:
+            dialog.set_detected_brand(
+                brand=detected_brand, onvif_port=detected_onvif_port, ws_port=detected_ws_port
+            )
         if dialog.exec():
             data = dialog.get_nvr_data()
             nvr = self.camera_store.add_nvr(
@@ -905,6 +907,7 @@ class MainWindow(QMainWindow):
                 onvif_port=data["onvif_port"], user=data["user"],
                 pwd=data["pass"], brand=data["brand"],
                 camera_brand=data["camera_brand"],
+                proto=data["proto"], ws_port=data["ws_port"],
             )
             added_cams = [
                 self._add_channel_from_entry(nvr, entry, default_name)
@@ -949,6 +952,9 @@ class MainWindow(QMainWindow):
         cam_brand_idx = dialog.camera_brand_combo.findData(nvr.get("camera_brand", "auto"))
         if cam_brand_idx >= 0:
             dialog.camera_brand_combo.setCurrentIndex(cam_brand_idx)
+        if nvr.get("proto") == "ws":
+            dialog.ws_protocol_checkbox.setChecked(True)
+            dialog.ws_port_input.setText(str(nvr.get("ws_port") or "80"))
 
         if dialog.exec():
             data = dialog.get_nvr_data()
@@ -1111,11 +1117,12 @@ class MainWindow(QMainWindow):
         ip = self._detect_ip
         self._reset_detect_ui()
         scan_user, scan_pass = self._scan_credentials()
-        if kind == "nvr":
+        if kind in ("nvr", "nvr_ws"):
             self.open_add_nvr_dialog(
                 prefill_ip=ip,
                 detected_brand=payload.get("brand"),
                 detected_onvif_port=payload.get("onvif_port"),
+                detected_ws_port=payload.get("ws_port"),
                 prefill_user=scan_user,
                 prefill_pass=scan_pass,
             )

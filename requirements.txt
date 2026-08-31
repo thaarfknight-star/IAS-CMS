@@ -4,6 +4,11 @@ face-recognition>=1.3.0
 numpy>=1.24.0
 requests>=2.31.0
 
+# برای پروتکل وب اختصاصی برخی NVRها (بدون RTSP استاندارد) -- رجوع کنید به
+# nvr_ws_protocol.py / camera_stream.py._run_ws / annexb_extract.py
+websocket-client>=1.7.0
+av>=11.0.0
+
 # اختیاری: برای کشف دقیق‌تر کانال‌های NVR از طریق پروتکل استاندارد ONVIF
 # (در صورت نصب‌نبودن، برنامه به‌صورت خودکار از روش تست الگوهای RTSP برندهای
 # رایج - Dahua/Hikvision/Sunell/... - استفاده می‌کند، پس این بسته اجباری نیست)
