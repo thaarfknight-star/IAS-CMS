@@ -182,8 +182,16 @@ class CameraStreamThread(QThread):
             self._last_people_count = len(boxes)
             self.people_count_signal.emit(self._last_people_count)
         except Exception as e:
-            # خطای شمارش افراد نباید باعث توقف پخش زنده یا تشخیص چهره شود.
+            # رفع باگ «شمارش روشن می‌شود ولی هیچ عددی نمایش داده نمی‌شود»:
+            # قبلاً خطای شمارش افراد فقط با print در کنسول ثبت می‌شد و در
+            # رابط کاربری هیچ اثری نداشت (کاربری که از نسخه‌ی کامپایل‌شده/exe
+            # استفاده می‌کند اصلاً کنسولی نمی‌بیند) - نتیجه این بود که برچسب
+            # بالای پنجره‌ی دوربین برای همیشه خالی می‌ماند و به نظر می‌رسید
+            # قابلیت اصلاً کار نمی‌کند. حالا با یک مقدار ویژه (-1) به رابط
+            # کاربری هم خبر داده می‌شود تا پیام خطا را ببیند (رجوع کنید به
+            # main.py CameraSlotWidget.on_people_count).
             print(f"خطا در شمارش افراد: {e}")
+            self.people_count_signal.emit(-1)
         finally:
             self._people_busy.clear()
 

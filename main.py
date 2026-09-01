@@ -195,10 +195,26 @@ class CameraSlotWidget(QWidget):
         self._people_counting_enabled = enabled
         if self.stream_thread is not None:
             self.stream_thread.set_people_counting(enabled)
-        if not enabled:
+        if enabled:
+            # رفع باگ «روشن کردم ولی چیزی نمایش داده نشد»: قبلاً بعد از روشن
+            # کردن، تا رسیدن اولین چرخه‌ی واقعی شمارش (چند فریم بعد - رجوع
+            # کنید به CameraStreamThread._people_interval که ممکن است چند
+            # ثانیه طول بکشد) برچسب کاملاً خالی می‌ماند و کاربر فکر می‌کرد
+            # چیزی کار نمی‌کند. حالا بلافاصله یک وضعیت موقت نمایش داده
+            # می‌شود تا مشخص باشد شمارش واقعاً فعال شده و فقط منتظر اولین
+            # نتیجه هستیم.
+            self.people_count_label.setText("👤 در حال شمارش...")
+        else:
             self.people_count_label.setText("")
 
     def on_people_count(self, count):
+        if count < 0:
+            # رفع باگ: خطای داخلی شمارش افراد (رجوع کنید به
+            # CameraStreamThread._run_people_count) قبلاً فقط در کنسول چاپ
+            # می‌شد و کاربر هیچ نشانه‌ای در رابط کاربری نمی‌دید؛ حالا حداقل
+            # یک پیام کوتاه نمایش داده می‌شود.
+            self.people_count_label.setText("👤 خطا در شمارش")
+            return
         self.people_count_label.setText(f"👤 {count} نفر")
 
     def mousePressEvent(self, event):
