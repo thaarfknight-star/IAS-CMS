@@ -1,6 +1,7 @@
 import concurrent.futures
 import ipaddress
 import os
+import re
 import threading
 from urllib.parse import urlparse
 
@@ -89,6 +90,20 @@ CHANNEL_PROBE_WORKERS = max(3, min(6, (os.cpu_count() or 4)))
 
 def _format_templates(templates, ch):
     return [t.format(ch=ch, ch0=ch - 1, ch2=f"{ch:02d}") for t in templates]
+
+
+def _guess_direct_path(nvr_channel_path):
+    """اگر پروب مستقیم روی خود دوربین (_find_direct_camera_path) هیچ مسیری
+    پیدا نکرد، به‌عنوان بهترین حدس، همان مسیر کانال NVR (مثلاً
+    ``Streaming/Channels/301`` یا ``cam/realmonitor?channel=3&subtype=0``) به
+    معادل «کانال ۱» تبدیل می‌شود؛ چون از دید خودِ دوربین (وقتی مستقیماً به
+    IP خودش وصل می‌شویم، نه از طریق NVR) این تنها/اولین کانالش است."""
+    m = re.match(r"^Streaming/Channels/(\d+)(\d{2})$", nvr_channel_path)
+    if m:
+        return f"Streaming/Channels/1{m.group(2)}"
+    if "cam/realmonitor" in nvr_channel_path:
+        return re.sub(r"channel=\d+", "channel=1", nvr_channel_path)
+    return nvr_channel_path
 
 
 def _find_direct_camera_path(ip, user, pwd, rtsp_port="554"):
@@ -313,15 +328,14 @@ class NVRScanThread(QThread):
         return verified
 
     def _verify_direct_channels(self, channels):
-        """رفع درخواست: برای کانال‌هایی که IP واقعی دوربین‌شان معلوم است،
-        به‌جای تایید از طریق پروکسی NVR (که ممکن است خطا بدهد)، مستقیماً
-        روی IP خود دوربین، دقیقاً با همان الگوریتم افزودن دوربین تکی
-        (_find_direct_camera_path)، یک مسیر واقعاً کارکن پیدا می‌شود. اگر
-        پیدا شد، ``ch["path"]`` با همان مسیر مستقیم جایگزین و ``ch["direct"]``
-        روی True تنظیم می‌شود (یعنی باید مستقیماً به camera_ip وصل شد، نه
-        NVR). اگر پیدا نشد، به‌عنوان آخرین راه یک تلاش هم از طریق مسیر روی
-        خود NVR انجام می‌شود؛ شاید NVR کار کند ولی خودِ دوربین دسترسی مستقیم
-        را محدود کرده باشد."""
+        """رفع درخواست («به‌جای IP خود NVR، IP خود دوربین‌ها قرار بگیرد»):
+        برای کانال‌هایی که IP واقعی دوربین‌شان معلوم است، همیشه همان IP
+        (نه IP خود NVR) استفاده می‌شود - حتی اگر پروب مستقیم مسیر واقعی را
+        پیدا نکند. ابتدا با همان الگوریتم افزودن دوربین تکی
+        (_find_direct_camera_path) یک مسیر واقعاً تست‌شده روی خودِ دوربین پیدا
+        می‌شود؛ اگر پیدا نشد، به‌عنوان بهترین حدس از تبدیل مسیر کانال NVR به
+        معادل «کانال ۱» استفاده می‌شود (_guess_direct_path) - در هر دو حالت
+        IP نهایی همان IP دوربین است، هرگز IP خود NVR."""
         self.progress_signal.emit("در حال یافتن مسیر مستقیم دوربین‌های شناسایی‌شده...")
         verified = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=CHANNEL_PROBE_WORKERS) as executor:
@@ -338,21 +352,14 @@ class NVRScanThread(QThread):
                 except Exception:
                     direct_path = None
 
-                if direct_path is not None:
-                    ch["path"] = direct_path
-                    ch["direct"] = True
-                    verified.append(ch)
-                    continue
-
-                # مسیر مستقیم پیدا نشد؛ آخرین راه: همان مسیر حدسی روی خود NVR.
-                result = describe_probe(self.ip, self.rtsp_port, ch["path"], self.user, self.pwd)
-                if result:
-                    ch["direct"] = False
-                    verified.append(ch)
-                else:
+                ch["path"] = direct_path if direct_path is not None else _guess_direct_path(ch["path"])
+                ch["direct"] = True
+                if direct_path is None:
                     self._record_diagnostic(
-                        ch["channel"], f"دوربین {ch['camera_ip']} (اتصال مستقیم): {result.detail}"
+                        ch["channel"],
+                        f"دوربین {ch['camera_ip']}: مسیر واقعی تایید نشد؛ از مسیر پیش‌فرض حدسی استفاده شد."
                     )
+                verified.append(ch)
         return verified
 
     # -------------------------------------------------- روش ۳: brute ---
