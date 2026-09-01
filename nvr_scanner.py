@@ -1,6 +1,8 @@
 import concurrent.futures
+import ipaddress
 import os
 import threading
+from urllib.parse import urlparse
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
@@ -88,6 +90,24 @@ def _format_templates(templates, ch):
     return [t.format(ch=ch, ch0=ch - 1, ch2=f"{ch:02d}") for t in templates]
 
 
+def _extract_camera_ip_from_uri(uri, nvr_ip):
+    """رفع درخواست: در بسیاری از NVRها (بیشتر Hikvision/Dahua برای کانال‌های
+    IP)، آدرس RTSP برگشتی از ``GetStreamUri`` مستقیماً به IP واقعی خودِ
+    دوربین شبکه‌ای اشاره می‌کند - نه IP خود NVR (NVR فقط پروفایل/متادیتا را
+    از طریق ONVIF می‌دهد، ولی استریم را مستقیماً از دوربین می‌گیرد). اگر
+    میزبان URI یک IP معتبر و متفاوت از IP خود NVR باشد، همان را به‌عنوان IP
+    دوربین برمی‌گرداند؛ در غیر این صورت (میزبان = خود NVR، یعنی کانال آنالوگ
+    یا NVR خودش استریم را پروکسی می‌کند) رشته‌ی خالی برمی‌گرداند."""
+    try:
+        host = urlparse(uri).hostname
+        if not host:
+            return ""
+        ipaddress.ip_address(host)  # صرفاً معتبر بودن IP را بررسی می‌کند
+    except (ValueError, TypeError):
+        return ""
+    return host if host != nvr_ip else ""
+
+
 def _discover_onvif_channels(ip, onvif_port, user, pwd):
     """بدنه‌ی اصلی کشف ONVIF؛ این تابع می‌تواند برای مدتی نامحدود بلاک شود، به
     همین دلیل توسط try_onvif_discovery با یک مهلت زمانی ثابت فراخوانی می‌شود."""
@@ -111,7 +131,8 @@ def _discover_onvif_channels(ip, onvif_port, user, pwd):
             }
             uri = media.GetStreamUri(req).Uri
             name = getattr(profile, "Name", None) or f"کانال {idx}"
-            channels.append({"channel": idx, "name": str(name), "url": uri})
+            camera_ip = _extract_camera_ip_from_uri(uri, ip)
+            channels.append({"channel": idx, "name": str(name), "url": uri, "camera_ip": camera_ip})
         except Exception:
             continue
 
@@ -170,7 +191,9 @@ class NVRScanThread(QThread):
     """
 
     progress_signal = pyqtSignal(str)
-    channel_found_signal = pyqtSignal(int, str, str)   # channel, name, path/url
+    # channel, name, path/url, camera_ip (رفع درخواست: IP واقعی دوربین شبکه‌ای
+    # متصل به این کانال، اگر تشخیص داده شود؛ در غیر این صورت رشته‌ی خالی)
+    channel_found_signal = pyqtSignal(int, str, str, str)
     finished_signal = pyqtSignal(int)                  # تعداد کل کانال‌های یافت‌شده
     failed_signal = pyqtSignal(str)
 
@@ -335,7 +358,9 @@ class NVRScanThread(QThread):
                 for ch in http_channels:
                     if self._is_cancelled:
                         break
-                    self.channel_found_signal.emit(ch["channel"], ch["name"], ch["path"])
+                    self.channel_found_signal.emit(
+                        ch["channel"], ch["name"], ch["path"], ch.get("camera_ip", "")
+                    )
                     found_count += 1
                 self.finished_signal.emit(found_count)
                 return
@@ -353,7 +378,9 @@ class NVRScanThread(QThread):
                 for ch in onvif_channels:
                     if self._is_cancelled:
                         break
-                    self.channel_found_signal.emit(ch["channel"], ch["name"], ch["url"])
+                    self.channel_found_signal.emit(
+                        ch["channel"], ch["name"], ch["url"], ch.get("camera_ip", "")
+                    )
                     found_count += 1
                 self.finished_signal.emit(found_count)
                 return
@@ -391,7 +418,10 @@ class NVRScanThread(QThread):
 
             for ch in sorted(results):
                 found_ch, name, path = results[ch]
-                self.channel_found_signal.emit(found_ch, name, path)
+                # روش brute-force صرفاً الگوی مسیر را حدس می‌زند و اطلاعی از IP
+                # واقعی دوربین پشت این کانال ندارد (بر خلاف API وب/ONVIF)، پس
+                # camera_ip همیشه خالی است.
+                self.channel_found_signal.emit(found_ch, name, path, "")
                 found_count += 1
 
         if self._is_cancelled:

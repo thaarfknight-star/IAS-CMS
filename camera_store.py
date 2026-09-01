@@ -92,7 +92,8 @@ class CameraStore:
 
     # ------------------------------------------------------------ cameras --
 
-    def add_camera(self, name, ip, port, user, pwd, path, nvr_id=None, channel=None, full_url=None):
+    def add_camera(self, name, ip, port, user, pwd, path, nvr_id=None, channel=None, full_url=None,
+                   camera_ip=None):
         cam = {
             "id": str(uuid.uuid4()),
             "name": name or ip,
@@ -104,6 +105,12 @@ class CameraStore:
             "nvr_id": nvr_id,
             "channel": channel,
             "full_url": full_url,
+            # رفع درخواست: برای کانال‌های NVR که از پشت آن‌ها یک دوربین شبکه‌ای
+            # واقعی شناسایی شده، IP خودِ آن دوربین (متفاوت از "ip" که برای
+            # دوربین‌های زیر NVR همان IP خود NVR است و برای اتصال RTSP از طریق
+            # NVR استفاده می‌شود) اینجا صرفاً به‌عنوان اطلاعات/متادیتا نگه
+            # داشته می‌شود. برای دوربین‌های مستقل (بدون NVR) معمولاً خالی است.
+            "camera_ip": camera_ip or "",
         }
         self.cameras.append(cam)
         self.save()
@@ -177,7 +184,8 @@ class CameraStore:
                 return nvr
         return None
 
-    def add_channel_camera(self, nvr: dict, channel: int, name: str, path: str = "", full_url: str = None):
+    def add_channel_camera(self, nvr: dict, channel: int, name: str, path: str = "", full_url: str = None,
+                            camera_ip: str = None):
         """یک کانال کشف‌شده‌ی NVR را به‌عنوان دوربین جدید (متصل به آن NVR) ثبت می‌کند."""
         return self.add_camera(
             name=name,
@@ -189,6 +197,7 @@ class CameraStore:
             nvr_id=nvr["id"],
             channel=channel,
             full_url=full_url,
+            camera_ip=camera_ip,
         )
 
     @staticmethod

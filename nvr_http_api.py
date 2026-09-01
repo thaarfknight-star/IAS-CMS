@@ -80,8 +80,44 @@ def _try_hikvision_isapi(ip, port, user, pwd, timeout):
             "channel": ch_num,
             "name": name,
             "path": f"Streaming/Channels/{ch_num}01",
+            "camera_ip": "",
         })
     return channels or None
+
+
+def _try_hikvision_ip_channels(ip, port, user, pwd, timeout):
+    """رفع درخواست: علاوه بر شماره/نام کانال، IP واقعی دوربین شبکه‌ای متصل به
+    هر کانال (IP-channel/InputProxy) را هم از خود NVR می‌گیرد.
+
+    این اطلاعات در ``/ISAPI/System/Video/inputs/channels`` وجود ندارد (آن
+    endpoint فقط شماره/نام کانال ورودی ویدیو را می‌دهد، چه آنالوگ چه دیجیتال)؛
+    IP واقعی دوربین‌های شبکه‌ای (IP camera) که به‌عنوان کانال به NVR اضافه
+    شده‌اند، در ISAPI جدای دیگری به نام InputProxy نگه‌داری می‌شود.
+
+    خروجی: ``{channel_num: ip_str}`` یا ``{}`` (هیچ‌وقت None/استثنا - در
+    صورت نبود پشتیبانی، دیکشنری خالی برمی‌گردد تا کد فراخوان بدون مشکل ادامه
+    دهد؛ NVRهایی با کانال آنالوگ صرف، این endpoint را ندارند که طبیعی است).
+    """
+    url = f"http://{ip}:{port}/ISAPI/ContentMgmt/InputProxy/channels"
+    resp = _get(url, user, pwd, timeout)
+    if resp is None:
+        return {}
+
+    result = {}
+    # هر بلوک ``<InputProxyChannel>`` شامل id کانال و ``<ipAddress>`` دستگاه
+    # منبع است؛ به‌جای پارس کامل XML، هر بلوک را جدا کرده و id/ipAddress آن
+    # را با regex می‌گیریم (مقاوم‌تر در برابر تفاوت namespace/ترتیب فیلدها).
+    for block in re.findall(r"<InputProxyChannel>.*?</InputProxyChannel>", resp.text, re.S):
+        id_match = re.search(r"<id>(\d+)</id>", block)
+        ip_match = re.search(r"<ipAddress>([^<]+)</ipAddress>", block)
+        if not id_match or not ip_match:
+            continue
+        ch_num = int(id_match.group(1))
+        ch_num = ch_num if ch_num < 100 else ch_num // 100
+        cam_ip = ip_match.group(1).strip()
+        if cam_ip:
+            result[ch_num] = cam_ip
+    return result
 
 
 def _try_dahua_cgi(ip, port, user, pwd, timeout):
@@ -104,16 +140,51 @@ def _try_dahua_cgi(ip, port, user, pwd, timeout):
             "channel": ch_num,
             "name": clean_name,
             "path": f"cam/realmonitor?channel={ch_num}&subtype=0",
+            "camera_ip": "",
         })
     return channels or None
+
+
+def _try_dahua_remote_devices(ip, port, user, pwd, timeout):
+    """معادل Dahua برای ``_try_hikvision_ip_channels``: IP واقعی دوربین‌های
+    شبکه‌ای متصل به هر کانال را از پیکربندی ``RemoteDevice`` می‌گیرد (کانال‌های
+    آنالوگ صرف این مقدار را ندارند و به‌سادگی نادیده گرفته می‌شوند).
+
+    فرمت پاسخ متنی ساده است، مثلاً:
+        table.RemoteDevice[0].Address=192.168.1.108
+    که اندیس ``[0]`` صفرمبناست و به کانال ۱ نگاشت می‌شود (دقیقاً مثل
+    ``_try_dahua_cgi`` بالا).
+    """
+    url = f"http://{ip}:{port}/cgi-bin/configManager.cgi?action=getConfig&name=RemoteDevice"
+    resp = _get(url, user, pwd, timeout)
+    if resp is None:
+        return {}
+
+    result = {}
+    for idx_str, addr in re.findall(r"RemoteDevice\[(\d+)\]\.Address=(.*)", resp.text):
+        cam_ip = addr.strip()
+        if cam_ip:
+            result[int(idx_str) + 1] = cam_ip
+    return result
+
+
+# نگاشت هر تابع کشف کانال به تابع متناظر گرفتن IP دوربین‌های آن کانال‌ها
+# (هر دو روی یک برند اجرا می‌شوند، فقط endpoint متفاوتی را می‌خوانند).
+_CAMERA_IP_PROBERS = {
+    _try_hikvision_isapi: _try_hikvision_ip_channels,
+    _try_dahua_cgi: _try_dahua_remote_devices,
+}
 
 
 def discover_channels_http(ip, user, pwd, ports=None, timeout=DEFAULT_TIMEOUT):
     """تلاش برای گرفتن لیست واقعی کانال‌ها از API وب سازنده.
 
-    خروجی موفق: ``[{"channel": int, "name": str, "path": str}, ...]``.
-    در غیر این صورت ``None`` (یعنی فراخوان باید به ONVIF/brute-force
-    سوییچ کند - این تابع هیچ‌وقت استثنا پرتاب نمی‌کند).
+    خروجی موفق: ``[{"channel": int, "name": str, "path": str, "camera_ip": str}, ...]``.
+    ``camera_ip`` رفع درخواست است: IP واقعی دوربین شبکه‌ای متصل به آن کانال
+    (نه IP خود NVR)؛ اگر کانال آنالوگ باشد یا دستگاه این اطلاعات را ندهد،
+    رشته‌ی خالی می‌ماند - هیچ‌وقت باعث شکست کل کشف کانال‌ها نمی‌شود.
+    در صورت عدم موفقیت کلی، ``None`` برمی‌گردد (یعنی فراخوان باید به
+    ONVIF/brute-force سوییچ کند - این تابع هیچ‌وقت استثنا پرتاب نمی‌کند).
     """
     if not user:
         return None
@@ -123,6 +194,22 @@ def discover_channels_http(ip, user, pwd, ports=None, timeout=DEFAULT_TIMEOUT):
                 result = prober(ip, port, user, pwd, timeout)
             except Exception:
                 result = None
-            if result:
-                return result
+            if not result:
+                continue
+
+            # مرحله‌ی دوم (اختیاری): IP واقعی دوربین هر کانال را جدا می‌گیرد
+            # و در همان دیکشنری کانال‌ها ادغام می‌کند. اگر این endpoint وجود
+            # نداشته باشد (مثلاً NVR فقط کانال آنالوگ دارد) یا خطا بدهد، بی‌صدا
+            # نادیده گرفته می‌شود - چون خودِ لیست کانال‌ها از قبل معتبر است.
+            ip_prober = _CAMERA_IP_PROBERS.get(prober)
+            if ip_prober:
+                try:
+                    camera_ips = ip_prober(ip, port, user, pwd, timeout)
+                except Exception:
+                    camera_ips = {}
+                for ch in result:
+                    if ch["channel"] in camera_ips:
+                        ch["camera_ip"] = camera_ips[ch["channel"]]
+
+            return result
     return None

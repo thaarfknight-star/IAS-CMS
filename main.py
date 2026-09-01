@@ -842,7 +842,12 @@ class MainWindow(QMainWindow):
             nvr_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "nvr", "id": nvr["id"]})
             self.camera_list.addTopLevelItem(nvr_item)
             for cam in self.camera_store.cameras_for_nvr(nvr["id"]):
-                cam_item = QTreeWidgetItem([cam["name"]])
+                # رفع درخواست: در صورت شناسایی IP واقعی دوربین شبکه‌ای پشت این
+                # کانال (متفاوت از IP خود NVR)، جلوی نام کانال هم نمایش داده می‌شود.
+                cam_label = cam["name"]
+                if cam.get("camera_ip"):
+                    cam_label += f"  ({cam['camera_ip']})"
+                cam_item = QTreeWidgetItem([cam_label])
                 cam_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "camera", "id": cam["id"]})
                 nvr_item.addChild(cam_item)
             nvr_item.setExpanded(True)
@@ -927,12 +932,14 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "NVR اضافه شد", msg)
 
     def _add_channel_from_entry(self, nvr, entry, default_name):
+        camera_ip = entry.get("camera_ip") or ""
         if entry["is_full_url"]:
             return self.camera_store.add_channel_camera(
-                nvr, entry["channel"], default_name, path="", full_url=entry["path_or_url"]
+                nvr, entry["channel"], default_name, path="", full_url=entry["path_or_url"],
+                camera_ip=camera_ip,
             )
         return self.camera_store.add_channel_camera(
-            nvr, entry["channel"], default_name, path=entry["path_or_url"]
+            nvr, entry["channel"], default_name, path=entry["path_or_url"], camera_ip=camera_ip,
         )
 
     def rescan_nvr(self, nvr_id):
@@ -1019,14 +1026,21 @@ class MainWindow(QMainWindow):
             if chn in existing_channels:
                 continue
             name = dev.get("name") or dev.get("dev_name") or f"کانال {chn}"
-            new_entries.append((chn, name))
+            # رفع درخواست: g_deviceList معمولاً IP واقعی دوربین شبکه‌ای متصل
+            # به این کانال را هم دارد (کلیدهای رایج: ip / IP / ipAddress)؛
+            # اگر موجود باشد همراه با نام/شماره کانال ثبت می‌شود.
+            cam_ip = dev.get("ip") or dev.get("IP") or dev.get("ipAddress") or ""
+            new_entries.append((chn, name, cam_ip))
 
         if not new_entries:
             QMessageBox.information(self, "چیزی برای افزودن نیست",
                                      "همه‌ی این کانال‌ها قبلاً به لیست شما اضافه شده‌اند.")
             return
 
-        names = "\n".join(f"- کانال {c} ({n})" for c, n in new_entries)
+        names = "\n".join(
+            f"- کانال {c} ({n})" + (f"  —  IP دوربین: {ip}" if ip else "")
+            for c, n, ip in new_entries
+        )
         confirm = QMessageBox.question(
             self, "افزودن کانال‌ها",
             f"{len(new_entries)} کانال جدید از این NVR پیدا شد:\n\n{names}\n\n"
@@ -1037,8 +1051,8 @@ class MainWindow(QMainWindow):
         if confirm != QMessageBox.StandardButton.Yes:
             return
 
-        for chn, name in new_entries:
-            self.camera_store.add_channel_camera(nvr, chn, name, path="")
+        for chn, name, cam_ip in new_entries:
+            self.camera_store.add_channel_camera(nvr, chn, name, path="", camera_ip=cam_ip)
         self.reload_camera_list()
 
     def show_camera_context_menu(self, pos):
