@@ -19,6 +19,7 @@ from camera_store import CameraStore
 from camera_stream import CameraStreamThread
 from add_camera_dialog import AddCameraDialog
 from add_nvr_dialog import AddNVRDialog
+from nvr_scanner import DirectCameraProbeThread
 try:
     from nvr_webview_dialog import NVRWebViewDialog, _WEBENGINE_AVAILABLE
 except ImportError:
@@ -1021,10 +1022,13 @@ class MainWindow(QMainWindow):
         """کانال‌هایی که از پنل وب NVR دریافت شده‌اند (via g_deviceList) را،
         در صورت تأیید کاربر، به لیست دوربین‌های زیر همین NVR اضافه می‌کند.
 
-        نکته: چون سرویس RTSP این‌گونه NVRها معیوب است، دوربین‌های اضافه‌شده
-        از این مسیر را نمی‌توان با پخش‌کننده‌ی معمول RTSP این برنامه دید؛
-        برای دیدن پخش زنده‌شان همچنان باید از همان دیالوگ پنل وب NVR استفاده
-        کرد. این افزودن صرفاً برای نگه‌داشتن فهرست/نام‌گذاری کانال‌هاست.
+        رفع درخواست: هر کانالی که IP واقعی دوربین شبکه‌ای پشت آن هم از پنل وب
+        NVR شناسایی شده باشد (نه فقط شماره کانال)، دقیقاً مثل افزودن یک
+        دوربین تکی مستقیماً به همان IP دوربین (نه IP خودِ NVR) و با همان
+        یوزرنیم/رمزی که برای این NVR در برنامه ثبت شده وصل می‌شود؛ کانال
+        همچنان زیر همین NVR در لیست گروه‌بندی می‌ماند. برای کانال‌هایی که
+        IP دوربینشان مشخص نشده (مثلاً کانال آنالوگ)، مثل قبل از طریق خودِ
+        NVR اضافه می‌شوند.
         """
         if not ch_list:
             return
@@ -1049,22 +1053,65 @@ class MainWindow(QMainWindow):
             return
 
         names = "\n".join(
-            f"- کانال {c} ({n})" + (f"  —  IP دوربین: {ip}" if ip else "")
+            f"- کانال {c} ({n})" + (f"  —  IP دوربین: {ip} (اتصال مستقیم)" if ip else "  —  بدون IP دوربین (اتصال از طریق NVR)")
             for c, n, ip in new_entries
         )
         confirm = QMessageBox.question(
             self, "افزودن کانال‌ها",
             f"{len(new_entries)} کانال جدید از این NVR پیدا شد:\n\n{names}\n\n"
-            "توجه: چون RTSP این NVR مشکل دارد، پخش زنده‌ی این کانال‌ها فقط از "
-            "طریق همان پنجره‌ی «پنل وب NVR» ممکن است، نه پخش‌کننده‌ی معمول.\n\n"
+            "کانال‌هایی که IP دوربینشان مشخص است، مستقیماً به همان IP وصل "
+            "می‌شوند (با یوزرنیم/رمز همین NVR)؛ در حال بررسی مسیر اتصال هر "
+            "کدام هستیم که ممکن است چند ثانیه طول بکشد.\n\n"
             "آیا به لیست «دوربین‌ها و NVRهای من» اضافه شوند؟"
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
 
-        for chn, name, cam_ip in new_entries:
-            self.camera_store.add_channel_camera(nvr, chn, name, path="", camera_ip=cam_ip)
+        self.statusBar().showMessage("در حال بررسی مسیر اتصال مستقیم دوربین‌ها...")
+        self._direct_probe_thread = DirectCameraProbeThread(
+            new_entries, nvr.get("user", ""), nvr.get("pass", ""), nvr.get("rtsp_port", "554"),
+        )
+        self._direct_probe_thread.progress_signal.connect(self.statusBar().showMessage)
+        self._direct_probe_thread.finished_signal.connect(
+            lambda results: self._on_direct_probe_finished(nvr, results)
+        )
+        self._direct_probe_thread.start()
+
+    def _on_direct_probe_finished(self, nvr, results):
+        """رفع درخواست: بعد از پیدا شدن (یا نشدن) مسیر مستقیم RTSP هر دوربین
+        (در ترد جدا - نگاه کنید به DirectCameraProbeThread)، کانال‌ها ثبت
+        می‌شوند: کانال‌های دارای IP دوربین با اتصال مستقیم به آن IP (پورت
+        ۵۵۴ خودِ دوربین + یوزرنیم/رمز همین NVR)، و بقیه مثل قبل از طریق NVR."""
+        self.statusBar().clearMessage()
+        added_cams = []
+        for r in results:
+            if r["cam_ip"]:
+                cam = self.camera_store.add_channel_camera(
+                    nvr, r["chn"], r["name"], path=r["path"] or "",
+                    camera_ip=r["cam_ip"], connect_ip=r["cam_ip"], connect_port="554",
+                )
+            else:
+                cam = self.camera_store.add_channel_camera(nvr, r["chn"], r["name"], path="")
+            added_cams.append(cam)
+
         self.reload_camera_list()
+        # رفع درخواست: هر کانال تازه‌اضافه‌شده اتوماتیک به پنجره‌ی نمایش اضافه شود.
+        not_shown = sum(1 for cam in added_cams if not self._auto_display_camera(cam))
+        no_path_found = sum(1 for r in results if r["cam_ip"] and not r["path"])
+        msg = f"{len(added_cams)} کانال اضافه شد."
+        if no_path_found:
+            msg += (
+                f"\nبرای {no_path_found} دوربین، مسیر RTSP به‌طور خودکار پیدا نشد؛ "
+                "برای این‌ها روی «ویرایش» کلیک کنید و مسیر را دستی وارد یا با "
+                "«تشخیص خودکار» پیدا کنید."
+            )
+        if not_shown:
+            msg += (
+                f"\n{not_shown} کانال به دلیل پر بودن شبکه‌ی نمایش به‌صورت خودکار باز "
+                "نشدند؛ برای باز کردن آن‌ها، تعداد نمایش هم‌زمان را افزایش دهید یا "
+                "روی آن‌ها در لیست دابل‌کلیک کنید."
+            )
+        QMessageBox.information(self, "افزودن کامل شد", msg)
 
     def show_camera_context_menu(self, pos):
         item = self.camera_list.itemAt(pos)

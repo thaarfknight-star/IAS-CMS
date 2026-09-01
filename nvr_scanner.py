@@ -130,6 +130,48 @@ def _find_direct_camera_path(ip, user, pwd, rtsp_port="554"):
     return None
 
 
+class DirectCameraProbeThread(QThread):
+    """رفع درخواست: وقتی از پنل وب NVR (نگاه کنید به nvr_webview_dialog.py و
+    main.py._on_nvr_channels_fetched) لیست کانال‌ها همراه با IP واقعی دوربین‌
+    هایشان گرفته می‌شود، کاربر می‌خواهد این کانال‌ها با IP خودِ دوربین (نه IP
+    خودِ NVR) و با همان یوزرنیم/رمز ثبت‌شده برای این NVR در برنامه، زیرِ همان
+    NVR اضافه شوند - درست مثل افزودن یک دوربین تکی مستقیم.
+
+    برای این کار باید مسیر واقعی RTSP روی خودِ IP دوربین (که ممکن است با
+    مسیر کانال روی NVR فرق داشته باشد) پیدا شود؛ چون این کار برای هر دوربین
+    چند تلاش اتصال شبکه‌ای (تا چند ثانیه) می‌برد، در یک ترد جدا انجام می‌شود
+    تا رابط کاربری برنامه در این مدت فریز نشود (دقیقاً همان الگوی NVRScanThread
+    پایین همین فایل)."""
+
+    progress_signal = pyqtSignal(str)
+    # لیستی از دیکشنری‌ها: {"chn", "name", "cam_ip", "path"} - "path" اگر
+    # مسیر واقعی پیدا نشود None است (باز هم کانال با IP دوربین و مسیر خالی
+    # اضافه می‌شود؛ کاربر می‌تواند بعداً مسیر را از «ویرایش» دستی اصلاح کند).
+    finished_signal = pyqtSignal(list)
+
+    def __init__(self, entries, user, pwd, rtsp_port="554"):
+        super().__init__()
+        self.entries = entries  # لیستی از (chn, name, cam_ip)
+        self.user = user
+        self.pwd = pwd
+        self.rtsp_port = rtsp_port or "554"
+
+    def run(self):
+        results = []
+        for chn, name, cam_ip in self.entries:
+            path = None
+            if cam_ip:
+                self.progress_signal.emit(
+                    f"در حال یافتن مسیر اتصال مستقیم به دوربین {cam_ip} (کانال {chn})..."
+                )
+                try:
+                    path = _find_direct_camera_path(cam_ip, self.user, self.pwd, self.rtsp_port)
+                except Exception:
+                    path = None
+            results.append({"chn": chn, "name": name, "cam_ip": cam_ip, "path": path})
+        self.finished_signal.emit(results)
+
+
 def _extract_camera_ip_from_uri(uri, nvr_ip):
     """رفع درخواست: در بسیاری از NVRها (بیشتر Hikvision/Dahua برای کانال‌های
     IP)، آدرس RTSP برگشتی از ``GetStreamUri`` مستقیماً به IP واقعی خودِ
