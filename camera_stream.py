@@ -32,6 +32,31 @@ def _get_people_detector():
     if _PEOPLE_HOG is None:
         with _PEOPLE_HOG_LOCK:
             if _PEOPLE_HOG is None:
+                if not hasattr(cv2, "HOGDescriptor"):
+                    # رفع درخواست: کاربری با پیام «AttributeError: module 'cv2'
+                    # has no attribute 'HOGDescriptor'» مواجه شد. این یعنی
+                    # پکیجی که واقعاً import شده اصلاً OpenCV کامل نیست (نه
+                    # یک باگ در کد این برنامه) - معمولاً به‌خاطر یکی از این دو
+                    # حالت: (۱) هم‌زمان چند پکیج opencv-python /
+                    # opencv-python-headless / opencv-contrib-python روی هم
+                    # نصب شده‌اند و فایل‌های .so/.pyd همدیگر را خراب کرده‌اند،
+                    # یا (۲) یک فایل/پوشه به اسم cv2 در همان مسیر پروژه یا
+                    # پوشه‌ی جاری وجود دارد و به‌جای پکیج واقعی import شده.
+                    # به‌جای AttributeError خام، یک پیام تشخیصی واضح‌تر (همراه
+                    # با نسخه/مسیر cv2 در حال استفاده) در tooltip نمایش داده
+                    # می‌شود تا رفعش آسان‌تر باشد.
+                    cv2_version = getattr(cv2, "__version__", "نامشخص")
+                    cv2_path = getattr(cv2, "__file__", "نامشخص")
+                    raise RuntimeError(
+                        "نصب OpenCV روی این سیستم ناقص/خراب است "
+                        f"(نسخه: {cv2_version} - مسیر: {cv2_path}). "
+                        "احتمالاً چند پکیج opencv-python/opencv-python-headless/"
+                        "opencv-contrib-python هم‌زمان نصب شده‌اند یا فایلی به "
+                        "اسم cv2 در پوشه‌ی برنامه وجود دارد. برای رفع: "
+                        "pip uninstall -y opencv-python opencv-python-headless "
+                        "opencv-contrib-python opencv-contrib-python-headless "
+                        "و سپس pip install opencv-python را اجرا کنید."
+                    )
                 hog = cv2.HOGDescriptor()
                 hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
                 _PEOPLE_HOG = hog
