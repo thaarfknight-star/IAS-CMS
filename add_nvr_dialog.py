@@ -155,7 +155,7 @@ class AddNVRDialog(QDialog):
         self.scan_thread.failed_signal.connect(self._on_scan_failed)
         self.scan_thread.start()
 
-    def _on_channel_found(self, channel, name, path_or_url, camera_ip=""):
+    def _on_channel_found(self, channel, name, path_or_url, camera_ip="", direct=False):
         is_full_url = path_or_url.startswith("rtsp://")
         entry = {
             "channel": channel,
@@ -166,6 +166,9 @@ class AddNVRDialog(QDialog):
             # تشخیص از طریق API وب NVR یا ONVIF)؛ اگر یافت نشود خالی می‌ماند
             # (مثلاً کانال آنالوگ یا دستگاه این اطلاعات را نمی‌دهد).
             "camera_ip": camera_ip or "",
+            # اگر True: باید مستقیماً به camera_ip وصل شد (مسیر روی خودِ
+            # دوربین تست و تایید شده)، نه از طریق پروکسی NVR.
+            "direct": bool(direct),
         }
         self.found_channels.append(entry)
 
@@ -173,6 +176,7 @@ class AddNVRDialog(QDialog):
         source_label = "ONVIF" if is_full_url else path_or_url
         if camera_ip:
             source_label += f"  —  IP دوربین: {camera_ip}"
+            source_label += " (اتصال مستقیم)" if (direct or is_full_url) else " (از طریق NVR)"
         item = QListWidgetItem(f"{default_name}   ({source_label})")
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
         item.setCheckState(Qt.CheckState.Checked)

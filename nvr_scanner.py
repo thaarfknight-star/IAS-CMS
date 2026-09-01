@@ -9,6 +9,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from nvr_http_api import discover_channels_http, COMMON_HTTP_PORTS
 from rtsp_probe import describe_probe
 from rtsp_utils import build_rtsp_url, probe_stream
+from add_camera_dialog import CANDIDATE_PATHS
 
 # --------------------------------------------------------------------------
 # معماری جدید جست‌وجو (بازنویسی کامل - قبلاً فقط ONVIF -> brute-force RTSP بود):
@@ -88,6 +89,30 @@ CHANNEL_PROBE_WORKERS = max(3, min(6, (os.cpu_count() or 4)))
 
 def _format_templates(templates, ch):
     return [t.format(ch=ch, ch0=ch - 1, ch2=f"{ch:02d}") for t in templates]
+
+
+def _find_direct_camera_path(ip, user, pwd, rtsp_port="554"):
+    """رفع درخواست: وقتی IP واقعی دوربین یک کانال شناسایی می‌شود، اتصال باید
+    دقیقاً مثل افزودن یک دوربین تکی، به یک مسیر واقعاً تست‌شده (نه صرفاً
+    حدس زده‌شده بر اساس الگوی کانال NVR) روی خود IP دوربین وصل شود؛ چون
+    اتصال از طریق NVR ممکن است اصلاً کار نکند (پورت/پروکسی RTSP خودِ NVR
+    خطا بدهد) در حالی که دوربین به‌صورت مستقیم کاملاً در دسترس است.
+
+    دقیقاً همان لیست الگوهای ``add_camera_dialog.CANDIDATE_PATHS`` (که برای
+    تشخیص خودکار مسیر یک دوربین تکی استفاده می‌شود) روی IP خود دوربین امتحان
+    می‌شود؛ اولین مسیری که واقعاً پاسخ می‌دهد برگردانده می‌شود، یا در صورت
+    شکست همه، ``None``."""
+    for path in CANDIDATE_PATHS:
+        result = describe_probe(ip, rtsp_port, path, user, pwd)
+        if result:
+            return path
+        if result.status in ("timeout", "error", "refused"):
+            try:
+                if probe_stream(build_rtsp_url(ip, rtsp_port, user, pwd, path)):
+                    return path
+            except Exception:
+                pass
+    return None
 
 
 def _extract_camera_ip_from_uri(uri, nvr_ip):
@@ -191,9 +216,9 @@ class NVRScanThread(QThread):
     """
 
     progress_signal = pyqtSignal(str)
-    # channel, name, path/url, camera_ip (رفع درخواست: IP واقعی دوربین شبکه‌ای
-    # متصل به این کانال، اگر تشخیص داده شود؛ در غیر این صورت رشته‌ی خالی)
-    channel_found_signal = pyqtSignal(int, str, str, str)
+    # channel, name, path/url, camera_ip, direct (رفع درخواست: اگر True، یعنی
+    # باید مستقیماً به camera_ip وصل شد - نه از طریق NVR)
+    channel_found_signal = pyqtSignal(int, str, str, str, bool)
     finished_signal = pyqtSignal(int)                  # تعداد کل کانال‌های یافت‌شده
     failed_signal = pyqtSignal(str)
 
@@ -244,9 +269,15 @@ class NVRScanThread(QThread):
     # -------------------------------------------------- روش ۱: API وب ---
 
     def _try_http_api(self):
-        """رجوع کنید به nvr_http_api.py. در صورت موفقیت، هر کانال پیشنهادی
-        با یک DESCRIBE سریع هم تایید می‌شود تا از پیکربندی نامعتبر/کانال
-        غیرفعال (که در تنظیمات هست ولی استریم نمی‌دهد) کاذب گزارش نشود."""
+        """رجوع کنید به nvr_http_api.py.
+
+        رفع درخواست («از طریق NVR وصل نمی‌شن و خطا داره»): کانال‌هایی که IP
+        واقعی دوربین‌شان از قبل شناسایی شده (از طریق discover_channels_http)
+        دیگر اصلاً از طریق پروکسی RTSP خود NVR تایید/متصل نمی‌شوند - چون
+        همان پروکسی است که خطا می‌دهد؛ به‌جای آن، دقیقاً مثل افزودن یک
+        دوربین تکی، مسیر واقعی روی خود IP دوربین پیدا می‌شود
+        (_verify_direct_channels). فقط کانال‌های بدون IP شناسایی‌شده (مثلاً
+        آنالوگ) طبق روال قبلی از طریق مسیر روی خود NVR تایید می‌شوند."""
         try:
             api_channels = discover_channels_http(self.ip, self.user, self.pwd, ports=self._http_ports())
         except Exception:
@@ -255,15 +286,73 @@ class NVRScanThread(QThread):
             return []
 
         self.progress_signal.emit("کانال‌ها از طریق API وب NVR پیدا شد؛ در حال تایید...")
+        direct_targets = [ch for ch in api_channels if ch.get("camera_ip")]
+        proxy_targets = [ch for ch in api_channels if not ch.get("camera_ip")]
+
         verified = []
-        for ch in api_channels:
+        if direct_targets and not self._is_cancelled:
+            verified.extend(self._verify_direct_channels(direct_targets))
+        if proxy_targets and not self._is_cancelled:
+            verified.extend(self._verify_proxy_channels(proxy_targets))
+        verified.sort(key=lambda c: c["channel"])
+        return verified
+
+    def _verify_proxy_channels(self, channels):
+        """تایید کانال‌های بدون IP دوربین شناسایی‌شده: مثل قبل، با یک
+        DESCRIBE روی همان مسیر/پورت خود NVR."""
+        verified = []
+        for ch in channels:
             if self._is_cancelled:
                 break
             result = describe_probe(self.ip, self.rtsp_port, ch["path"], self.user, self.pwd)
             if result:
+                ch["direct"] = False
                 verified.append(ch)
             else:
                 self._record_diagnostic(ch["channel"], result.detail)
+        return verified
+
+    def _verify_direct_channels(self, channels):
+        """رفع درخواست: برای کانال‌هایی که IP واقعی دوربین‌شان معلوم است،
+        به‌جای تایید از طریق پروکسی NVR (که ممکن است خطا بدهد)، مستقیماً
+        روی IP خود دوربین، دقیقاً با همان الگوریتم افزودن دوربین تکی
+        (_find_direct_camera_path)، یک مسیر واقعاً کارکن پیدا می‌شود. اگر
+        پیدا شد، ``ch["path"]`` با همان مسیر مستقیم جایگزین و ``ch["direct"]``
+        روی True تنظیم می‌شود (یعنی باید مستقیماً به camera_ip وصل شد، نه
+        NVR). اگر پیدا نشد، به‌عنوان آخرین راه یک تلاش هم از طریق مسیر روی
+        خود NVR انجام می‌شود؛ شاید NVR کار کند ولی خودِ دوربین دسترسی مستقیم
+        را محدود کرده باشد."""
+        self.progress_signal.emit("در حال یافتن مسیر مستقیم دوربین‌های شناسایی‌شده...")
+        verified = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=CHANNEL_PROBE_WORKERS) as executor:
+            future_to_ch = {
+                executor.submit(_find_direct_camera_path, ch["camera_ip"], self.user, self.pwd): ch
+                for ch in channels
+            }
+            for future in concurrent.futures.as_completed(future_to_ch):
+                if self._is_cancelled:
+                    continue
+                ch = future_to_ch[future]
+                try:
+                    direct_path = future.result()
+                except Exception:
+                    direct_path = None
+
+                if direct_path is not None:
+                    ch["path"] = direct_path
+                    ch["direct"] = True
+                    verified.append(ch)
+                    continue
+
+                # مسیر مستقیم پیدا نشد؛ آخرین راه: همان مسیر حدسی روی خود NVR.
+                result = describe_probe(self.ip, self.rtsp_port, ch["path"], self.user, self.pwd)
+                if result:
+                    ch["direct"] = False
+                    verified.append(ch)
+                else:
+                    self._record_diagnostic(
+                        ch["channel"], f"دوربین {ch['camera_ip']} (اتصال مستقیم): {result.detail}"
+                    )
         return verified
 
     # -------------------------------------------------- روش ۳: brute ---
@@ -359,7 +448,8 @@ class NVRScanThread(QThread):
                     if self._is_cancelled:
                         break
                     self.channel_found_signal.emit(
-                        ch["channel"], ch["name"], ch["path"], ch.get("camera_ip", "")
+                        ch["channel"], ch["name"], ch["path"], ch.get("camera_ip", ""),
+                        bool(ch.get("direct"))
                     )
                     found_count += 1
                 self.finished_signal.emit(found_count)
@@ -379,7 +469,7 @@ class NVRScanThread(QThread):
                     if self._is_cancelled:
                         break
                     self.channel_found_signal.emit(
-                        ch["channel"], ch["name"], ch["url"], ch.get("camera_ip", "")
+                        ch["channel"], ch["name"], ch["url"], ch.get("camera_ip", ""), True
                     )
                     found_count += 1
                 self.finished_signal.emit(found_count)
@@ -421,7 +511,7 @@ class NVRScanThread(QThread):
                 # روش brute-force صرفاً الگوی مسیر را حدس می‌زند و اطلاعی از IP
                 # واقعی دوربین پشت این کانال ندارد (بر خلاف API وب/ONVIF)، پس
                 # camera_ip همیشه خالی است.
-                self.channel_found_signal.emit(found_ch, name, path, "")
+                self.channel_found_signal.emit(found_ch, name, path, "", False)
                 found_count += 1
 
         if self._is_cancelled:

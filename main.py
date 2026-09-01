@@ -1,5 +1,4 @@
 import os
-import re
 import sys
 import time
 
@@ -50,27 +49,6 @@ GRID_LAYOUTS = {
     32: (4, 8),
     64: (8, 8),
 }
-
-
-def _direct_camera_path(nvr_channel_path):
-    """رفع درخواست: وقتی IP واقعی دوربین یک کانال NVR شناسایی می‌شود، اتصال
-    باید دقیقاً مثل افزودن یک دوربین تکی مستقیماً به خود دوربین باشد - نه از
-    طریق پروکسی NVR. مسیر کشف‌شده (مثلاً ``Streaming/Channels/301`` یا
-    ``cam/realmonitor?channel=3&subtype=0``) بر اساس شماره‌ی کانال روی خود
-    NVR ساخته شده؛ اما وقتی مستقیماً به IP خود دوربین وصل می‌شویم، از دید
-    خودش این تنها/اولین کانالش است. این تابع همان مسیر را به معادل «کانال ۱»
-    تبدیل می‌کند تا با سرور RTSP خود دوربین (نه NVR) مطابقت داشته باشد."""
-    # Hikvision: Streaming/Channels/{N}01  یا  {N}02  ->  Streaming/Channels/101 / 102
-    m = re.match(r"^Streaming/Channels/(\d+)(\d{2})$", nvr_channel_path)
-    if m:
-        return f"Streaming/Channels/1{m.group(2)}"
-    # Dahua / IAP: cam/realmonitor?channel={N}&subtype=X  ->  channel=1
-    if "cam/realmonitor" in nvr_channel_path:
-        return re.sub(r"channel=\d+", "channel=1", nvr_channel_path)
-    # سایر الگوها (brute-force و ...): چون camera_ip فقط برای دو حالت بالا
-    # (کشف از طریق API وب) تشخیص داده می‌شود، این تابع عملاً فقط برای آن دو
-    # فراخوانی می‌شود؛ در غیر این صورت مسیر همان‌طور که هست برگردانده می‌شود.
-    return nvr_channel_path
 
 
 def _bgr_to_pixmap(frame):
@@ -962,13 +940,13 @@ class MainWindow(QMainWindow):
                 nvr, entry["channel"], default_name, path="", full_url=entry["path_or_url"],
                 camera_ip=camera_ip,
             )
-        if camera_ip:
-            # رفع درخواست: وقتی IP واقعی دوربین این کانال شناسایی شده،
-            # دقیقاً مثل افزودن یک دوربین تکی، مستقیماً به همان IP/پورت
-            # پیش‌فرض (۵۵۴) دوربین وصل می‌شویم - نه از طریق پروکسی NVR - در
-            # حالی که کانال همچنان زیر همین NVR در لیست باقی می‌ماند.
+        if camera_ip and entry.get("direct"):
+            # رفع درخواست: این کانال با یک مسیر واقعاً تست‌شده روی خودِ
+            # دوربین تایید شده (نه پروکسی NVR که خطا می‌داد)؛ دقیقاً مثل
+            # افزودن یک دوربین تکی، مستقیماً به همان IP/پورت ۵۵۴ دوربین وصل
+            # می‌شویم - در حالی که کانال همچنان زیر همین NVR در لیست می‌ماند.
             return self.camera_store.add_channel_camera(
-                nvr, entry["channel"], default_name, path=_direct_camera_path(entry["path_or_url"]),
+                nvr, entry["channel"], default_name, path=entry["path_or_url"],
                 camera_ip=camera_ip, connect_ip=camera_ip, connect_port="554",
             )
         return self.camera_store.add_channel_camera(
