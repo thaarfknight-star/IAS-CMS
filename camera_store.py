@@ -185,12 +185,18 @@ class CameraStore:
         return None
 
     def add_channel_camera(self, nvr: dict, channel: int, name: str, path: str = "", full_url: str = None,
-                            camera_ip: str = None):
-        """یک کانال کشف‌شده‌ی NVR را به‌عنوان دوربین جدید (متصل به آن NVR) ثبت می‌کند."""
+                            camera_ip: str = None, connect_ip: str = None, connect_port: str = None):
+        """یک کانال کشف‌شده‌ی NVR را به‌عنوان دوربین جدید (متصل به آن NVR) ثبت می‌کند.
+
+        رفع درخواست: اگر IP واقعی دوربین این کانال شناسایی شده باشد
+        (``connect_ip``)، اتصال دقیقاً مثل افزودن یک دوربین تکی مستقیماً به
+        همان IP/پورت دوربین انجام می‌شود - نه با پروکسی از طریق NVR - در
+        حالی که کانال همچنان زیر همین NVR (``nvr_id``) در لیست گروه‌بندی
+        می‌ماند."""
         return self.add_camera(
             name=name,
-            ip=nvr["ip"],
-            port=nvr.get("rtsp_port", "554"),
+            ip=connect_ip or nvr["ip"],
+            port=connect_port or nvr.get("rtsp_port", "554"),
             user=nvr.get("user", ""),
             pwd=nvr.get("pass", ""),
             path=path,
