@@ -203,8 +203,10 @@ class CameraSlotWidget(QWidget):
             # چیزی کار نمی‌کند. حالا بلافاصله یک وضعیت موقت نمایش داده
             # می‌شود تا مشخص باشد شمارش واقعاً فعال شده و فقط منتظر اولین
             # نتیجه هستیم.
+            self.people_count_label.setToolTip("")
             self.people_count_label.setText("👤 در حال شمارش...")
         else:
+            self.people_count_label.setToolTip("")
             self.people_count_label.setText("")
 
     def on_people_count(self, count):
@@ -212,10 +214,19 @@ class CameraSlotWidget(QWidget):
             # رفع باگ: خطای داخلی شمارش افراد (رجوع کنید به
             # CameraStreamThread._run_people_count) قبلاً فقط در کنسول چاپ
             # می‌شد و کاربر هیچ نشانه‌ای در رابط کاربری نمی‌دید؛ حالا حداقل
-            # یک پیام کوتاه نمایش داده می‌شود.
+            # یک پیام کوتاه نمایش داده می‌شود (متن دقیق خطا هم در tooltip
+            # همین برچسب است - رجوع کنید به on_people_count_error).
             self.people_count_label.setText("👤 خطا در شمارش")
             return
+        self.people_count_label.setToolTip("")
         self.people_count_label.setText(f"👤 {count} نفر")
+
+    def on_people_count_error(self, error_text: str):
+        """رفع باگ «خطا در شمارش» بدون جزئیات: متن دقیق خطای پایتون (که در
+        نسخه‌ی exe در کنسول قابل دیدن نیست) را روی همین برچسب به‌عنوان
+        tooltip می‌گذاریم تا کاربر با نگه‌داشتن ماوس رویش (یا کپی از تولتیپ)
+        بتواند متن دقیق را ببیند/برای پشتیبانی بفرستد."""
+        self.people_count_label.setToolTip(error_text)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -299,6 +310,7 @@ class CameraSlotWidget(QWidget):
         self.stream_thread.error_signal.connect(self.on_error)
         self.stream_thread.connected_signal.connect(self.on_connected)
         self.stream_thread.people_count_signal.connect(self.on_people_count)
+        self.stream_thread.people_count_error_signal.connect(self.on_people_count_error)
         self.stream_thread.face_event_signal.connect(
             lambda person, crop: face_event_cb(cam["name"], person, crop)
         )

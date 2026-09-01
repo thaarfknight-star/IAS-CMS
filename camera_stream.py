@@ -91,6 +91,12 @@ class CameraStreamThread(QThread):
     # تغییر کند (یا هربار محاسبه شود)، تعداد فعلی از این سیگنال ارسال می‌شود
     # تا در بالای پنجره‌ی همان دوربین نمایش داده شود.
     people_count_signal = pyqtSignal(int)
+    # رفع باگ «خطا در شمارش» بدون جزئیات: متن واقعی خطای داخلی شمارش افراد
+    # (که قبلاً فقط با print در کنسول ثبت می‌شد و در نسخه‌ی exe اصلاً قابل
+    # دیدن نبود) از این سیگنال هم ارسال می‌شود تا در tooltip همان برچسب در
+    # main.py نمایش داده شود و کاربر بدون نیاز به کنسول بتواند متن دقیق خطا
+    # را ببیند/کپی کند.
+    people_count_error_signal = pyqtSignal(str)
 
     def __init__(self, rtsp_url, face_engine, process_every_n=5, parent=None):
         super().__init__(parent)
@@ -187,10 +193,14 @@ class CameraStreamThread(QThread):
             # رابط کاربری هیچ اثری نداشت (کاربری که از نسخه‌ی کامپایل‌شده/exe
             # استفاده می‌کند اصلاً کنسولی نمی‌بیند) - نتیجه این بود که برچسب
             # بالای پنجره‌ی دوربین برای همیشه خالی می‌ماند و به نظر می‌رسید
-            # قابلیت اصلاً کار نمی‌کند. حالا با یک مقدار ویژه (-1) به رابط
-            # کاربری هم خبر داده می‌شود تا پیام خطا را ببیند (رجوع کنید به
-            # main.py CameraSlotWidget.on_people_count).
-            print(f"خطا در شمارش افراد: {e}")
+            # قابلیت اصلاً کار نمی‌کند. حالا هم با یک مقدار ویژه (-1) و هم با
+            # متن دقیق خطا (people_count_error_signal) به رابط کاربری خبر
+            # داده می‌شود تا کاربر بدون نیاز به کنسول، خودِ متن خطا را در
+            # tooltip برچسب ببیند (رجوع کنید به
+            # main.py CameraSlotWidget.on_people_count/on_people_count_error).
+            error_text = f"{type(e).__name__}: {e}"
+            print(f"خطا در شمارش افراد: {error_text}")
+            self.people_count_error_signal.emit(error_text)
             self.people_count_signal.emit(-1)
         finally:
             self._people_busy.clear()
