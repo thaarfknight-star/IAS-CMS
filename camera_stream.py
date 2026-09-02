@@ -58,6 +58,95 @@ def _crop_face(frame, box):
     return frame[top:bottom, left:right].copy()
 
 
+def _box_center(box):
+    top, right, bottom, left = box
+    return ((left + right) / 2.0, (top + bottom) / 2.0)
+
+
+def _box_avg_size(box):
+    top, right, bottom, left = box
+    return max(1.0, ((right - left) + (bottom - top)) / 2.0)
+
+
+class _FaceTracker:
+    """رفع باگ «برچسب/رنگ کادر ناپایدار - سبز/قرمز عوض می‌شه»: تشخیص چهره
+    روی تک‌تک فریم‌ها مستقل اجرا می‌شود؛ وقتی فاصله‌ی (distance) چهره‌ی یک
+    نفر با نزدیک‌ترین چهره‌ی تعریف‌شده در بانک دقیقاً نزدیک آستانه‌ی tolerance
+    باشد (مثلاً به‌خاطر زاویه‌ی کمی متفاوت سر در هر فریم)، ممکن است یک دور
+    «شناخته‌شده» و دور بعد «تعریف‌نشده» تشخیص داده شود - نتیجه، چشمک‌زدن رنگ/
+    برچسب است، بدون اینکه واقعاً کسی عوض شده باشد.
+
+    این کلاس هر چهره‌ی تازه‌تشخیص‌داده‌شده را (بر اساس نزدیکی موقعیت کادر، نه
+    هویت) به نزدیک‌ترین «ردِ» چهره‌ی همان دوربین در فریم‌های قبلی وصل می‌کند و
+    یک هیستررزیس ساده اعمال می‌کند: برچسبِ نمایش‌داده‌شده فقط وقتی عوض می‌شود
+    که هویت جدید حداقل ۲ دور پیاپی تکرار شود؛ در غیر این صورت همان برچسب قبلی
+    (که معمولاً درست است) نگه داشته می‌شود. موقعیت کادر همیشه فوری به‌روز
+    می‌شود تا دنبال‌کردن حرکت شخص تاخیر نداشته باشد - فقط «برچسب» است که
+    پایدارتر می‌شود.
+
+    هر ردِ گم‌شده (چهره‌ای که این دور تشخیص داده نشد) هم بلافاصله حذف نمی‌شود؛
+    فقط بعد از چند دور پیاپیِ گم‌بودن پاک می‌شود (رفع چشمک‌زدن ظاهر/محو کادر)."""
+
+    SWITCH_STREAK = 2   # چند دور پیاپی برای پذیرفتن تعویض برچسب
+    MISS_LIMIT = 2       # چند دور پیاپی برای پاک‌کردن یک ردِ گم‌شده
+
+    def __init__(self):
+        self.tracks = []  # هر رد: box, displayed_person, candidate_person, candidate_streak, miss_streak
+
+    def update(self, results):
+        """results: خروجی خام FaceEngine.recognize (لیستی از {"box","person"}).
+        خروجی: همان شکل، ولی با برچسب پایدارشده و شامل ردهای اخیراً گم‌شده هم
+        (تا محو کادر هم با کمی تاخیر انجام شود)."""
+        unmatched_tracks = list(self.tracks)
+        for r in results:
+            box, person = r["box"], r["person"]
+            center = _box_center(box)
+            size = _box_avg_size(box)
+
+            best_track, best_dist = None, None
+            for t in unmatched_tracks:
+                d = ((center[0] - _box_center(t["box"])[0]) ** 2 +
+                     (center[1] - _box_center(t["box"])[1]) ** 2) ** 0.5
+                if d < size * 0.7 and (best_dist is None or d < best_dist):
+                    best_track, best_dist = t, d
+
+            if best_track is not None:
+                unmatched_tracks.remove(best_track)
+                best_track["box"] = box
+                best_track["miss_streak"] = 0
+                new_id = person["id"] if person else None
+                displayed_id = best_track["displayed_person"]["id"] if best_track["displayed_person"] else None
+                if new_id == displayed_id:
+                    best_track["candidate_person"] = None
+                    best_track["candidate_streak"] = 0
+                else:
+                    cand_id = best_track["candidate_person"]["id"] if best_track["candidate_person"] else None
+                    if cand_id != new_id:
+                        best_track["candidate_person"] = person
+                        best_track["candidate_streak"] = 1
+                    else:
+                        best_track["candidate_streak"] += 1
+                    if best_track["candidate_streak"] >= self.SWITCH_STREAK:
+                        best_track["displayed_person"] = best_track["candidate_person"]
+                        best_track["candidate_person"] = None
+                        best_track["candidate_streak"] = 0
+            else:
+                # چهره‌ی کاملاً تازه - بدون تاخیر با همان برچسب اولش نمایش داده می‌شود.
+                self.tracks.append({
+                    "box": box,
+                    "displayed_person": person,
+                    "candidate_person": None,
+                    "candidate_streak": 0,
+                    "miss_streak": 0,
+                })
+
+        for t in unmatched_tracks:
+            t["miss_streak"] += 1
+        self.tracks = [t for t in self.tracks if t["miss_streak"] < self.MISS_LIMIT]
+
+        return [{"box": t["box"], "person": t["displayed_person"]} for t in self.tracks]
+
+
 class CameraStreamThread(QThread):
     frame_ready = pyqtSignal(object, object)   # (frame_for_display, raw_frame)
     error_signal = pyqtSignal(str)
@@ -81,6 +170,10 @@ class CameraStreamThread(QThread):
         self.process_every_n = max(1, process_every_n)
         self._run_flag = True
         self._last_results = []
+        # رفع باگ چشمک‌زدن کادر/برچسب: به‌جای جایگزینی مستقیم نتیجه‌ی خام هر
+        # دور تشخیص، از _FaceTracker (تعریف بالای فایل) برای پایدارسازی
+        # موقعیت و برچسب استفاده می‌شود.
+        self._face_tracker = _FaceTracker()
 
         # --- رفع ریشه‌ای تاخیر Live ---
         # قبلاً تشخیص چهره (face_engine.recognize) مستقیماً و به‌صورت همزمان (blocking)
@@ -120,7 +213,13 @@ class CameraStreamThread(QThread):
     def _run_recognition(self, frame):
         try:
             results, unknown_event, known_events = self.face_engine.recognize(frame)
-            self._last_results = results
+            # رفع باگ «کادر چشمک می‌زنه» و «برچسب/رنگ ناپایدار (سبز/قرمز عوض
+            # می‌شه)»: نتیجه‌ی خام هر دور تشخیص مستقیماً نمایش داده نمی‌شود؛
+            # از _FaceTracker (تعریف بالای فایل) عبور می‌کند که هم ظاهر/محو
+            # ناگهانی کادر را (با نگه‌داشتن چند دور) میرا می‌کند، هم برچسب هر
+            # چهره را فقط بعد از تکرار پیاپی یک هویت جدید عوض می‌کند - نه با
+            # اولین نوسان لحظه‌ای تشخیص.
+            self._last_results = self._face_tracker.update(results)
             if unknown_event is not None:
                 unknown_crop = _crop_face(frame, unknown_event)
                 # رفع درخواست: چهره‌ی تعریف‌نشده علاوه بر نمایش در پنل، بر اساس
