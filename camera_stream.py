@@ -19,66 +19,28 @@ FFMPEG_LOW_LATENCY_OPTS = STREAM_FFMPEG_OPTS
 # ---------------------------------------------------------------------------
 # شمارش افراد (Real Time People Counting)
 # ---------------------------------------------------------------------------
-# از HOG + SVM پیش‌فرض OpenCV برای تشخیص افراد ایستاده/در حال حرکت استفاده
-# می‌شود؛ چون از قبل با خود OpenCV (که در این پروژه استفاده می‌شود) همراه است
-# و نیازی به نصب/دانلود مدل اضافه ندارد. Detector فقط یک‌بار (lazy) ساخته
-# می‌شود و بین همه‌ی تردهای پخش دوربین مشترک است.
-_PEOPLE_HOG = None
-_PEOPLE_HOG_LOCK = threading.Lock()
-
-
-def _get_people_detector():
-    global _PEOPLE_HOG
-    if _PEOPLE_HOG is None:
-        with _PEOPLE_HOG_LOCK:
-            if _PEOPLE_HOG is None:
-                if not hasattr(cv2, "HOGDescriptor"):
-                    # رفع باگ: این خطا ربطی به نصب محلی/تداخل چند پکیج
-                    # نداشت (تشخیص قبلی اشتباه بود) - علت واقعی این بود که
-                    # requirements.txt سقف نسخه نداشت و OpenCV 5.0.0 (که
-                    # HOGDescriptor کلاسیک پایتونی را حذف کرده) نصب می‌شد.
-                    # این مورد در requirements.txt با پین‌کردن opencv-python
-                    # به زیر نسخه‌ی ۵ برطرف شده؛ این پیام فقط برای زمانی است
-                    # که کاربر نسخه‌ی ساخته‌شده با requirements قدیمی را اجرا
-                    # کرده باشد.
-                    cv2_version = getattr(cv2, "__version__", "نامشخص")
-                    raise RuntimeError(
-                        f"نسخه‌ی OpenCV این برنامه ({cv2_version}) قابلیت شمارش "
-                        "افراد را ندارد. این یک باگ شناخته‌شده در همین ساخت "
-                        "برنامه است (نه مشکلی از سمت شما) و در نسخه‌ی بعدی که "
-                        "دریافت می‌کنید برطرف شده است."
-                    )
-                hog = cv2.HOGDescriptor()
-                hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
-                _PEOPLE_HOG = hog
-    return _PEOPLE_HOG
-
-
-def _detect_people(frame):
-    """تشخیص افراد داخل frame. برای سرعت بیشتر، ابتدا تصویر به عرض کوچک‌تری
-    resize می‌شود (HOG روی تصاویر بزرگ بسیار کند است)، سپس باکس‌های یافت‌شده
-    به مقیاس تصویر اصلی برگردانده می‌شوند تا برای رسم روی frame واقعی هم قابل
-    استفاده باشند. خروجی: لیستی از باکس‌ها به شکل (x, y, w, h)."""
-    h, w = frame.shape[:2]
-    target_w = 480
-    if w <= 0:
-        return []
-    scale = target_w / w if w > target_w else 1.0
-    small = cv2.resize(frame, (int(w * scale), int(h * scale))) if scale != 1.0 else frame
-
-    hog = _get_people_detector()
-    boxes, _weights = hog.detectMultiScale(
-        small, winStride=(8, 8), padding=(8, 8), scale=1.05
-    )
-
-    if scale != 1.0:
-        boxes = [
-            (int(x / scale), int(y / scale), int(bw / scale), int(bh / scale))
-            for (x, y, bw, bh) in boxes
-        ]
-    else:
-        boxes = [tuple(b) for b in boxes]
-    return boxes
+# رفع باگ «کسی که تو اتاقه رو می‌بینه ولی تعداد رو صفر قفل کرده»:
+# نسخه‌ی قبلی از HOGDescriptor + SVM پیش‌فرض OpenCV (تشخیص «کل بدن» فرد) برای
+# شمارش استفاده می‌کرد. این detector فقط برای افراد ایستاده/در حال راه‌رفتن
+# و کاملاً داخل قاب (مثل دوربین‌های خیابانی) آموزش دیده و برای دوربین‌های
+# داخلی وایدانگل/سقفی که فرد پشت میز نشسته و نیمی از بدنش پشت میز/قفسه پنهان
+# است (دقیقاً همان چیزی که در تصویر شما دیده می‌شود)، عملاً هیچ‌وقت چیزی پیدا
+# نمی‌کند - بدون هیچ خطایی، فقط همیشه ۰.
+#
+# راه‌حل: به‌جای اضافه‌کردن یک تشخیص‌دهنده‌ی سنگین جدید (که هم فایل مدل اضافه
+# می‌خواهد و هم بار CPU مضاعف می‌گذارد)، از همان تشخیص چهره‌ای (dlib/
+# face_recognition) که در FaceEngine.recognize استفاده می‌شود بهره می‌بریم؛
+# این پروژه از قبل ثابت کرده (پنل تشخیص چهره در همین تصاویر شما) که چهره‌ی
+# فردِ نشسته را کاملاً درست تشخیص می‌دهد. پس «تعداد افراد فعلی» را برابر
+# «تعداد چهره‌های شناسایی‌شده در آخرین فریم پردازش‌شده» قرار می‌دهیم - همان
+# self._last_results که با هر بار تشخیص چهره (تشخیص چهره همیشه فعال است،
+# مستقل از روشن/خاموش بودن دکمه‌ی شمارش) به‌روزرسانی می‌شود. این هم دقیق‌تر
+# است، هم رایگان (محاسبه‌ی اضافه‌ای لازم نیست، فقط طول یک لیستِ از قبل موجود)
+# و هم دیگر هیچ وابستگی‌ای به HOGDescriptor (که در OpenCV 5.0 هم حذف شده بود)
+# ندارد.
+#
+# محدودیت باقی‌مانده (صادقانه): اگر فردی کاملاً پشتش به دوربین باشد و چهره‌اش
+# دیده نشود، شمارش نمی‌شود - این یک محدودیت ذاتی هر روش مبتنی بر چهره است.
 
 
 def _crop_face(frame, box):
@@ -105,14 +67,10 @@ class CameraStreamThread(QThread):
     face_event_signal = pyqtSignal(object, object)
     # رفع درخواست: شمارش افراد Real Time. هر بار تعداد افراد تازه شمارش‌شده
     # تغییر کند (یا هربار محاسبه شود)، تعداد فعلی از این سیگنال ارسال می‌شود
-    # تا در بالای پنجره‌ی همان دوربین نمایش داده شود.
+    # تا در بالای پنجره‌ی همان دوربین نمایش داده شود. (از نسخه‌ی فعلی به بعد
+    # این عدد از روی تعداد چهره‌های شناسایی‌شده محاسبه می‌شود - رجوع کنید به
+    # توضیح بالای فایل - و دیگر هرگز با خطا مواجه نمی‌شود.)
     people_count_signal = pyqtSignal(int)
-    # رفع باگ «خطا در شمارش» بدون جزئیات: متن واقعی خطای داخلی شمارش افراد
-    # (که قبلاً فقط با print در کنسول ثبت می‌شد و در نسخه‌ی exe اصلاً قابل
-    # دیدن نبود) از این سیگنال هم ارسال می‌شود تا در tooltip همان برچسب در
-    # main.py نمایش داده شود و کاربر بدون نیاز به کنسول بتواند متن دقیق خطا
-    # را ببیند/کپی کند.
-    people_count_error_signal = pyqtSignal(str)
 
     def __init__(self, rtsp_url, face_engine, process_every_n=5, parent=None):
         super().__init__(parent)
@@ -138,27 +96,17 @@ class CameraStreamThread(QThread):
         self._recognize_busy = threading.Event()
 
         # --- شمارش افراد (اختیاری، پیش‌فرض خاموش) ---
-        # دقیقاً به همان روش تشخیص چهره (async، غیرمسدودکننده) پیاده‌سازی شده تا
-        # روشن‌کردن شمارش افراد باعث افت نرخ فریم پخش زنده نشود. چون HOG کمی
-        # سنگین‌تر از استخراج امبدینگ چهره است، با فاصله‌ی بیشتری (نسبت به
-        # تشخیص چهره) اجرا می‌شود - رجوع کنید به run().
+        # دیگر تشخیص‌دهنده/تِرد جداگانه‌ای ندارد: صرفاً تعداد چهره‌های همان
+        # نتیجه‌ی تشخیص چهره (self._last_results، که مستقل از این تنظیم همیشه
+        # به‌روزرسانی می‌شود) خوانده و نمایش داده می‌شود - رجوع کنید به run().
         self.count_people_enabled = False
-        self._people_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        self._people_busy = threading.Event()
-        self._last_people_boxes = []
-        self._last_people_count = 0
-        # فاصله‌ی اجرای تشخیص افراد (بر حسب تعداد فریم)؛ کمی بیشتر از فاصله‌ی
-        # تشخیص چهره تا فشار کمتری روی CPU وارد شود.
-        self._people_interval = max(self.process_every_n * 3, 10)
+        self._last_people_count = -1  # برای فرستادن سیگنال فقط وقتی عدد واقعاً عوض شود
 
     def set_people_counting(self, enabled: bool):
-        """روشن/خاموش کردن شمارش افراد Real Time برای این دوربین. غیرفعال
-        کردن، شمارش و باکس‌های قبلی را هم پاک می‌کند تا چیزی روی تصویر باقی
-        نماند."""
+        """روشن/خاموش کردن شمارش افراد Real Time برای این دوربین."""
         self.count_people_enabled = bool(enabled)
+        self._last_people_count = -1
         if not self.count_people_enabled:
-            self._last_people_boxes = []
-            self._last_people_count = 0
             self.people_count_signal.emit(0)
 
     def _submit_recognition(self, frame):
@@ -190,37 +138,6 @@ class CameraStreamThread(QThread):
         finally:
             self._recognize_busy.clear()
 
-    def _submit_people_count(self, frame):
-        if self._people_busy.is_set():
-            return  # محاسبه‌ی قبلی هنوز تمام نشده؛ این فریم رد می‌شود
-        self._people_busy.set()
-        frame_copy = frame.copy()
-        self._people_executor.submit(self._run_people_count, frame_copy)
-
-    def _run_people_count(self, frame):
-        try:
-            boxes = _detect_people(frame)
-            self._last_people_boxes = boxes
-            self._last_people_count = len(boxes)
-            self.people_count_signal.emit(self._last_people_count)
-        except Exception as e:
-            # رفع باگ «شمارش روشن می‌شود ولی هیچ عددی نمایش داده نمی‌شود»:
-            # قبلاً خطای شمارش افراد فقط با print در کنسول ثبت می‌شد و در
-            # رابط کاربری هیچ اثری نداشت (کاربری که از نسخه‌ی کامپایل‌شده/exe
-            # استفاده می‌کند اصلاً کنسولی نمی‌بیند) - نتیجه این بود که برچسب
-            # بالای پنجره‌ی دوربین برای همیشه خالی می‌ماند و به نظر می‌رسید
-            # قابلیت اصلاً کار نمی‌کند. حالا هم با یک مقدار ویژه (-1) و هم با
-            # متن دقیق خطا (people_count_error_signal) به رابط کاربری خبر
-            # داده می‌شود تا کاربر بدون نیاز به کنسول، خودِ متن خطا را در
-            # tooltip برچسب ببیند (رجوع کنید به
-            # main.py CameraSlotWidget.on_people_count/on_people_count_error).
-            error_text = f"{type(e).__name__}: {e}"
-            print(f"خطا در شمارش افراد: {error_text}")
-            self.people_count_error_signal.emit(error_text)
-            self.people_count_signal.emit(-1)
-        finally:
-            self._people_busy.clear()
-
     def run(self):
         cap = open_capture(self.rtsp_url, FFMPEG_LOW_LATENCY_OPTS)
         try:
@@ -232,7 +149,6 @@ class CameraStreamThread(QThread):
         if not cap.isOpened():
             self.error_signal.emit("خطا در برقراری ارتباط با استریم RTSP.")
             self._executor.shutdown(wait=False)
-            self._people_executor.shutdown(wait=False)
             return
 
         self.connected_signal.emit()
@@ -252,23 +168,29 @@ class CameraStreamThread(QThread):
             if frame_counter % self.process_every_n == 0:
                 self._submit_recognition(frame)
 
-            # شمارش افراد هم فقط وقتی کاربر آن را برای این دوربین روشن کرده باشد
-            # اجرا می‌شود؛ دقیقاً مثل تشخیص چهره، ناهمزمان و بدون مسدودکردن پخش.
-            if self.count_people_enabled and frame_counter % self._people_interval == 0:
-                self._submit_people_count(frame)
+            # رفع باگ «کسی تو اتاقه ولی عدد صفر قفل شده»: شمارش افراد دیگر
+            # پردازش/تِرد جداگانه‌ای ندارد - فقط طول همان لیست چهره‌های
+            # شناسایی‌شده‌ی self._last_results (که با هر بار تشخیص چهره‌ی
+            # بالا، مستقل از این تنظیم، به‌روزرسانی می‌شود) به کاربر نمایش
+            # داده می‌شود؛ چون تشخیص چهره - همان‌طور که پنل تشخیص چهره در
+            # عکس‌های شما نشان داد - افراد نشسته/نیمه‌پیدا را هم درست تشخیص
+            # می‌دهد، برخلاف تشخیص‌دهنده‌ی قدیمی که فقط بدن کامل ایستاده را
+            # می‌شناخت. چون این فقط یک len() است (نه پردازش تصویر)، بدون هیچ
+            # هزینه‌ی اضافه‌ای هر فریم قابل به‌روزرسانی است.
+            if self.count_people_enabled:
+                current_count = len(self._last_results)
+                if current_count != self._last_people_count:
+                    self._last_people_count = current_count
+                    self.people_count_signal.emit(current_count)
 
             display_frame = frame.copy()
             self.face_engine.draw_results(display_frame, self._last_results)
-            if self.count_people_enabled:
-                for (x, y, bw, bh) in self._last_people_boxes:
-                    cv2.rectangle(display_frame, (x, y), (x + bw, y + bh), (0, 165, 255), 2)
 
             # frame خام (بدون باکس) هم ارسال می‌شود تا برای «ثبت چهره از تصویر زنده» استفاده شود.
             self.frame_ready.emit(display_frame, frame)
 
         cap.release()
         self._executor.shutdown(wait=False)
-        self._people_executor.shutdown(wait=False)
 
     def stop(self):
         self._run_flag = False
