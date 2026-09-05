@@ -139,6 +139,11 @@ jobs:
           --include-package-data=ultralytics `
           --include-package=torch `
           --include-package=torchvision `
+          --nofollow-import-to=sympy `
+          --nofollow-import-to=torch.onnx `
+          --nofollow-import-to=torch.distributed `
+          --nofollow-import-to=torch.utils.tensorboard `
+          --nofollow-import-to=torch.testing `
           --include-data-files=yolov8n.pt=yolov8n.pt `
           --output-dir=dist `
           --output-filename=CCTV_CMS.exe `
@@ -154,6 +159,25 @@ jobs:
         # می‌شوند. حذف این دو فلگ اضافه، حجم درخت فایل‌هایی که Nuitka باید
         # اسکن/کپی کند (و در نتیجه زمان build) را کم می‌کند، بدون افتادن
         # هیچ فایل واقعاً لازمی.
+        #
+        # نکته‌ی مهم‌تر - چرا --nofollow-import-to=sympy: با
+        # --include-package=torch مجبور می‌کنیم Nuitka *کل* درخت torch را
+        # بگنجاند، حتی بخش‌هایی که این برنامه اصلاً صدا نمی‌زند (ما فقط
+        # YOLO(...).predict استفاده می‌کنیم، نه torch.onnx/torch.compile/
+        # torch.distributed). بعضی از همین بخش‌های استفاده‌نشده، خودشان
+        # sympy را import می‌کنند - و sympy شامل فایل‌هایی مثل
+        # polys/polyquinticconst.py است که فقط جدول ضرایب عددی برای حل
+        # نمادین معادلات درجه‌پنج است، نه منطق برنامه؛ حجمش آن‌قدر زیاد است
+        # که کامپایلرِ C روی بهینه‌سازی‌اش گیر می‌کند (می‌تواند تنها همین یک
+        # فایل، ده‌ها دقیقه طول بکشد - دقیقاً همان چیزی که در لاگ دیدید:
+        # "Slow C compilation detected ... scalability problem"). چون
+        # sympy برای inference ساده‌ی YOLO اصلاً لازم نیست، با
+        # --nofollow-import-to کاملاً از مسیر کامپایل کنار گذاشته می‌شود؛
+        # اگر جایی واقعاً به آن نیاز بود (که در مسیر استفاده‌ی این برنامه
+        # نیست)، فقط همان یک فراخوانی خطای import می‌دهد، نه کل build را کند
+        # می‌کند. torch.onnx/torch.distributed/torch.utils.tensorboard/
+        # torch.testing هم به همین دلیل (زیرسیستم‌های سنگین و استفاده‌نشده)
+        # کنار گذاشته شده‌اند.
 
     - name: Upload Build Artifact
       uses: actions/upload-artifact@v4
