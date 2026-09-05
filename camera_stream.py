@@ -5,7 +5,7 @@ import cv2
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from rtsp_utils import open_capture, STREAM_FFMPEG_OPTS
-from person_detector import get_person_detector
+from person_detector import person_detector
 
 # نکته کلیدی برای رفع مشکل «Live نبودن»:
 #   nobuffer / low_delay / max_delay کوچک از تجمع فریم در بافر داخلی FFmpeg جلوگیری می‌کنند.
@@ -18,67 +18,34 @@ FFMPEG_LOW_LATENCY_OPTS = STREAM_FFMPEG_OPTS
 
 
 # ---------------------------------------------------------------------------
-# شمارش/تشخیص افراد (Real Time People Counting)
+# شمارش افراد (Real Time People Counting)
 # ---------------------------------------------------------------------------
-# رفع باگ «شخص رو شناسایی نمی‌کنه» (۰ نفر / خالی، درحالی‌که واقعاً کسی در
-# تصویر هست ولی چهره‌اش رو به دوربین نیست):
+# تاریخچه‌ی این بخش (برای اینکه بعداً معلوم باشد چرا الان این شکلی است):
+#   نسخه‌ی اول از HOGDescriptor + SVM پیش‌فرض OpenCV استفاده می‌کرد که فقط
+#   برای افراد ایستاده/در حال راه‌رفتن و کاملاً داخل قاب آموزش دیده بود -
+#   برای دوربین‌های داخلی که فرد نشسته/نیم‌خیز/نیمه‌پنهان پشت میز است،
+#   همیشه ۰ می‌داد.
+#   نسخه‌ی دوم HOGDescriptor را کامل حذف کرد و به‌جایش «تعداد چهره‌های
+#   شناسایی‌شده» (FaceEngine.recognize) را به‌عنوان تعداد افراد نمایش
+#   می‌داد. این افراد نشسته/نیم‌خیز رو به دوربین را درست می‌شمرد، اما یک
+#   محدودیت ذاتی داشت: اگر چهره‌ی فرد اصلاً دیده نشود (پشتش به دوربین،
+#   مشغول قفسه/میز، سرش پایین و ...) باز هم ۰ می‌ماند - دقیقاً همان چیزی که
+#   در تصویر ارسالی شما (فردی که کاملاً پشتش به دوربین است) رخ می‌داد.
 #
-# نسخه‌ی قبلی «تعداد افراد» را برابر «تعداد چهره‌های شناسایی‌شده» می‌گرفت
-# (خروجی FaceEngine.recognize). این کار برای چهره‌ی رو‌به‌دوربین خوب کار
-# می‌کرد، ولی وقتی شخص پشتش/پهلویش به دوربین است (دقیقاً مثل تصویر گزارش‌
-# شده - شخصی که گوشی را کنار گوشش گرفته و پشتش به دوربین است)، هیچ چهره‌ای
-# دیده نمی‌شود و همیشه ۰ نتیجه می‌داد - مستقل از اینکه شخص ایستاده، نشسته
-# یا نیم‌خیز باشد.
+# راه‌حل این نسخه: به‌جای شمردن «چهره»، از یک تشخیص‌دهنده‌ی *شخص/بدن کامل*
+# (PersonDetector در person_detector.py، بر پایه‌ی YOLOv8n) استفاده می‌شود
+# که روی هزاران تصویر واقعی از افراد در تمام حالت‌های بدن (ایستاده، نشسته،
+# نیم‌خیز، خم‌شده، پشت به دوربین و ...) آموزش دیده - یعنی دیگر لازم نیست
+# چهره اصلاً دیده شود. «تعداد افراد فعلی» برابر تعداد باکس‌های این
+# تشخیص‌دهنده در self._last_person_boxes است (رجوع کنید به run() پایین‌تر).
+# اگر به هر دلیل (کتابخانه‌ی ultralytics نصب نباشد، یا دانلود وزن مدل شکست
+# بخورد) این تشخیص‌دهنده در دسترس نباشد، به همان روش قبلی (شمارش بر پایه‌ی
+# چهره) برمی‌گردیم تا برنامه هرگز کرش نکند و شمارش کاملاً از کار نیفتد -
+# رجوع کنید به self._person_detector_available.
 #
-# راه‌حل: علاوه بر تشخیص چهره (که هم‌چنان برای شناسایی هویت/نام شخص لازم
-# است)، از PersonDetector (رجوع کنید به person_detector.py - مدل عمومی
-# تشخیص «شخص» بر پایه‌ی شکل کلی بدن، نه صورت) استفاده می‌شود. این detector
-# مستقل از حالت/زاویه‌ی شخص کار می‌کند - ایستاده، نشسته (پشت میز)، نیم‌خیز،
-# پشت یا پهلو به دوربین و... - و «تعداد افراد فعلی» از روی همین نتیجه
-# محاسبه می‌شود، نه صرفاً تعداد چهره‌های دیده‌شده. هر باکسِ شخص که با هیچ
-# چهره‌ی شناسایی‌شده‌ای هم‌پوشانی نداشته باشد (چهره‌اش دیده نمی‌شود) هم با
-# برچسب حالت تخمینی‌اش (ایستاده/نشسته/نیم‌خیز) روی تصویر رسم می‌شود - رجوع
-# کنید به draw_extra_person_boxes پایین‌تر.
-#
-# اگر بارگذاری/دانلود مدل PersonDetector به هر دلیلی (مثلاً نبود اینترنت
-# در همان اولین اجرا، برای دانلود یک‌باره‌ی فایل مدل) شکست بخورد،
-# get_person_detector() مقدار None برمی‌گرداند و برنامه به‌آرامی به همان
-# روش قبلی (شمارش بر پایه‌ی چهره) برمی‌گردد - بدون کرش.
-
-
-def _boxes_overlap(box_a, box_b):
-    """آیا دو باکس (top, right, bottom, left) هم‌پوشانی قابل‌توجهی دارند؟
-    برای تشخیص اینکه یک باکسِ «شخص» (کل بدن) همان چهره‌ای است که قبلاً با
-    FaceEngine شناسایی و رسم شده - تا دو کادر روی هم برای یک نفر رسم
-    نشود."""
-    top_a, right_a, bottom_a, left_a = box_a
-    top_b, right_b, bottom_b, left_b = box_b
-    inter_left, inter_top = max(left_a, left_b), max(top_a, top_b)
-    inter_right, inter_bottom = min(right_a, right_b), min(bottom_a, bottom_b)
-    if inter_right <= inter_left or inter_bottom <= inter_top:
-        return False
-    inter_area = (inter_right - inter_left) * (inter_bottom - inter_top)
-    face_area = max(1, (right_a - left_a) * (bottom_a - top_a))
-    return (inter_area / face_area) > 0.3
-
-
-def draw_extra_person_boxes(frame, person_boxes, face_results):
-    """رفع درخواست «همه‌ی حالت‌های اشخاص (ایستاده، نشسته، نیم‌خیز و...) را
-    تعریف کن»: برای هر شخصی که PersonDetector پیدا کرده ولی چهره‌اش توسط
-    FaceEngine شناسایی نشده (یعنی چهره‌اش رو به دوربین نبوده)، یک کادر
-    نارنجی همراه با برچسبِ حالت تخمینی بدن رسم می‌کند - تا این افراد هم
-    روی تصویر «دیده» شوند، نه فقط در شمارش."""
-    for pb in person_boxes:
-        box = pb["box"]
-        if any(_boxes_overlap(box, r["box"]) for r in face_results):
-            continue
-        top, right, bottom, left = box
-        label = f"شخص ({pb['pose']}) - چهره دیده نمی‌شود"
-        color = (0, 165, 255)  # نارنجی: شخص شناسایی‌شده، هویت نامشخص
-        cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
-        cv2.rectangle(frame, (left, max(top, bottom - 24)), (right, bottom), color, cv2.FILLED)
-        cv2.putText(frame, label, (left + 6, bottom - 6), cv2.FONT_HERSHEY_DUPLEX, 0.5, (255, 255, 255), 1)
-    return frame
+# محدودیت باقی‌مانده (صادقانه): اگر فرد آن‌قدر پشت اثاثیه/دیوار پنهان باشد
+# که تقریباً هیچ بخشی از بدنش در تصویر دیده نشود، هیچ تشخیص‌دهنده‌ی
+# مبتنی‌بر تصویری (نه فقط این یکی) نمی‌تواند او را بشمارد.
 
 
 def _crop_face(frame, box):
@@ -208,6 +175,13 @@ class CameraStreamThread(QThread):
         self.process_every_n = max(1, process_every_n)
         self._run_flag = True
         self._last_results = []
+        # نتیجه‌ی خام PersonDetector (کادر کل بدن، فارغ از حالت/چهره) روی
+        # آخرین فریم پردازش‌شده؛ رجوع کنید به توضیح بالای فایل.
+        self._last_person_boxes = []
+        # فقط بعد از اولین تلاش برای بارگذاری مدل (در ترد پس‌زمینه‌ی تشخیص،
+        # نه ترد اصلی) مقداردهی واقعی می‌شود؛ تا وقتی نامشخص است، شمارش از
+        # روی چهره (روش قبلی) به‌عنوان جایگزین امن استفاده می‌شود.
+        self._person_detector_available = False
         # رفع باگ چشمک‌زدن کادر/برچسب: به‌جای جایگزینی مستقیم نتیجه‌ی خام هر
         # دور تشخیص، از _FaceTracker (تعریف بالای فایل) برای پایدارسازی
         # موقعیت و برچسب استفاده می‌شود.
@@ -226,19 +200,12 @@ class CameraStreamThread(QThread):
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self._recognize_busy = threading.Event()
 
-        # تشخیص «شخص» بر پایه‌ی کل بدن (مستقل از حالت/چهره) - رجوع کنید به
-        # person_detector.py و توضیح بالای فایل. نمونه‌ی مشترک بین همه‌ی
-        # دوربین‌هاست، پس فقط یک‌بار (برای اولین دوربین) بارگذاری می‌شود.
-        self._person_detector = get_person_detector()
-        self._last_person_boxes = []  # خروجی خام PersonDetector.detect برای آخرین فریم پردازش‌شده
-
         # --- شمارش افراد (اختیاری، پیش‌فرض خاموش) ---
-        # اگر PersonDetector با موفقیت بارگذاری شده باشد، «تعداد افراد» از
-        # روی تعداد باکس‌های بدنِ شناسایی‌شده (self._last_person_boxes)
-        # محاسبه می‌شود که مستقل از حالت (ایستاده/نشسته/نیم‌خیز) و دیده‌شدن
-        # چهره کار می‌کند. در غیر این صورت (مثلاً شکست دانلود مدل)، به همان
-        # روش قبلی - تعداد چهره‌های شناسایی‌شده - برمی‌گردیم تا شمارش کاملاً
-        # از کار نیفتد.
+        # تِرد جداگانه‌ای ندارد: تشخیص شخص (person_detector) همان‌جایی که
+        # تشخیص چهره اجرا می‌شود (_run_recognition، در ترد پس‌زمینه‌ی
+        # موجود) انجام می‌شود؛ اینجا فقط طول نتیجه‌ی از قبل محاسبه‌شده
+        # (self._last_person_boxes، مستقل از این تنظیم همیشه به‌روزرسانی
+        # می‌شود) خوانده و نمایش داده می‌شود - رجوع کنید به run().
         self.count_people_enabled = False
         self._last_people_count = -1  # برای فرستادن سیگنال فقط وقتی عدد واقعاً عوض شود
 
@@ -258,12 +225,6 @@ class CameraStreamThread(QThread):
         self._executor.submit(self._run_recognition, frame_copy)
 
     def _run_recognition(self, frame):
-        if self._person_detector is not None:
-            try:
-                self._last_person_boxes = self._person_detector.detect(frame)
-            except Exception as e:
-                # خطای تشخیص شخص هم نباید باعث توقف پخش زنده یا تشخیص چهره شود.
-                print(f"خطا در تشخیص شخص (PersonDetector): {e}")
         try:
             results, unknown_event, known_events = self.face_engine.recognize(frame)
             # رفع باگ «کادر چشمک می‌زنه» و «برچسب/رنگ ناپایدار (سبز/قرمز عوض
@@ -273,6 +234,17 @@ class CameraStreamThread(QThread):
             # چهره را فقط بعد از تکرار پیاپی یک هویت جدید عوض می‌کند - نه با
             # اولین نوسان لحظه‌ای تشخیص.
             self._last_results = self._face_tracker.update(results)
+
+            # --- تشخیص شخص (کل بدن، مستقل از حالت/دیده‌بودن چهره) ---
+            # عمداً در همین ترد پس‌زمینه‌ی تشخیص (نه ترد اصلی خواندن فریم)
+            # و بعد از تشخیص چهره اجرا می‌شود - دقیقاً همان الگویی که برای
+            # تشخیص چهره استفاده شده (رجوع کنید به توضیح بالای run()):
+            # حلقه‌ی اصلی هرگز منتظر این پردازش نمی‌ماند، و چون هر دو در یک
+            # ترد پس‌زمینه‌ی تک‌کارگر پشت‌سرهم اجرا می‌شوند، دو تشخیص با هم
+            # روی CPU رقابت نمی‌کنند.
+            self._last_person_boxes = person_detector.detect(frame)
+            self._person_detector_available = person_detector.available
+
             if unknown_event is not None:
                 unknown_crop = _crop_face(frame, unknown_event)
                 # رفع درخواست: چهره‌ی تعریف‌نشده علاوه بر نمایش در پنل، بر اساس
@@ -320,14 +292,17 @@ class CameraStreamThread(QThread):
             if frame_counter % self.process_every_n == 0:
                 self._submit_recognition(frame)
 
-            # رفع باگ «کسی تو اتاقه ولی عدد صفر قفل شده / شخص شناسایی نمی‌شه»:
-            # به‌جای تکیه‌ی صرف بر تعداد چهره‌های دیده‌شده، تعداد باکس‌های
-            # PersonDetector (تشخیص کل بدن، مستقل از حالت/زاویه‌ی شخص) ملاک
-            # قرار می‌گیرد؛ فقط اگر آن مدل در دسترس نباشد، به شمارش بر پایه‌ی
-            # چهره برمی‌گردیم. چون این فقط یک len() است (نه پردازش تصویر)،
-            # بدون هیچ هزینه‌ی اضافه‌ای هر فریم قابل به‌روزرسانی است.
+            # رفع باگ «کسی تو اتاقه ولی عدد صفر قفل شده»: شمارش دیگر
+            # پردازش/تِرد جداگانه‌ای ندارد - فقط طول یکی از دو لیست از قبل
+            # موجود (self._last_person_boxes یا self._last_results، هر دو
+            # با هر بار تشخیص در _run_recognition به‌روزرسانی می‌شوند) خوانده
+            # می‌شود. اولویت با PersonDetector (کل بدن، هر حالتی) است چون
+            # نیازی به دیدن چهره ندارد؛ فقط اگر آن تشخیص‌دهنده در دسترس
+            # نباشد (مثلاً ultralytics نصب نیست)، به شمارش بر پایه‌ی چهره
+            # برمی‌گردیم. چون این فقط یک len() است (نه پردازش تصویر)، بدون
+            # هیچ هزینه‌ی اضافه‌ای هر فریم قابل به‌روزرسانی است.
             if self.count_people_enabled:
-                if self._person_detector is not None:
+                if self._person_detector_available:
                     current_count = len(self._last_person_boxes)
                 else:
                     current_count = len(self._last_results)
@@ -337,8 +312,12 @@ class CameraStreamThread(QThread):
 
             display_frame = frame.copy()
             self.face_engine.draw_results(display_frame, self._last_results)
-            if self._person_detector is not None:
-                draw_extra_person_boxes(display_frame, self._last_person_boxes, self._last_results)
+            # کادر آبی‌روشن دور کل بدن هر فرد (فارغ از حالت/چهره) - جدا از
+            # کادر سبز/قرمز چهره که بالا رسم شد. همیشه رسم می‌شود (نه فقط
+            # وقتی شمارش روشن است) تا کاربر بلافاصله ببیند تشخیص شخص در حال
+            # کار است، دقیقاً مثل تشخیص چهره که همیشه فعال است.
+            if self._person_detector_available:
+                person_detector.draw_boxes(display_frame, self._last_person_boxes)
 
             # frame خام (بدون باکس) هم ارسال می‌شود تا برای «ثبت چهره از تصویر زنده» استفاده شود.
             self.frame_ready.emit(display_frame, frame)
