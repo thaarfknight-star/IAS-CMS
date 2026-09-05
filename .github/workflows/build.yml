@@ -46,7 +46,44 @@ jobs:
         pip install "setuptools<70" wheel
         pip install dlib --only-binary :all: || pip install dlib
         pip install git+https://github.com/ageitgey/face_recognition_models
+        # نکته‌ی مهم درباره‌ی حجم: نصب معمولی `pip install ultralytics` روی
+        # ویندوز، torch را از PyPI معمولی نصب می‌کند که (بسته به نسخه) گاهی
+        # چند گیگابایت وزن CUDA همراهش می‌آید - چون این برنامه هرگز روی GPU
+        # اجرا نمی‌شود (فقط CPU، برای سازگاری با هر سیستم کاربر نهایی)، آن
+        # وزن اضافه کاملاً بی‌فایده است و فقط exe نهایی و زمان build را چند
+        # برابر سنگین می‌کند. با نصب صریح نسخه‌ی CPU-only از ایندکس رسمی
+        # pytorch *قبل* از requirements.txt، وقتی به ultralytics (که torch
+        # را به‌عنوان پیش‌نیاز می‌خواهد) می‌رسیم، همین نسخه‌ی سبک از قبل
+        # نصب‌شده کفایت می‌کند و pip دوباره torch سنگین را جایگزین نمی‌کند.
+        pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
         pip install -r requirements.txt
+
+    # رفع درخواست «همه‌چیز فقط از طریق گیت‌هاب، بدون نصب چیزی روی سیستم
+    # کاربر»: وزن مدل تشخیص شخص (yolov8n.pt، حدود ۶ مگابایت) همین‌جا - روی
+    # سرور گیت‌هاب که اینترنت دارد - یک‌بار دانلود و مستقیماً کنار main.py
+    # قرار می‌گیرد؛ چند خط پایین‌تر با فلگ Nuitka
+    # --include-data-files=yolov8n.pt=yolov8n.pt داخل خودِ exe پرتابل
+    # بسته‌بندی می‌شود. نتیجه: کاربر نهایی برای فعال‌شدن تشخیص شخص، دیگر نه
+    # نیاز به نصب پکیجی دارد و نه حتی نیاز به یک‌بار اتصال اینترنت برای
+    # دانلود وزن مدل - همه‌چیز از قبل داخل همان یک فایل exe است.
+    - name: Download YOLOv8n weights (bundled into the portable EXE)
+      shell: pwsh
+      run: |
+        python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+        if (-not (Test-Path "yolov8n.pt")) {
+          # بعضی نسخه‌های ultralytics به‌جای پوشه‌ی جاری، در یک پوشه‌ی کش
+          # کنار پروفایل کاربر دانلود می‌کنند؛ در آن صورت پیدا و کپی می‌شود.
+          $found = Get-ChildItem -Path $env:USERPROFILE -Recurse -Filter "yolov8n.pt" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($found) { Copy-Item $found.FullName -Destination "yolov8n.pt" }
+        }
+        if (-not (Test-Path "yolov8n.pt")) {
+          # آخرین راه‌حل: دانلود مستقیم از انتشار رسمی ultralytics/assets.
+          Invoke-WebRequest -Uri "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt" -OutFile "yolov8n.pt"
+        }
+        if (-not (Test-Path "yolov8n.pt")) {
+          throw "دانلود yolov8n.pt با هیچ‌کدام از روش‌ها موفق نشد."
+        }
+        Write-Host "yolov8n.pt آماده‌ی بسته‌بندی است: $((Get-Item yolov8n.pt).Length) بایت"
 
     # Nuitka برای هر build، کامپایلر MinGW64 را دانلود می‌کند و ماژول‌های
     # پایتون را به C کامپایل می‌کند. کش‌کردن پوشه‌ی کش داخلی Nuitka
@@ -76,6 +113,13 @@ jobs:
           --include-package=face_recognition `
           --include-package-data=face_recognition_models `
           --include-data-dir=faces=faces `
+          --include-package=ultralytics `
+          --include-package-data=ultralytics `
+          --include-package=torch `
+          --include-package-data=torch `
+          --include-package=torchvision `
+          --include-package-data=torchvision `
+          --include-data-files=yolov8n.pt=yolov8n.pt `
           --output-dir=dist `
           --output-filename=CCTV_CMS.exe `
           --assume-yes-for-downloads `
