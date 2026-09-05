@@ -4,10 +4,12 @@ on:
   push:
     branches: [ "main" ]
   workflow_dispatch:
+    inputs:
+      quick_test:
+        description: 'بیلد سریع برای تست: standalone (پوشه) بجای onefile (یک exe فشرده) - فقط وقتی دستی (Run workflow) اجرا کنید فعال است'
+        type: boolean
+        default: true
 
-# رفع درخواست «سریع خروجی بده»: اگر چند بار پشت‌سرهم push کنید، اجرای
-# قبلیِ هنوز در حال build همین شاخه لغو می‌شود و فقط آخرین commit ساخته
-# می‌شود - وقت CI صرف ساختن نسخه‌های میانی/منسوخ نمی‌شود.
 concurrency:
   group: build-exe-${{ github.ref }}
   cancel-in-progress: true
@@ -24,15 +26,9 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: "3.10"
-        # کش کردن پکیج‌های pip بر اساس محتوای requirements.txt. اجرای بعدی که
-        # requirements.txt عوض نشده باشد، این پکیج‌ها را دوباره دانلود نمی‌کند.
         cache: 'pip'
         cache-dependency-path: requirements.txt
 
-    # dlib روی ویندوز wheel آماده در PyPI ندارد و هر بار از سورس با CMake
-    # کامپایل می‌شود - به‌تنهایی کندترین بخش این workflow (اغلب چند دقیقه).
-    # این کش همان wheel از پیش کامپایل‌شده را نگه می‌دارد تا اجرای بعدی
-    # (وقتی نسخه‌ی پایتون/dlib عوض نشده) اصلاً کامپایل نکند.
     - name: Cache pip-built wheels (dlib و بقیه)
       id: pip-wheel-cache
       uses: actions/cache@v4
@@ -41,13 +37,8 @@ jobs:
           ~\AppData\Local\pip\Cache
         key: pip-wheels-windows-py310-${{ hashFiles('requirements.txt') }}
         restore-keys: |
-          pip-wheels-windows-py310-
+          pip-wheels-windows-
 
-    # رفع درخواست «سریع‌تر»: نصب CMake خودش حدود ۱ تا ۲ دقیقه طول می‌کشد.
-    # dlib فقط وقتی واقعاً از سورس کامپایل می‌شود به آن نیاز دارد؛ اگر کش
-    # بالا از یک اجرای قبلی با همین requirements.txt کامل موفق (hit) باشد،
-    # wheel از پیش کامپایل‌شده‌ی dlib همان‌جا هست و اصلاً نیازی به CMake
-    # نیست - این مرحله در آن حالت کامل رد (skip) می‌شود.
     - name: Install CMake (فقط وقتی dlib هنوز کش‌نشده)
       if: steps.pip-wheel-cache.outputs.cache-hit != 'true'
       run: |
@@ -59,25 +50,9 @@ jobs:
         pip install "setuptools<70" wheel
         pip install dlib --only-binary :all: || pip install dlib
         pip install git+https://github.com/ageitgey/face_recognition_models
-        # نکته‌ی مهم درباره‌ی حجم و سرعت: نصب معمولی `pip install ultralytics`
-        # روی ویندوز، torch را از PyPI معمولی نصب می‌کند که (بسته به نسخه)
-        # وزن CUDA همراهش می‌آید - چند برابر بزرگ‌تر از نسخه‌ی CPU-only، هم
-        # دانلودش کندتر است و هم بعداً بسته‌بندی‌اش با Nuitka. چون این برنامه
-        # هرگز روی GPU اجرا نمی‌شود، نسخه‌ی CPU-only از ایندکس رسمی pytorch
-        # *قبل* از requirements.txt نصب می‌شود؛ وقتی به ultralytics (که torch
-        # را پیش‌نیاز می‌خواهد) می‌رسیم، همین نسخه‌ی سبک از قبل نصب‌شده کفایت
-        # می‌کند و pip دوباره نسخه‌ی سنگین را جایگزین نمی‌کند.
         pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
         pip install -r requirements.txt
 
-    # رفع درخواست «همه‌چیز فقط از طریق گیت‌هاب، بدون نصب چیزی روی سیستم
-    # کاربر»: وزن مدل تشخیص شخص (yolov8n.pt، حدود ۶ مگابایت) همین‌جا - روی
-    # سرور گیت‌هاب که اینترنت دارد - دانلود و مستقیماً کنار main.py قرار
-    # می‌گیرد؛ چند مرحله پایین‌تر با فلگ Nuitka
-    # --include-data-files=yolov8n.pt=yolov8n.pt داخل خودِ exe پرتابل
-    # بسته‌بندی می‌شود. رفع درخواست «سریع‌تر»: چون این فایل عملاً هیچ‌وقت
-    # عوض نمی‌شود، با یک کلید ثابت کش می‌شود - از دومین اجرا به بعد، این
-    # دانلود کاملاً رد (skip) می‌شود.
     - name: Cache YOLOv8n weights
       id: yolo-weights-cache
       uses: actions/cache@v4
@@ -91,13 +66,10 @@ jobs:
       run: |
         python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
         if (-not (Test-Path "yolov8n.pt")) {
-          # بعضی نسخه‌های ultralytics به‌جای پوشه‌ی جاری، در یک پوشه‌ی کش
-          # کنار پروفایل کاربر دانلود می‌کنند؛ در آن صورت پیدا و کپی می‌شود.
           $found = Get-ChildItem -Path $env:USERPROFILE -Recurse -Filter "yolov8n.pt" -ErrorAction SilentlyContinue | Select-Object -First 1
           if ($found) { Copy-Item $found.FullName -Destination "yolov8n.pt" }
         }
         if (-not (Test-Path "yolov8n.pt")) {
-          # آخرین راه‌حل: دانلود مستقیم از انتشار رسمی ultralytics/assets.
           Invoke-WebRequest -Uri "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt" -OutFile "yolov8n.pt"
         }
         if (-not (Test-Path "yolov8n.pt")) {
@@ -105,12 +77,6 @@ jobs:
         }
         Write-Host "yolov8n.pt آماده‌ی بسته‌بندی است: $((Get-Item yolov8n.pt).Length) بایت"
 
-    # Nuitka برای هر build، کامپایلر MinGW64 را دانلود می‌کند و ماژول‌های
-    # پایتون را به C کامپایل می‌کند. کش‌کردن پوشه‌ی کش داخلی Nuitka
-    # (دانلود MinGW64 + کش کامپایل ماژول‌ها) از دانلود/کامپایل تکراری در
-    # اجراهای بعدی (وقتی سورس عوض نشده) جلوگیری می‌کند - این مهم‌ترین کش
-    # برای سرعت اجراهای بعدی است، چون کامپایل torch/ultralytics به C
-    # سنگین‌ترین بخش این workflow است.
     - name: Cache Nuitka (MinGW64 + ماژول‌های کامپایل‌شده)
       uses: actions/cache@v4
       with:
@@ -120,11 +86,29 @@ jobs:
         restore-keys: |
           nuitka-cache-windows-
 
+    # رفع درخواست «سریع خروجی بده برای تست»: وقتی این workflow را دستی
+    # (Run workflow) با quick_test=true اجرا کنید، بجای --onefile از
+    # --standalone استفاده می‌شود. --onefile یک مرحله‌ی اضافه (فشرده‌سازی
+    # کل باینری + باز کردن خودکارش در حافظه‌ی موقت هر بار که کاربر اجرا
+    # می‌کند) دارد که برای این حجم (torch+ultralytics+dlib) خودش چند دقیقه
+    # از زمان build را می‌گیرد و اصلاً به سرعت *کامپایل* کمکی نمی‌کند، فقط
+    # مرحله‌ی بسته‌بندی نهایی را کند می‌کند. --standalone همان کامپایل و
+    # همان فایل‌ها را تولید می‌کند اما در یک پوشه (dist/main.dist) رها
+    # می‌شوند، بدون فشرده‌سازی - برای تستِ سریعِ داخلی کافی است، فقط باید
+    # کل پوشه با هم منتقل/اجرا شود، نه یک exe تکی قابل توزیع.
+    # روی push به main (بدون ورودی دستی) رفتار قبلی (onefile کامل) دست
+    # نخورده باقی می‌ماند - یعنی نسخه‌ی نهایی/توزیعی هنوز همان یک exe است.
     - name: Build Executable with Nuitka (portable, compiled to machine code)
+      shell: pwsh
       run: |
         python -m pip install nuitka
+
+        $isQuick = "${{ github.event.inputs.quick_test }}" -eq "true"
+        $modeArgs = if ($isQuick) { @("--standalone") } else { @("--onefile") }
+        Write-Host "Build mode: $(if ($isQuick) { 'QUICK TEST (standalone)' } else { 'FULL (onefile)' })"
+
         python -m nuitka `
-          --onefile `
+          @modeArgs `
           --mingw64 `
           --enable-plugin=pyqt6 `
           --windows-console-mode=disable `
@@ -150,37 +134,45 @@ jobs:
           --assume-yes-for-downloads `
           --jobs=$Env:NUMBER_OF_PROCESSORS `
           main.py
-        # نکته‌ی «چرا بدون --include-package-data=torch/torchvision»: آن
-        # فلگ فقط برای فایل‌های غیرِپایتونی (yaml/ttf/json و ...) لازم است -
-        # مثل ultralytics که واقعاً به آن‌ها نیاز دارد و بالا نگه داشته شده.
-        # torch/torchvision تقریباً هیچ فایل غیرکدی لازمی در زمان اجرا
-        # ندارند؛ فایل‌های باینری‌شان (.pyd/.dll) هم مستقل از این فلگ و فقط
-        # با دنبال‌کردن import (--include-package) به‌طور خودکار بسته‌بندی
-        # می‌شوند. حذف این دو فلگ اضافه، حجم درخت فایل‌هایی که Nuitka باید
-        # اسکن/کپی کند (و در نتیجه زمان build) را کم می‌کند، بدون افتادن
-        # هیچ فایل واقعاً لازمی.
-        #
-        # نکته‌ی مهم‌تر - چرا --nofollow-import-to=sympy: با
-        # --include-package=torch مجبور می‌کنیم Nuitka *کل* درخت torch را
-        # بگنجاند، حتی بخش‌هایی که این برنامه اصلاً صدا نمی‌زند (ما فقط
-        # YOLO(...).predict استفاده می‌کنیم، نه torch.onnx/torch.compile/
-        # torch.distributed). بعضی از همین بخش‌های استفاده‌نشده، خودشان
-        # sympy را import می‌کنند - و sympy شامل فایل‌هایی مثل
-        # polys/polyquinticconst.py است که فقط جدول ضرایب عددی برای حل
-        # نمادین معادلات درجه‌پنج است، نه منطق برنامه؛ حجمش آن‌قدر زیاد است
-        # که کامپایلرِ C روی بهینه‌سازی‌اش گیر می‌کند (می‌تواند تنها همین یک
-        # فایل، ده‌ها دقیقه طول بکشد - دقیقاً همان چیزی که در لاگ دیدید:
-        # "Slow C compilation detected ... scalability problem"). چون
-        # sympy برای inference ساده‌ی YOLO اصلاً لازم نیست، با
-        # --nofollow-import-to کاملاً از مسیر کامپایل کنار گذاشته می‌شود؛
-        # اگر جایی واقعاً به آن نیاز بود (که در مسیر استفاده‌ی این برنامه
-        # نیست)، فقط همان یک فراخوانی خطای import می‌دهد، نه کل build را کند
-        # می‌کند. torch.onnx/torch.distributed/torch.utils.tensorboard/
-        # torch.testing هم به همین دلیل (زیرسیستم‌های سنگین و استفاده‌نشده)
-        # کنار گذاشته شده‌اند.
 
+    # رفع ریشه‌ای مشکل «پر شدن سقف ۱۰ گیگابایتیِ کش گیت‌هاب»: چون کلید کش
+    # Nuitka بر اساس hashFiles('**/*.py') است، هر commit که حتی یک خط
+    # پایتون را عوض کند یک کش کاملاً جدید (و چندگیگابایتی، چون شامل خودِ
+    # کامپایلر MinGW64 + آبجکت‌های کامپایل‌شده‌ی torch/ultralytics/dlib
+    # است) می‌سازد. گیت‌هاب کش‌های قدیمی را خودکار پاک نمی‌کند، فقط وقتی
+    # سقف ۱۰ گیگابایتِ کل مخزن رد شود قدیمی‌ترین‌ها را حذف (LRU) می‌کند -
+    # همین باعث می‌شد گاهی build سریع (کش hit) و گاهی خیلی کند (کش evict
+    # شده) باشد. این مرحله بعد از هر build موفق، تمام کش‌های قدیمیِ همین
+    # شاخه با پیشوند nuitka-cache-windows- یا pip-wheels-windows- را پاک
+    # می‌کند (به‌جز همان کشی که همین الان در پایان این job ذخیره می‌شود -
+    # چون ذخیره‌ی خودکار کش توسط actions/cache بعد از تمام این مراحل، در
+    # فاز "post" انجام می‌شود، پس اینجا هنوز وجود ندارد که پاک شود). نتیجه:
+    # همیشه فقط یک نسخه (آخرین) از هر کش نگه داشته می‌شود، نه ده‌ها نسخه‌ی
+    # منسوخ که فضا را اشغال کنند.
+    - name: Clean up old caches (جلوگیری از پر شدن سقف ۱۰ گیگابایتی کش)
+      if: always()
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        for prefix in "nuitka-cache-windows-" "pip-wheels-windows-"; do
+          echo "Checking caches with prefix: $prefix"
+          gh cache list --repo "${{ github.repository }}" --ref "${{ github.ref }}" --limit 100 --json id,key \
+            --jq ".[] | select(.key | startswith(\"$prefix\")) | .id" \
+            | while read -r id; do
+                echo "Deleting old cache id=$id (prefix=$prefix)"
+                gh cache delete "$id" --repo "${{ github.repository }}" || true
+              done
+        done
+
+    # پوشش هر دو حالت در یک آپلود: در حالت onefile فقط dist/CCTV_CMS.exe
+    # وجود دارد، در حالت standalone فقط پوشه‌ی dist/main.dist - هرکدام
+    # نبود، با if-no-files-found: ignore بدون خطا رد می‌شود.
     - name: Upload Build Artifact
       uses: actions/upload-artifact@v4
       with:
         name: CCTV_CMS_Windows_Portable
-        path: dist/CCTV_CMS.exe
+        path: |
+          dist/CCTV_CMS.exe
+          dist/main.dist/**
+        if-no-files-found: ignore
