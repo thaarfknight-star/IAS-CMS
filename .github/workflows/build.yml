@@ -5,6 +5,13 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+# رفع درخواست «سریع خروجی بده»: اگر چند بار پشت‌سرهم push کنید، اجرای
+# قبلیِ هنوز در حال build همین شاخه لغو می‌شود و فقط آخرین commit ساخته
+# می‌شود - وقت CI صرف ساختن نسخه‌های میانی/منسوخ نمی‌شود.
+concurrency:
+  group: build-exe-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest
@@ -22,16 +29,12 @@ jobs:
         cache: 'pip'
         cache-dependency-path: requirements.txt
 
-    - name: Install CMake
-      run: |
-        choco install cmake --installargs "ADD_CMAKE_TO_PATH=System" --no-progress
-
     # dlib روی ویندوز wheel آماده در PyPI ندارد و هر بار از سورس با CMake
-    # کامپایل می‌شود (کندترین بخش این workflow). با کش کردن پوشه‌ی کش pip
-    # (جایی که wheel ساخته‌شده از سورس هم نگه‌داری می‌شود)، وقتی نسخه‌ی
-    # پایتون/dlib عوض نشده باشد، اجرای بعدی به‌جای کامپایل دوباره، همان
-    # wheel قبلی را از کش برمی‌دارد.
+    # کامپایل می‌شود - به‌تنهایی کندترین بخش این workflow (اغلب چند دقیقه).
+    # این کش همان wheel از پیش کامپایل‌شده را نگه می‌دارد تا اجرای بعدی
+    # (وقتی نسخه‌ی پایتون/dlib عوض نشده) اصلاً کامپایل نکند.
     - name: Cache pip-built wheels (dlib و بقیه)
+      id: pip-wheel-cache
       uses: actions/cache@v4
       with:
         path: |
@@ -40,33 +43,50 @@ jobs:
         restore-keys: |
           pip-wheels-windows-py310-
 
+    # رفع درخواست «سریع‌تر»: نصب CMake خودش حدود ۱ تا ۲ دقیقه طول می‌کشد.
+    # dlib فقط وقتی واقعاً از سورس کامپایل می‌شود به آن نیاز دارد؛ اگر کش
+    # بالا از یک اجرای قبلی با همین requirements.txt کامل موفق (hit) باشد،
+    # wheel از پیش کامپایل‌شده‌ی dlib همان‌جا هست و اصلاً نیازی به CMake
+    # نیست - این مرحله در آن حالت کامل رد (skip) می‌شود.
+    - name: Install CMake (فقط وقتی dlib هنوز کش‌نشده)
+      if: steps.pip-wheel-cache.outputs.cache-hit != 'true'
+      run: |
+        choco install cmake --installargs "ADD_CMAKE_TO_PATH=System" --no-progress
+
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
         pip install "setuptools<70" wheel
         pip install dlib --only-binary :all: || pip install dlib
         pip install git+https://github.com/ageitgey/face_recognition_models
-        # نکته‌ی مهم درباره‌ی حجم: نصب معمولی `pip install ultralytics` روی
-        # ویندوز، torch را از PyPI معمولی نصب می‌کند که (بسته به نسخه) گاهی
-        # چند گیگابایت وزن CUDA همراهش می‌آید - چون این برنامه هرگز روی GPU
-        # اجرا نمی‌شود (فقط CPU، برای سازگاری با هر سیستم کاربر نهایی)، آن
-        # وزن اضافه کاملاً بی‌فایده است و فقط exe نهایی و زمان build را چند
-        # برابر سنگین می‌کند. با نصب صریح نسخه‌ی CPU-only از ایندکس رسمی
-        # pytorch *قبل* از requirements.txt، وقتی به ultralytics (که torch
-        # را به‌عنوان پیش‌نیاز می‌خواهد) می‌رسیم، همین نسخه‌ی سبک از قبل
-        # نصب‌شده کفایت می‌کند و pip دوباره torch سنگین را جایگزین نمی‌کند.
+        # نکته‌ی مهم درباره‌ی حجم و سرعت: نصب معمولی `pip install ultralytics`
+        # روی ویندوز، torch را از PyPI معمولی نصب می‌کند که (بسته به نسخه)
+        # وزن CUDA همراهش می‌آید - چند برابر بزرگ‌تر از نسخه‌ی CPU-only، هم
+        # دانلودش کندتر است و هم بعداً بسته‌بندی‌اش با Nuitka. چون این برنامه
+        # هرگز روی GPU اجرا نمی‌شود، نسخه‌ی CPU-only از ایندکس رسمی pytorch
+        # *قبل* از requirements.txt نصب می‌شود؛ وقتی به ultralytics (که torch
+        # را پیش‌نیاز می‌خواهد) می‌رسیم، همین نسخه‌ی سبک از قبل نصب‌شده کفایت
+        # می‌کند و pip دوباره نسخه‌ی سنگین را جایگزین نمی‌کند.
         pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
         pip install -r requirements.txt
 
     # رفع درخواست «همه‌چیز فقط از طریق گیت‌هاب، بدون نصب چیزی روی سیستم
     # کاربر»: وزن مدل تشخیص شخص (yolov8n.pt، حدود ۶ مگابایت) همین‌جا - روی
-    # سرور گیت‌هاب که اینترنت دارد - یک‌بار دانلود و مستقیماً کنار main.py
-    # قرار می‌گیرد؛ چند خط پایین‌تر با فلگ Nuitka
+    # سرور گیت‌هاب که اینترنت دارد - دانلود و مستقیماً کنار main.py قرار
+    # می‌گیرد؛ چند مرحله پایین‌تر با فلگ Nuitka
     # --include-data-files=yolov8n.pt=yolov8n.pt داخل خودِ exe پرتابل
-    # بسته‌بندی می‌شود. نتیجه: کاربر نهایی برای فعال‌شدن تشخیص شخص، دیگر نه
-    # نیاز به نصب پکیجی دارد و نه حتی نیاز به یک‌بار اتصال اینترنت برای
-    # دانلود وزن مدل - همه‌چیز از قبل داخل همان یک فایل exe است.
-    - name: Download YOLOv8n weights (bundled into the portable EXE)
+    # بسته‌بندی می‌شود. رفع درخواست «سریع‌تر»: چون این فایل عملاً هیچ‌وقت
+    # عوض نمی‌شود، با یک کلید ثابت کش می‌شود - از دومین اجرا به بعد، این
+    # دانلود کاملاً رد (skip) می‌شود.
+    - name: Cache YOLOv8n weights
+      id: yolo-weights-cache
+      uses: actions/cache@v4
+      with:
+        path: yolov8n.pt
+        key: yolov8n-weights-v1
+
+    - name: Download YOLOv8n weights (فقط اگر در کش نبود)
+      if: steps.yolo-weights-cache.outputs.cache-hit != 'true'
       shell: pwsh
       run: |
         python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
@@ -88,7 +108,9 @@ jobs:
     # Nuitka برای هر build، کامپایلر MinGW64 را دانلود می‌کند و ماژول‌های
     # پایتون را به C کامپایل می‌کند. کش‌کردن پوشه‌ی کش داخلی Nuitka
     # (دانلود MinGW64 + کش کامپایل ماژول‌ها) از دانلود/کامپایل تکراری در
-    # اجراهای بعدی (وقتی سورس عوض نشده) جلوگیری می‌کند.
+    # اجراهای بعدی (وقتی سورس عوض نشده) جلوگیری می‌کند - این مهم‌ترین کش
+    # برای سرعت اجراهای بعدی است، چون کامپایل torch/ultralytics به C
+    # سنگین‌ترین بخش این workflow است.
     - name: Cache Nuitka (MinGW64 + ماژول‌های کامپایل‌شده)
       uses: actions/cache@v4
       with:
@@ -116,15 +138,22 @@ jobs:
           --include-package=ultralytics `
           --include-package-data=ultralytics `
           --include-package=torch `
-          --include-package-data=torch `
           --include-package=torchvision `
-          --include-package-data=torchvision `
           --include-data-files=yolov8n.pt=yolov8n.pt `
           --output-dir=dist `
           --output-filename=CCTV_CMS.exe `
           --assume-yes-for-downloads `
           --jobs=$Env:NUMBER_OF_PROCESSORS `
           main.py
+        # نکته‌ی «چرا بدون --include-package-data=torch/torchvision»: آن
+        # فلگ فقط برای فایل‌های غیرِپایتونی (yaml/ttf/json و ...) لازم است -
+        # مثل ultralytics که واقعاً به آن‌ها نیاز دارد و بالا نگه داشته شده.
+        # torch/torchvision تقریباً هیچ فایل غیرکدی لازمی در زمان اجرا
+        # ندارند؛ فایل‌های باینری‌شان (.pyd/.dll) هم مستقل از این فلگ و فقط
+        # با دنبال‌کردن import (--include-package) به‌طور خودکار بسته‌بندی
+        # می‌شوند. حذف این دو فلگ اضافه، حجم درخت فایل‌هایی که Nuitka باید
+        # اسکن/کپی کند (و در نتیجه زمان build) را کم می‌کند، بدون افتادن
+        # هیچ فایل واقعاً لازمی.
 
     - name: Upload Build Artifact
       uses: actions/upload-artifact@v4
