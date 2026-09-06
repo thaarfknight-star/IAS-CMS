@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import threading
 
 import cv2
 
@@ -10,8 +11,8 @@ from PyQt6.QtWidgets import (
     QGroupBox, QMenu, QTreeWidget, QTreeWidgetItem, QInputDialog,
     QGridLayout, QComboBox, QScrollArea, QSizePolicy, QSplitter
 )
-from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon, QDrag, QFontMetrics
-from PyQt6.QtCore import Qt, QSize, QMimeData
+from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon, QDrag, QFontMetrics, QPainter, QPen, QColor
+from PyQt6.QtCore import Qt, QSize, QMimeData, QPointF, QRectF, QTimer, pyqtSignal
 
 from face_engine import FaceEngine
 from scanner import NetworkScanThread
@@ -65,6 +66,138 @@ def _bgr_to_pixmap(frame):
     return QPixmap.fromImage(qt_img)
 
 
+def _play_alarm_beep():
+    """رفع درخواست: پخش صدای آلارم هنگام عبور شخص از خط فرضی. در یک ترد
+    جداگانه اجرا می‌شود تا رابط کاربری هرگز قفل نشود. روی ویندوز (پلتفرم
+    اصلی این برنامه) از winsound.Beep استفاده می‌شود؛ اگر در دسترس نبود
+    (مثلاً روی لینوکس/مک برای توسعه)، به بیپ ساده‌ی Qt برمی‌گردد."""
+    def _run():
+        try:
+            import winsound
+            for _ in range(3):
+                winsound.Beep(1500, 220)
+                time.sleep(0.08)
+        except Exception:
+            try:
+                QApplication.beep()
+            except Exception:
+                pass
+    threading.Thread(target=_run, daemon=True).start()
+
+
+class VideoDisplayLabel(QLabel):
+    """رفع درخواست: امکان رسم «خط فرضی عبور» با کشیدن ماوس، مستقیماً روی
+    تصویر زنده‌ی یک دوربین.
+
+    منطق مختصات: چون setPixmap با KeepAspectRatio یک pixmap کوچک‌تر یا
+    مساوی اندازه‌ی خودِ لیبل تولید می‌کند و QLabel آن را وسط‌چین (AlignCenter)
+    نمایش می‌دهد، مستطیل واقعیِ تصویر داخل لیبل همیشه یک مستطیل هم‌مرکز به
+    اندازه‌ی pixmap فعلی است (_frame_rect). نقاط رسم‌شده با ماوس (پیکسل
+    لیبل) با این مستطیل به مختصات نرمال 0..1 (نسبت به خودِ فریم دوربین، نه
+    اندازه‌ی لیبل) تبدیل و نگه‌داشته می‌شوند تا با تغییر اندازه‌ی پنجره/شبکه
+    هم موقعیت خط درست بماند."""
+
+    line_drawn = pyqtSignal(tuple)  # ((x1,y1),(x2,y2)) نرمال‌شده‌ی 0..1
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.draw_mode = False
+        self._drag_start = None
+        self._drag_current = None
+        self._pending_norm_line = None  # (x1,y1,x2,y2) نرمال - در انتظار تایید کاربر
+
+    def set_draw_mode(self, enabled: bool):
+        self.draw_mode = bool(enabled)
+        self.setCursor(Qt.CursorShape.CrossCursor if self.draw_mode else Qt.CursorShape.ArrowCursor)
+        self._drag_start = None
+        self._drag_current = None
+        self.update()
+
+    def set_pending_line_norm(self, norm_line):
+        """خط «در انتظار تایید» را برای پیش‌نمایش تنظیم می‌کند؛ None یعنی
+        هیچ خطی نمایش داده نشود (رفع درخواست: بعد از تایید، خط دیگر روی
+        تصویر دوربین دیده نمی‌شود)."""
+        self._pending_norm_line = tuple(norm_line) if norm_line is not None else None
+        self.update()
+
+    def _frame_rect(self):
+        pixmap = self.pixmap()
+        if pixmap is None or pixmap.isNull():
+            return None
+        pm_w, pm_h = pixmap.width(), pixmap.height()
+        if pm_w <= 0 or pm_h <= 0:
+            return None
+        x0 = (self.width() - pm_w) / 2.0
+        y0 = (self.height() - pm_h) / 2.0
+        return QRectF(x0, y0, pm_w, pm_h)
+
+    def _widget_to_norm(self, point):
+        rect = self._frame_rect()
+        if rect is None or rect.width() <= 0 or rect.height() <= 0:
+            return None
+        x = (point.x() - rect.x()) / rect.width()
+        y = (point.y() - rect.y()) / rect.height()
+        return (min(max(x, 0.0), 1.0), min(max(y, 0.0), 1.0))
+
+    def _norm_to_widget(self, norm_point):
+        rect = self._frame_rect()
+        if rect is None:
+            return None
+        return QPointF(rect.x() + norm_point[0] * rect.width(), rect.y() + norm_point[1] * rect.height())
+
+    def mousePressEvent(self, event):
+        if self.draw_mode and event.button() == Qt.MouseButton.LeftButton and self._frame_rect() is not None:
+            self._drag_start = event.position()
+            self._drag_current = self._drag_start
+            self.update()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.draw_mode and self._drag_start is not None:
+            self._drag_current = event.position()
+            self.update()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self.draw_mode and self._drag_start is not None:
+            start_w, end_w = self._drag_start, event.position()
+            self._drag_start = None
+            self._drag_current = None
+            if (end_w - start_w).manhattanLength() >= 12:
+                p1 = self._widget_to_norm(start_w)
+                p2 = self._widget_to_norm(end_w)
+                if p1 is not None and p2 is not None:
+                    self.line_drawn.emit((p1, p2))
+            self.update()
+            return
+        super().mouseReleaseEvent(event)
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._drag_start is not None and self._drag_current is not None:
+            p1, p2 = self._drag_start, self._drag_current
+        elif self._pending_norm_line is not None:
+            line = self._pending_norm_line
+            p1 = self._norm_to_widget((line[0], line[1]))
+            p2 = self._norm_to_widget((line[2], line[3]))
+            if p1 is None or p2 is None:
+                return
+        else:
+            return
+
+        painter = QPainter(self)
+        pen = QPen(QColor("#f1c40f"))
+        pen.setWidth(3)
+        painter.setPen(pen)
+        painter.drawLine(p1, p2)
+        painter.setBrush(QColor("#f1c40f"))
+        for pt in (p1, p2):
+            painter.drawEllipse(pt, 5, 5)
+        painter.end()
+
+
 class CameraSlotWidget(QWidget):
     """یک خانه (slot) در شبکه‌ی نمایش هم‌زمان دوربین‌ها. می‌تواند خالی باشد یا
     یک دوربین را پخش کند. با کلیک انتخاب (highlight) می‌شود تا فریم زنده‌اش
@@ -96,6 +229,19 @@ class CameraSlotWidget(QWidget):
         self.slot_index = None
         self._drag_start_pos = None
         self.setAcceptDrops(True)
+
+        # رفع درخواست: خط فرضی عبور (Tripwire) برای این خانه.
+        #   tripwire_pending: خطی که تازه رسم شده ولی هنوز کاربر «تایید»
+        #       نزده - همچنان روی تصویر (کم‌رنگ، زرد) دیده می‌شود.
+        #   tripwire_confirmed: خط نهایی و فعال - از این لحظه دیگر روی
+        #       تصویر رسم نمی‌شود (طبق درخواست)، فقط برای تشخیص عبور در ترد
+        #       پخش (CameraStreamThread) استفاده می‌شود.
+        self.tripwire_pending = None
+        self.tripwire_confirmed = None
+        self._alarm_active = False
+        self._alarm_timer = QTimer(self)
+        self._alarm_timer.setSingleShot(True)
+        self._alarm_timer.timeout.connect(self._clear_alarm)
 
         self.setMinimumSize(140, 110)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -137,7 +283,7 @@ class CameraSlotWidget(QWidget):
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color:#888888; font-size:9px;")
 
-        self.video_label = QLabel("خالی — برای افزودن دوربین،\nدر لیست سمت چپ دابل‌کلیک کنید")
+        self.video_label = VideoDisplayLabel("خالی — برای افزودن دوربین،\nدر لیست سمت چپ دابل‌کلیک کنید")
         self.video_label.setWordWrap(True)
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.video_label.setStyleSheet("background-color:#1e1e1e; color:#888888; border-radius:6px; font-size:10px;")
@@ -150,6 +296,7 @@ class CameraSlotWidget(QWidget):
         # با Ignored، چیدمان این sizeHint را نادیده می‌گیرد و صرفاً فضای واقعی
         # داده‌شده به خانه را ملاک قرار می‌دهد.
         self.video_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self.video_label.line_drawn.connect(self._on_line_drawn)
 
         outer.addLayout(header)
         outer.addWidget(self.status_label)
@@ -159,8 +306,80 @@ class CameraSlotWidget(QWidget):
     # ---------------------------------------------------------- selection --
 
     def _apply_frame_style(self):
-        border = "2px solid #3498db" if self._selected else "1px solid #3a3a3a"
+        # رفع درخواست: وقتی آلارم عبور از خط فرضی فعال است، کادر دور خانه‌ی
+        # دوربین قرمز و ضخیم‌تر می‌شود - با اولویت بالاتر از رنگ انتخاب‌شدن.
+        if self._alarm_active:
+            border = "3px solid #e74c3c"
+        elif self._selected:
+            border = "2px solid #3498db"
+        else:
+            border = "1px solid #3a3a3a"
         self.setStyleSheet(f"CameraSlotWidget {{ border: {border}; border-radius: 8px; background-color: #262626; }}")
+
+    # -------------------------------------------------------- خط فرضی عبور --
+
+    def set_draw_mode(self, enabled: bool):
+        self.video_label.set_draw_mode(enabled)
+
+    def is_draw_mode(self) -> bool:
+        return self.video_label.draw_mode
+
+    def has_pending_line(self) -> bool:
+        return self.tripwire_pending is not None
+
+    def has_any_line(self) -> bool:
+        return self.tripwire_pending is not None or self.tripwire_confirmed is not None
+
+    def _on_line_drawn(self, norm_line):
+        (x1, y1), (x2, y2) = norm_line
+        self.tripwire_pending = (x1, y1, x2, y2)
+        self.video_label.set_pending_line_norm(self.tripwire_pending)
+
+    def confirm_line(self):
+        """رفع درخواست: تایید خط تازه‌رسم‌شده. از این لحظه خط دیگر روی
+        تصویر دوربین نمایش داده نمی‌شود، ولی در ترد پخش برای تشخیص عبور
+        فعال است. مقدار خط تایید‌شده را برمی‌گرداند (برای ذخیره در
+        camera_store) یا None اگر خطی در انتظار تایید نبود."""
+        if self.tripwire_pending is None:
+            return None
+        self.tripwire_confirmed = self.tripwire_pending
+        self.tripwire_pending = None
+        self.video_label.set_pending_line_norm(None)
+        self.video_label.set_draw_mode(False)
+        if self.stream_thread is not None:
+            self.stream_thread.set_tripwire_line(self.tripwire_confirmed)
+        return self.tripwire_confirmed
+
+    def redraw_line(self):
+        """رفع درخواست: چه قبل و چه بعد از تایید، کاربر می‌تواند خط را پاک
+        و دوباره از نو رسم کند."""
+        self.tripwire_pending = None
+        self.tripwire_confirmed = None
+        self.video_label.set_pending_line_norm(None)
+        self.video_label.set_draw_mode(True)
+        if self.stream_thread is not None:
+            self.stream_thread.set_tripwire_line(None)
+        self._clear_alarm()
+
+    def set_tripwire_line_silent(self, norm_line):
+        """بارگذاری خط از قبل ذخیره‌شده (هنگام باز شدن دوربین) بدون اینکه
+        هیچ‌وقت پیش‌نمایشِ رسم روی تصویر دیده شود - چون از قبل تایید شده."""
+        self.tripwire_confirmed = tuple(norm_line) if norm_line is not None else None
+        if self.stream_thread is not None and self.tripwire_confirmed is not None:
+            self.stream_thread.set_tripwire_line(self.tripwire_confirmed)
+
+    def _on_line_crossed(self):
+        # رفع درخواست: با هر عبور، کادر قرمز می‌شود و آلارم صوتی پخش می‌شود؛
+        # تایمر با هر عبور تازه ریست می‌شود تا قرمزی حداقل چند ثانیه بماند
+        # (نه فقط یک لحظه‌ی محو).
+        self._alarm_active = True
+        self._apply_frame_style()
+        _play_alarm_beep()
+        self._alarm_timer.start(4000)
+
+    def _clear_alarm(self):
+        self._alarm_active = False
+        self._apply_frame_style()
 
     def _set_name_text(self, full_text: str):
         """متن کامل اسم دوربین را نگه می‌دارد و نسخه‌ی کوتاه‌شده (بر اساس
@@ -297,10 +516,17 @@ class CameraSlotWidget(QWidget):
         self.stream_thread.error_signal.connect(self.on_error)
         self.stream_thread.connected_signal.connect(self.on_connected)
         self.stream_thread.people_count_signal.connect(self.on_people_count)
+        self.stream_thread.line_crossed.connect(self._on_line_crossed)
         self.stream_thread.face_event_signal.connect(
             lambda person, crop: face_event_cb(cam["name"], person, crop)
         )
         self.stream_thread.start()
+        # رفع درخواست: اگر برای این دوربین قبلاً یک خط فرضی رسم و ذخیره شده
+        # (cameras.json)، همان لحظه‌ی اتصال دوباره روی ترد پخش تازه فعال
+        # می‌شود - بدون نمایش دوباره‌ی پیش‌نمایش رسم (چون از قبل تایید شده).
+        saved_line = cam.get("tripwire_line")
+        if saved_line:
+            self.set_tripwire_line_silent(tuple(saved_line))
         # اگر شمارش افراد به‌صورت سراسری (دکمه‌ی بالای شبکه‌ی دوربین‌ها) از قبل
         # روشن بوده، روی ترد پخش جدید هم بلافاصله اعمال می‌شود (رجوع کنید به
         # CameraGridWidget که بلافاصله بعد از start() هم set_people_counting
@@ -343,12 +569,25 @@ class CameraSlotWidget(QWidget):
         # برچسب تعداد پاک می‌شود.
         self._people_counting_enabled = False
         self.people_count_label.setText("")
+        # پاک‌کردن کامل وضعیت خط فرضی/آلارم این خانه (دوربین بعدی که در این
+        # خانه باز شود، وضعیت خط فرضی خودش را - اگر داشته باشد - جداگانه از
+        # cameras.json بارگذاری می‌کند).
+        self.tripwire_pending = None
+        self.tripwire_confirmed = None
+        self.video_label.set_pending_line_norm(None)
+        self.video_label.set_draw_mode(False)
+        self._clear_alarm()
 
 
 class CameraGridWidget(QWidget):
     """شبکه‌ی نمایش هم‌زمان دوربین‌ها با تعداد خانه‌ی قابل انتخاب
     (1، 4، 9، 16، 32 یا 64). با تغییر تعداد، دوربین‌های از قبل باز تا حد
     امکان در چیدمان جدید حفظ می‌شوند."""
+
+    # رفع درخواست: هر بار خانه‌ی انتخاب‌شده عوض شود (یا با -1 خالی شود)،
+    # این سیگنال ارسال می‌شود تا نوار ابزار «خط فرضی عبور» در MainWindow
+    # وضعیت دکمه‌های تایید/رسم مجدد را برای همان خانه به‌روزرسانی کند.
+    selection_changed = pyqtSignal(int)
 
     def __init__(self, face_engine: FaceEngine, on_face_event, on_external_camera_drop=None, parent=None):
         super().__init__(parent)
@@ -396,6 +635,7 @@ class CameraGridWidget(QWidget):
             slot.deleteLater()
         self.slots = []
         self.selected_index = None
+        self.selection_changed.emit(-1)
         self._slot_positions = []
         self._rows = rows
         self._cols = cols
@@ -522,12 +762,14 @@ class CameraGridWidget(QWidget):
             self.slots[self.selected_index].set_selected(False)
         self.selected_index = idx
         self.slots[idx].set_selected(True)
+        self.selection_changed.emit(idx)
 
     def _on_slot_close_requested(self, slot):
         idx = self.slots.index(slot)
         slot.stop()
         if idx == self.selected_index:
             self.selected_index = None
+            self.selection_changed.emit(-1)
         if idx == self._maximized_index:
             self.toggle_maximize(idx)
 
@@ -752,11 +994,51 @@ class MainWindow(QMainWindow):
         self.people_toggle_btn.toggled.connect(self._on_people_toggle_all)
         grid_toolbar.addWidget(self.people_toggle_btn)
 
+        # رفع درخواست: خط فرضی عبور (Tripwire). کاربر ابتدا یک دوربین را از
+        # شبکه انتخاب می‌کند (کلیک روی خانه‌اش)، سپس این دکمه را می‌زند تا
+        # بتواند با کشیدن ماوس روی تصویر همان دوربین یک خط بکشد. «تایید»
+        # خط را نهایی و فعال می‌کند (از آن پس دیگر روی تصویر دیده نمی‌شود)
+        # و «رسم مجدد» چه قبل و چه بعد از تایید، امکان کشیدن دوباره را
+        # می‌دهد.
+        self.draw_line_btn = QPushButton("🖊 رسم خط فرضی")
+        self.draw_line_btn.setCheckable(True)
+        self.draw_line_btn.setToolTip(
+            "۱) یک دوربین را از شبکه انتخاب کنید (کلیک روی خانه‌اش)\n"
+            "۲) این دکمه را بزنید\n"
+            "۳) روی تصویر همان دوربین با ماوس یک خط بکشید"
+        )
+        self.draw_line_btn.setStyleSheet(
+            "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
+            "QPushButton:checked{background:#9b59b6; color:#fff;}"
+        )
+        self.draw_line_btn.toggled.connect(self._on_draw_line_toggled)
+        grid_toolbar.addWidget(self.draw_line_btn)
+
+        self.confirm_line_btn = QPushButton("✅ تایید خط")
+        self.confirm_line_btn.setEnabled(False)
+        self.confirm_line_btn.setToolTip("خط رسم‌شده را نهایی می‌کند؛ از این پس دیگر روی تصویر دوربین دیده نمی‌شود ولی برای هشدار عبور فعال است.")
+        self.confirm_line_btn.setStyleSheet(
+            "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
+            "QPushButton:enabled{background:#27ae60; color:#fff;}"
+        )
+        self.confirm_line_btn.clicked.connect(self._on_confirm_line_clicked)
+        grid_toolbar.addWidget(self.confirm_line_btn)
+
+        self.redraw_line_btn = QPushButton("🔁 رسم مجدد")
+        self.redraw_line_btn.setEnabled(False)
+        self.redraw_line_btn.setToolTip("خط فعلی (تایید‌شده یا در انتظار تایید) را پاک می‌کند تا دوباره از نو رسم کنید.")
+        self.redraw_line_btn.setStyleSheet(
+            "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
+        )
+        self.redraw_line_btn.clicked.connect(self._on_redraw_line_clicked)
+        grid_toolbar.addWidget(self.redraw_line_btn)
+
         grid_toolbar.addStretch()
 
         self.camera_grid = CameraGridWidget(
             self.face_engine, self.on_face_event, on_external_camera_drop=self.on_camera_dropped_on_grid
         )
+        self.camera_grid.selection_changed.connect(lambda _idx: self._refresh_line_buttons())
         grid_scroll = QScrollArea()
         grid_scroll.setWidgetResizable(True)
         grid_scroll.setWidget(self.camera_grid)
@@ -844,6 +1126,66 @@ class MainWindow(QMainWindow):
         وضعیت روی دوربین‌هایی که بعداً باز شوند هم اعمال می‌ماند (رجوع کنید
         به CameraGridWidget.set_people_counting_all)."""
         self.camera_grid.set_people_counting_all(checked)
+
+    # -------------------------------------------------------- خط فرضی عبور --
+
+    def _selected_slot(self):
+        idx = self.camera_grid.selected_index
+        if idx is None or not (0 <= idx < len(self.camera_grid.slots)):
+            return None
+        return self.camera_grid.slots[idx]
+
+    def _on_draw_line_toggled(self, checked):
+        slot = self._selected_slot()
+        if slot is None or slot.cam is None:
+            if checked:
+                self.draw_line_btn.blockSignals(True)
+                self.draw_line_btn.setChecked(False)
+                self.draw_line_btn.blockSignals(False)
+                QMessageBox.information(
+                    self, "رسم خط فرضی",
+                    "ابتدا یک دوربین را از شبکه‌ی نمایش انتخاب کنید (روی خانه‌اش کلیک کنید)، سپس دوباره این دکمه را بزنید."
+                )
+            return
+        slot.set_draw_mode(checked)
+        self._refresh_line_buttons()
+
+    def _on_confirm_line_clicked(self):
+        slot = self._selected_slot()
+        if slot is None:
+            return
+        confirmed = slot.confirm_line()
+        if confirmed is not None and slot.cam is not None:
+            self.camera_store.update_camera(slot.cam["id"], tripwire_line=list(confirmed))
+        self.draw_line_btn.blockSignals(True)
+        self.draw_line_btn.setChecked(False)
+        self.draw_line_btn.blockSignals(False)
+        self._refresh_line_buttons()
+
+    def _on_redraw_line_clicked(self):
+        slot = self._selected_slot()
+        if slot is None:
+            return
+        slot.redraw_line()
+        if slot.cam is not None:
+            self.camera_store.update_camera(slot.cam["id"], tripwire_line=None)
+        self.draw_line_btn.blockSignals(True)
+        self.draw_line_btn.setChecked(True)
+        self.draw_line_btn.blockSignals(False)
+        self._refresh_line_buttons()
+
+    def _refresh_line_buttons(self):
+        """دکمه‌های «تایید خط»/«رسم مجدد» و وضعیت تیک‌خورده‌ی «رسم خط
+        فرضی» را بر اساس خانه‌ی فعلاً انتخاب‌شده به‌روز می‌کند - چون هر خانه
+        وضعیت خط فرضی مستقل خودش را دارد."""
+        slot = self._selected_slot()
+        has_pending = slot.has_pending_line() if slot is not None else False
+        has_any = slot.has_any_line() if slot is not None else False
+        self.confirm_line_btn.setEnabled(bool(has_pending))
+        self.redraw_line_btn.setEnabled(bool(has_any))
+        self.draw_line_btn.blockSignals(True)
+        self.draw_line_btn.setChecked(bool(slot.is_draw_mode()) if slot is not None else False)
+        self.draw_line_btn.blockSignals(False)
 
     # ------------------------------------------------------- camera list ---
 

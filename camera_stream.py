@@ -152,6 +152,78 @@ class _FaceTracker:
         return [{"box": t["box"], "person": t["displayed_person"]} for t in self.tracks]
 
 
+# ---------------------------------------------------------------------------
+# خط فرضی عبور (Tripwire Line) و تشخیص عبور شخص از آن
+# ---------------------------------------------------------------------------
+def _ccw(a, b, c):
+    return (c[1] - a[1]) * (b[0] - a[0]) > (b[1] - a[1]) * (c[0] - a[0])
+
+
+def _segments_intersect(a, b, c, d):
+    """آیا پاره‌خط a-b (مسیر حرکت مرکز یک شخص بین دو فریم) پاره‌خط c-d
+    (خط فرضی رسم‌شده توسط کاربر) را قطع می‌کند؟ الگوریتم استاندارد جهت‌دار
+    (orientation-based) - نه فقط برخورد با خط بی‌نهایت، بلکه دقیقاً با همان
+    پاره‌خط محدود."""
+    return _ccw(a, c, d) != _ccw(b, c, d) and _ccw(a, b, c) != _ccw(a, b, d)
+
+
+class _PersonLineTracker:
+    """ردیابی سبک مرکز کادر هر «شخص» (خروجی PersonDetector) بین دو فریم
+    متوالی، فقط برای تشخیص «عبور از خط فرضی» - نه یک ردیاب هویت کامل.
+
+    چون PersonDetector شناسه‌ی پایدار برنمی‌گرداند، هر کادر تازه به
+    نزدیک‌ترین کادر دور قبل (بر پایه‌ی فاصله‌ی مرکز، دقیقاً همان الگوی
+    _FaceTracker بالا) وصل می‌شود. اگر پاره‌خط بین مرکز قبلی و مرکز فعلیِ
+    همان شخص، پاره‌خطِ کاربر را قطع کند، یک «عبور» ثبت می‌شود."""
+
+    def __init__(self):
+        self.tracks = []  # هر رد: {"center": (x, y), "size": s}
+
+    def update(self, boxes, line, frame_w, frame_h):
+        """boxes: خروجی PersonDetector.detect (پیکسل خام، (top,right,bottom,left)).
+        line: (x1,y1,x2,y2) نرمال‌شده‌ی 0..1 یا None (خط فعال نیست).
+        خروجی: True اگر در همین دور حداقل یک عبور رخ داده باشد."""
+        crossed = False
+        unmatched = list(self.tracks)
+        new_tracks = []
+
+        line_px = None
+        if line is not None:
+            line_px = (
+                (line[0] * frame_w, line[1] * frame_h),
+                (line[2] * frame_w, line[3] * frame_h),
+            )
+
+        # تطبیق دو دور متوالی: چون تشخیص شخص فقط هر چند فریم یک‌بار اجرا
+        # می‌شود (process_every_n)، شخص ممکن است بین دو دور مسافت قابل‌توجهی
+        # جابه‌جا شده باشد؛ برخلاف _FaceTracker (که فاصله‌ی زمانی کوتاه‌تری
+        # دارد و آستانه‌ی نزدیکی لازم است)، اینجا هر باکس تازه صرفاً به
+        # نزدیک‌ترین ردِ دور قبل وصل می‌شود (بدون سقف مسافت) - چون معمولاً
+        # تعداد افراد هم‌زمان در قاب کم است و هدف فقط تشخیص «آیا کسی از خط
+        # رد شده»، نه ردیابی هویت دقیق.
+        for box in boxes:
+            top, right, bottom, left = box
+            center = ((left + right) / 2.0, (top + bottom) / 2.0)
+            size = max(1.0, ((right - left) + (bottom - top)) / 2.0)
+
+            best, best_d = None, None
+            for t in unmatched:
+                d = ((center[0] - t["center"][0]) ** 2 + (center[1] - t["center"][1]) ** 2) ** 0.5
+                if best_d is None or d < best_d:
+                    best, best_d = t, d
+
+            if best is not None:
+                unmatched.remove(best)
+                if line_px is not None and center != best["center"]:
+                    if _segments_intersect(best["center"], center, line_px[0], line_px[1]):
+                        crossed = True
+
+            new_tracks.append({"center": center, "size": size})
+
+        self.tracks = new_tracks
+        return crossed
+
+
 class CameraStreamThread(QThread):
     frame_ready = pyqtSignal(object, object)   # (frame_for_display, raw_frame)
     error_signal = pyqtSignal(str)
@@ -165,11 +237,22 @@ class CameraStreamThread(QThread):
     # این عدد از روی تعداد چهره‌های شناسایی‌شده محاسبه می‌شود - رجوع کنید به
     # توضیح بالای فایل - و دیگر هرگز با خطا مواجه نمی‌شود.)
     people_count_signal = pyqtSignal(int)
+    # رفع درخواست: خط فرضی عبور (Tripwire). هر بار شخصی از خط رسم‌شده توسط
+    # کاربر عبور کند، این سیگنال (بدون آرگومان) ارسال می‌شود تا در main.py
+    # کادر دوربین قرمز شود و صدای آلارم پخش شود.
+    line_crossed = pyqtSignal()
 
     def __init__(self, rtsp_url, face_engine, process_every_n=5, parent=None):
         super().__init__(parent)
         self.rtsp_url = rtsp_url
         self.face_engine = face_engine
+        # خط فرضی عبور: (x1,y1,x2,y2) نرمال‌شده‌ی 0..1 نسبت به ابعاد فریم خام،
+        # یا None اگر کاربر هنوز خطی برای این دوربین تایید نکرده باشد. چون از
+        # ترد اصلی (بعد از رسم/تایید کاربر) نوشته می‌شود ولی از ترد پس‌زمینه‌ی
+        # تشخیص خوانده می‌شود، با یک قفل ساده محافظت می‌شود.
+        self._tripwire_lock = threading.Lock()
+        self.tripwire_line = None
+        self._line_tracker = _PersonLineTracker()
         # این مقدار دیگر تعیین‌کننده‌ی «تاخیر» نیست (چون تشخیص چهره async است)،
         # فقط فاصله‌ی ارسال فریم‌های جدید برای پردازش تشخیص چهره را کنترل می‌کند.
         self.process_every_n = max(1, process_every_n)
@@ -216,6 +299,15 @@ class CameraStreamThread(QThread):
         if not self.count_people_enabled:
             self.people_count_signal.emit(0)
 
+    def set_tripwire_line(self, norm_line):
+        """تنظیم/پاک‌کردن خط فرضی عبور. norm_line یک تاپل (x1,y1,x2,y2) با
+        مقادیر 0..1 (نسبت به عرض/ارتفاع فریم خام) است، یا None برای غیرفعال
+        کردن. با هر تغییر خط، ردیاب داخلی از نو ساخته می‌شود تا مسیرهای
+        محاسبه‌شده با خط قبلی باعث عبور اشتباه نشوند."""
+        with self._tripwire_lock:
+            self.tripwire_line = tuple(norm_line) if norm_line is not None else None
+            self._line_tracker = _PersonLineTracker()
+
     def _submit_recognition(self, frame):
         if self._recognize_busy.is_set():
             return  # پردازش قبلی هنوز در حال اجراست؛ این فریم را برای تشخیص رد می‌کنیم
@@ -244,6 +336,16 @@ class CameraStreamThread(QThread):
             # روی CPU رقابت نمی‌کنند.
             self._last_person_boxes = person_detector.detect(frame)
             self._person_detector_available = person_detector.available
+
+            # --- خط فرضی عبور: بعد از هر دور تشخیص شخص، بررسی می‌شود که آیا
+            # مسیر مرکز یکی از افراد بین این دور و دور قبل، از خط تعریف‌شده‌ی
+            # کاربر عبور کرده یا نه (رجوع کنید به _PersonLineTracker بالا).
+            with self._tripwire_lock:
+                line = self.tripwire_line
+            if line is not None and self._person_detector_available:
+                h, w = frame.shape[:2]
+                if self._line_tracker.update(self._last_person_boxes, line, w, h):
+                    self.line_crossed.emit()
 
             if unknown_event is not None:
                 unknown_crop = _crop_face(frame, unknown_event)
