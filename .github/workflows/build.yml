@@ -101,15 +101,35 @@ jobs:
     - name: Build Executable with Nuitka (portable, compiled to machine code)
       shell: pwsh
       run: |
+        # نکته‌ی مهم: بدون این خط، اگر یکی از دستورات زیر (pip install یا
+        # خودِ نویتکا) با کد خطا برگرده، pwsh پیش‌فرض به کارش ادامه می‌دهد
+        # و log ممکن است خالی/گمراه‌کننده به نظر برسد (دقیقاً چیزی که در
+        # اجرای قبلی دیدیم: annotation "Error:" بدون هیچ متنی). با این
+        # تنظیم، هر خطا فوراً و با پیام کامل متوقف‌کننده می‌شود.
+        $ErrorActionPreference = "Stop"
+
         python -m pip install nuitka
+        if ($LASTEXITCODE -ne 0) { throw "نصب Nuitka با کد $LASTEXITCODE شکست خورد." }
 
         $isQuick = "${{ github.event.inputs.quick_test }}" -eq "true"
         $modeArgs = if ($isQuick) { @("--standalone") } else { @("--onefile") }
         Write-Host "Build mode: $(if ($isQuick) { 'QUICK TEST (standalone)' } else { 'FULL (onefile)' })"
 
+        # کاهش فشار روی رم: کامپایل هم‌زمانِ torch + ultralytics + dlib +
+        # PyQt6 با تعداد کامل هسته‌ها (NUMBER_OF_PROCESSORS) روی رانرهای
+        # windows-latest (که رم محدودی دارند) می‌تواند gcc را وسط کار با
+        # کمبود حافظه (OOM) از کار بیندازد - دقیقاً یک الگوی رایج برای
+        # شکست‌های بی‌پیام و زودهنگام. --jobs را به حداکثر ۴ محدود می‌کنیم
+        # و --low-memory را هم فعال می‌کنیم تا خودِ نویتکا مصرف حافظه‌اش را
+        # پایین نگه دارد.
+        $cpuCount = [int]$Env:NUMBER_OF_PROCESSORS
+        $jobCount = [Math]::Min($cpuCount, 4)
+        Write-Host "CPU cores: $cpuCount -> using --jobs=$jobCount"
+
         python -m nuitka `
           @modeArgs `
           --mingw64 `
+          --low-memory `
           --enable-plugin=pyqt6 `
           --windows-console-mode=disable `
           --company-name="IAS" `
@@ -132,8 +152,13 @@ jobs:
           --output-dir=dist `
           --output-filename=CCTV_CMS.exe `
           --assume-yes-for-downloads `
-          --jobs=$Env:NUMBER_OF_PROCESSORS `
+          --jobs=$jobCount `
           main.py
+
+        if ($LASTEXITCODE -ne 0) {
+          Write-Host "##[error] Nuitka با کد خروج $LASTEXITCODE شکست خورد. متن بالای همین لاگ را ببینید."
+          throw "Nuitka build failed with exit code $LASTEXITCODE"
+        }
 
     # رفع ریشه‌ای مشکل «پر شدن سقف ۱۰ گیگابایتیِ کش گیت‌هاب»: چون کلید کش
     # Nuitka بر اساس hashFiles('**/*.py') است، هر commit که حتی یک خط
