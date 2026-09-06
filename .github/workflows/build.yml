@@ -126,34 +126,44 @@ jobs:
         $jobCount = [Math]::Min($cpuCount, 4)
         Write-Host "CPU cores: $cpuCount -> using --jobs=$jobCount"
 
-        python -m nuitka `
-          @modeArgs `
-          --mingw64 `
-          --low-memory `
-          --enable-plugin=pyqt6 `
-          --windows-console-mode=disable `
-          --windows-company-name="IAS" `
-          --windows-product-name="CCTV CMS" `
-          --windows-file-version="1.0.0.0" `
-          --windows-product-version="1.0.0.0" `
-          --include-package=face_recognition `
-          --include-package-data=face_recognition_models `
-          --include-data-dir=faces=faces `
-          --include-package=ultralytics `
-          --include-package-data=ultralytics `
-          --include-package=torch `
-          --include-package=torchvision `
-          --nofollow-import-to=sympy `
-          --nofollow-import-to=torch.onnx `
-          --nofollow-import-to=torch.distributed `
-          --nofollow-import-to=torch.utils.tensorboard `
-          --nofollow-import-to=torch.testing `
-          --include-data-files=yolov8n.pt=yolov8n.pt `
-          --output-dir=dist `
-          --output-filename=CCTV_CMS.exe `
-          --assume-yes-for-downloads `
-          --jobs=$jobCount `
-          main.py
+        # به‌جای دستور تک‌خطیِ طولانی با ادامه‌خط بک‌تیک (`) - که با هر
+        # فاصله‌ی نامرئی بعدش کل خط بعدی را جدا می‌کند و همین می‌تواند
+        # باعث شود main.py اصلاً به نویتکا نرسد (که دقیقاً همان رفتاری
+        # است که دیدیم: نویتکا بدون هیچ فایل ورودی، فقط raw help چاپ کرده
+        # و با کد ۱ خارج می‌شود) - همه‌ی آرگومان‌ها را در یک آرایه می‌سازیم.
+        # داخل @() هر خط یک عنصر جداست، بدون نیاز به کاما یا بک‌تیک.
+        $nuitkaArgs = @(
+          $modeArgs
+          "--mingw64"
+          "--low-memory"
+          "--enable-plugin=pyqt6"
+          "--windows-console-mode=disable"
+          "--windows-company-name=IAS"
+          "--windows-product-name=CCTV CMS"
+          "--windows-file-version=1.0.0.0"
+          "--windows-product-version=1.0.0.0"
+          "--include-package=face_recognition"
+          "--include-package-data=face_recognition_models"
+          "--include-data-dir=faces=faces"
+          "--include-package=ultralytics"
+          "--include-package-data=ultralytics"
+          "--include-package=torch"
+          "--include-package=torchvision"
+          "--nofollow-import-to=sympy"
+          "--nofollow-import-to=torch.onnx"
+          "--nofollow-import-to=torch.distributed"
+          "--nofollow-import-to=torch.utils.tensorboard"
+          "--nofollow-import-to=torch.testing"
+          "--include-data-files=yolov8n.pt=yolov8n.pt"
+          "--output-dir=dist"
+          "--output-filename=CCTV_CMS.exe"
+          "--assume-yes-for-downloads"
+          "--jobs=$jobCount"
+          "main.py"
+        )
+
+        Write-Host "Nuitka command: python -m nuitka $($nuitkaArgs -join ' ')"
+        python -m nuitka @nuitkaArgs
 
         if ($LASTEXITCODE -ne 0) {
           Write-Host "##[error] Nuitka با کد خروج $LASTEXITCODE شکست خورد. متن بالای همین لاگ را ببینید."
