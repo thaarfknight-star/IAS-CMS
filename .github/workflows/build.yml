@@ -82,7 +82,13 @@ jobs:
       with:
         path: |
           ~\AppData\Local\Nuitka\Nuitka\Cache
-        key: nuitka-cache-windows-${{ hashFiles('**/*.py') }}
+        # نکته‌ی مهم: قبلاً کلید این کش بر اساس hashFiles('**/*.py') بود، یعنی
+        # با تغییر حتی یک خط کد پروژه، کل کش (شامل کامپایلر MinGW64 + همه‌ی
+        # آبجکت‌های از قبل کامپایل‌شده‌ی torch/dlib/PyQt6) باطل می‌شد و بیلد
+        # از صفر انجام می‌شد. حالا کلید فقط به وابستگی‌ها (requirements.txt)
+        # بستگی دارد؛ Nuitka خودش هر ماژول را جدا هش می‌کند و فقط کد
+        # تغییرکرده را دوباره کامپایل می‌کند.
+        key: nuitka-cache-windows-${{ hashFiles('requirements.txt') }}
         restore-keys: |
           nuitka-cache-windows-
 
