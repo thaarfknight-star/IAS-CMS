@@ -155,20 +155,24 @@ jobs:
           "--include-package-data=ultralytics"
           "--include-package=torch"
           "--include-package=torchvision"
-          "--nofollow-import-to=sympy"
-          "--nofollow-import-to=torch.onnx"
-          # نکته‌ی مهم: torch.distributed قبلاً اینجا هم exclude شده بود (چون
-          # این پروژه هیچ آموزش توزیع‌شده/چند-GPU انجام نمی‌دهد)، ولی
-          # ultralytics در همان مرحله‌ی import اولیه‌اش (نه فقط هنگام
-          # استفاده‌ی واقعی) این ماژول را بدون قید-و-شرط import می‌کند. چون
-          # Nuitka این ماژول را اصلاً کامپایل نکرده بود، همان اولین
-          # `from ultralytics import YOLO` در person_detector.py با خطا
-          # شکست می‌خورد و تشخیص شخص/هشدار محدوده برای همیشه غیرفعال
-          # می‌ماند - دقیقاً همان چیزی که با پیام "Module 'torch.distributed'
-          # was actively excluded..." روی UI ظاهر شد. پس این خط را نباید
-          # دوباره اضافه کرد، حتی برای کوچک‌تر کردن حجم exe.
-          "--nofollow-import-to=torch.utils.tensorboard"
-          "--nofollow-import-to=torch.testing"
+          # نکته‌ی مهم - تاریخچه‌ی این تصمیم: قبلاً اینجا چند ماژول از torch/
+          # وابستگی‌هایش با --nofollow-import-to کنار گذاشته می‌شدند (sympy،
+          # torch.onnx، torch.distributed، torch.utils.tensorboard،
+          # torch.testing) با این فرض که چون این پروژه نه آموزش می‌دهد، نه
+          # صادرات ONNX دارد، نه چندGPU/توزیع‌شده است، این‌ها زائدند و فقط
+          # حجم exe را زیاد می‌کنند. این فرض غلط از آب درآمد: ultralytics
+          # همان لحظه‌ی اول import شدنش (نه فقط وقتی واقعاً از آن قابلیت‌ها
+          # استفاده شود) این ماژول‌ها را بدون قید-وشرط import می‌کند - و چون
+          # هر بار فقط یکی از آن‌ها exclude بود، حذف یکی («torch.distributed»
+          # در بیلد قبلی) فقط نوبت بعدی («torch.testing») را آشکار کرد - دقیقاً
+          # همان الگوی موش‌وگربه که با پیام «Module ... was actively excluded»
+          # هربار برای یک ماژول متفاوت روی UI ظاهر می‌شد. برای جلوگیری از
+          # تکرار همین چرخه به‌ازای ماژول بعدی، دیگر هیچ‌کدام از زیرماژول‌های
+          # torch/sympy را exclude نمی‌کنیم - بگذارید Nuitka هرچه واقعاً در
+          # مسیر import قرار دارد را کامپایل کند؛ تنها هزینه‌اش چند مگابایت
+          # بیشتر حجم exe است، نه یک ویژگی که برای کاربر نهایی بی‌سروصدا
+          # غیرفعال بماند.
+
           "--include-data-files=yolov8n.pt=yolov8n.pt"
           "--output-dir=dist"
           "--output-filename=CCTV_CMS.exe"
