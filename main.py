@@ -203,6 +203,17 @@ class CameraSlotWidget(QWidget):
     یک دوربین را پخش کند. با کلیک انتخاب (highlight) می‌شود تا فریم زنده‌اش
     برای «ثبت چهره از تصویر زنده» در دسترس باشد."""
 
+    # رفع باگ: دکمه‌های «تایید خط»/«رسم مجدد» در MainWindow قبلاً فقط هنگام
+    # عوض‌شدن خانه‌ی انتخاب‌شده (selection_changed) به‌روزرسانی می‌شدند - نه
+    # وقتی خودِ خط داخل همین خانه کشیده/تایید/پاک می‌شد. نتیجه این بود که
+    # بعد از رسم خط، دکمه‌ی «تایید خط» غیرفعال (خاکستری) باقی می‌ماند و کلیک
+    # روی آن هیچ اثری نداشت - و چون تایید هرگز واقعاً اجرا نمی‌شد، خط هم
+    # هرگز روی ترد پخش برای تشخیص عبور فعال نمی‌شد (پس آلارم هم هرگز رخ
+    # نمی‌داد). این سیگنال با هر تغییر وضعیت خط (رسم/تایید/پاک/بارگذاری از
+    # دیسک/بستن دوربین) ارسال می‌شود تا MainWindow._refresh_line_buttons
+    # همیشه با وضعیت واقعی هم‌گام بماند.
+    tripwire_changed = pyqtSignal()
+
     def __init__(self, on_clicked, on_close_requested, on_double_clicked=None,
                  on_slot_drag_swap=None, on_camera_drag_drop=None, parent=None):
         super().__init__(parent)
@@ -334,6 +345,7 @@ class CameraSlotWidget(QWidget):
         (x1, y1), (x2, y2) = norm_line
         self.tripwire_pending = (x1, y1, x2, y2)
         self.video_label.set_pending_line_norm(self.tripwire_pending)
+        self.tripwire_changed.emit()
 
     def confirm_line(self):
         """رفع درخواست: تایید خط تازه‌رسم‌شده. از این لحظه خط دیگر روی
@@ -348,6 +360,7 @@ class CameraSlotWidget(QWidget):
         self.video_label.set_draw_mode(False)
         if self.stream_thread is not None:
             self.stream_thread.set_tripwire_line(self.tripwire_confirmed)
+        self.tripwire_changed.emit()
         return self.tripwire_confirmed
 
     def redraw_line(self):
@@ -360,6 +373,7 @@ class CameraSlotWidget(QWidget):
         if self.stream_thread is not None:
             self.stream_thread.set_tripwire_line(None)
         self._clear_alarm()
+        self.tripwire_changed.emit()
 
     def set_tripwire_line_silent(self, norm_line):
         """بارگذاری خط از قبل ذخیره‌شده (هنگام باز شدن دوربین) بدون اینکه
@@ -367,6 +381,7 @@ class CameraSlotWidget(QWidget):
         self.tripwire_confirmed = tuple(norm_line) if norm_line is not None else None
         if self.stream_thread is not None and self.tripwire_confirmed is not None:
             self.stream_thread.set_tripwire_line(self.tripwire_confirmed)
+        self.tripwire_changed.emit()
 
     def _on_line_crossed(self):
         # رفع درخواست: با هر عبور، کادر قرمز می‌شود و آلارم صوتی پخش می‌شود؛
@@ -577,6 +592,7 @@ class CameraSlotWidget(QWidget):
         self.video_label.set_pending_line_norm(None)
         self.video_label.set_draw_mode(False)
         self._clear_alarm()
+        self.tripwire_changed.emit()
 
 
 class CameraGridWidget(QWidget):
@@ -588,6 +604,11 @@ class CameraGridWidget(QWidget):
     # این سیگنال ارسال می‌شود تا نوار ابزار «خط فرضی عبور» در MainWindow
     # وضعیت دکمه‌های تایید/رسم مجدد را برای همان خانه به‌روزرسانی کند.
     selection_changed = pyqtSignal(int)
+    # رفع باگ: علاوه بر عوض‌شدن انتخاب، با هر تغییر واقعی در وضعیت خط فرضیِ
+    # هر خانه (رسم/تایید/پاک‌کردن - رجوع کنید به CameraSlotWidget.tripwire_changed)
+    # هم باید نوار ابزار به‌روز شود، وگرنه دکمه‌ها با وضعیت واقعی هم‌گام
+    # نمی‌مانند.
+    tripwire_changed = pyqtSignal()
 
     def __init__(self, face_engine: FaceEngine, on_face_event, on_external_camera_drop=None, parent=None):
         super().__init__(parent)
@@ -650,6 +671,7 @@ class CameraGridWidget(QWidget):
                     on_camera_drag_drop=self._on_camera_drag_drop,
                 )
                 slot.slot_index = len(self.slots)
+                slot.tripwire_changed.connect(self.tripwire_changed.emit)
                 self._layout.addWidget(slot, r, c)
                 self.slots.append(slot)
                 self._slot_positions.append((r, c))
@@ -1039,6 +1061,7 @@ class MainWindow(QMainWindow):
             self.face_engine, self.on_face_event, on_external_camera_drop=self.on_camera_dropped_on_grid
         )
         self.camera_grid.selection_changed.connect(lambda _idx: self._refresh_line_buttons())
+        self.camera_grid.tripwire_changed.connect(self._refresh_line_buttons)
         grid_scroll = QScrollArea()
         grid_scroll.setWidgetResizable(True)
         grid_scroll.setWidget(self.camera_grid)
