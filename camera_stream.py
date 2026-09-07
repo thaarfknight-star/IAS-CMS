@@ -153,54 +153,55 @@ class _FaceTracker:
 
 
 # ---------------------------------------------------------------------------
-# خط فرضی عبور (Tripwire Line) و تشخیص عبور شخص از آن
+# محدوده‌ی هشدار (Zone/ROI) و تشخیص ورود شخص به آن
 # ---------------------------------------------------------------------------
-def _ccw(a, b, c):
-    return (c[1] - a[1]) * (b[0] - a[0]) > (b[1] - a[1]) * (c[0] - a[0])
+# این بخش جایگزین نسخه‌ی قبلی («خط فرضی عبور») شده است: به‌جای یک خط، کاربر
+# با drag کردن روی تصویر یک یا چند محدوده‌ی مستطیلی و نام‌دار (مثلاً «محدوده
+# ۱ / اتاق سرور») تعریف می‌کند و با ورود هر شخصی به هرکدام از آن‌ها هشدار
+# صادر می‌شود.
+def _point_in_rect(point, rect_px):
+    """آیا نقطه‌ی point=(x,y) داخل مستطیل rect_px=(x1,y1,x2,y2) است؟ ترتیب
+    گوشه‌ها مهم نیست (هر کدام می‌تواند بالا/پایین یا چپ/راست باشد)."""
+    x, y = point
+    x1, y1, x2, y2 = rect_px
+    left, right = (x1, x2) if x1 <= x2 else (x2, x1)
+    top, bottom = (y1, y2) if y1 <= y2 else (y2, y1)
+    return left <= x <= right and top <= y <= bottom
 
 
-def _segments_intersect(a, b, c, d):
-    """آیا پاره‌خط a-b (مسیر حرکت مرکز یک شخص بین دو فریم) پاره‌خط c-d
-    (خط فرضی رسم‌شده توسط کاربر) را قطع می‌کند؟ الگوریتم استاندارد جهت‌دار
-    (orientation-based) - نه فقط برخورد با خط بی‌نهایت، بلکه دقیقاً با همان
-    پاره‌خط محدود."""
-    return _ccw(a, c, d) != _ccw(b, c, d) and _ccw(a, b, c) != _ccw(a, b, d)
+class _PersonRegionTracker:
+    """ردیابی سبک مرکز کادر هر «شخص» (خروجی PersonDetector) بین دو دور
+    متوالی تشخیص، فقط برای تشخیص «ورود به یکی از محدوده‌های هشدار» - نه یک
+    ردیاب هویت کامل (دقیقاً همان الگوی _FaceTracker/PersonLineTracker قبلی).
 
-
-class _PersonLineTracker:
-    """ردیابی سبک مرکز کادر هر «شخص» (خروجی PersonDetector) بین دو فریم
-    متوالی، فقط برای تشخیص «عبور از خط فرضی» - نه یک ردیاب هویت کامل.
-
-    چون PersonDetector شناسه‌ی پایدار برنمی‌گرداند، هر کادر تازه به
-    نزدیک‌ترین کادر دور قبل (بر پایه‌ی فاصله‌ی مرکز، دقیقاً همان الگوی
-    _FaceTracker بالا) وصل می‌شود. اگر پاره‌خط بین مرکز قبلی و مرکز فعلیِ
-    همان شخص، پاره‌خطِ کاربر را قطع کند، یک «عبور» ثبت می‌شود."""
+    برخلاف خط فرضیِ قبلی (که فقط یک عبور لحظه‌ای را بین دو فریم بررسی
+    می‌کرد)، اینجا باید وضعیت «داخل محدوده بودن» هر شخص بین چند دور متوالی
+    حفظ شود تا وقتی کسی چند دور پشت سر هم داخل یک محدوده می‌ماند، فقط یک‌بار
+    (لحظه‌ی ورود) هشدار صادر شود - نه هر دور که هنوز داخل است. به همین دلیل،
+    برخلاف تطبیق بدون سقف مسافتِ نسخه‌ی قبلی، اینجا یک سقف مسافت (بر پایه‌ی
+    اندازه‌ی باکس) برای تطبیق دو دور در نظر گرفته شده تا دو نفر مختلف به
+    اشتباه به‌جای هم تشخیص داده نشوند."""
 
     def __init__(self):
-        self.tracks = []  # هر رد: {"center": (x, y), "size": s}
+        self.tracks = []  # هر رد: {"center": (x, y), "size": s, "inside": set(region_id)}
 
-    def update(self, boxes, line, frame_w, frame_h):
+    def update(self, boxes, regions, frame_w, frame_h):
         """boxes: خروجی PersonDetector.detect (پیکسل خام، (top,right,bottom,left)).
-        line: (x1,y1,x2,y2) نرمال‌شده‌ی 0..1 یا None (خط فعال نیست).
-        خروجی: True اگر در همین دور حداقل یک عبور رخ داده باشد."""
-        crossed = False
+        regions: لیستی از دیکشنری {"id","number","name","rect":(x1,y1,x2,y2)}
+        که rect نرمال‌شده‌ی 0..1 (نسبت به عرض/ارتفاع فریم خام) است.
+        خروجی: لیستی از (number, name) برای هر «ورود تازه» در همین دور."""
+        entered = []
         unmatched = list(self.tracks)
         new_tracks = []
 
-        line_px = None
-        if line is not None:
-            line_px = (
-                (line[0] * frame_w, line[1] * frame_h),
-                (line[2] * frame_w, line[3] * frame_h),
-            )
+        regions_px = []
+        for r in (regions or []):
+            x1, y1, x2, y2 = r["rect"]
+            regions_px.append((
+                r.get("id"), r.get("number"), r.get("name", ""),
+                (x1 * frame_w, y1 * frame_h, x2 * frame_w, y2 * frame_h),
+            ))
 
-        # تطبیق دو دور متوالی: چون تشخیص شخص فقط هر چند فریم یک‌بار اجرا
-        # می‌شود (process_every_n)، شخص ممکن است بین دو دور مسافت قابل‌توجهی
-        # جابه‌جا شده باشد؛ برخلاف _FaceTracker (که فاصله‌ی زمانی کوتاه‌تری
-        # دارد و آستانه‌ی نزدیکی لازم است)، اینجا هر باکس تازه صرفاً به
-        # نزدیک‌ترین ردِ دور قبل وصل می‌شود (بدون سقف مسافت) - چون معمولاً
-        # تعداد افراد هم‌زمان در قاب کم است و هدف فقط تشخیص «آیا کسی از خط
-        # رد شده»، نه ردیابی هویت دقیق.
         for box in boxes:
             top, right, bottom, left = box
             center = ((left + right) / 2.0, (top + bottom) / 2.0)
@@ -209,19 +210,25 @@ class _PersonLineTracker:
             best, best_d = None, None
             for t in unmatched:
                 d = ((center[0] - t["center"][0]) ** 2 + (center[1] - t["center"][1]) ** 2) ** 0.5
-                if best_d is None or d < best_d:
+                if d < size * 1.5 and (best_d is None or d < best_d):
                     best, best_d = t, d
 
+            prev_inside = set()
             if best is not None:
                 unmatched.remove(best)
-                if line_px is not None and center != best["center"]:
-                    if _segments_intersect(best["center"], center, line_px[0], line_px[1]):
-                        crossed = True
+                prev_inside = best["inside"]
 
-            new_tracks.append({"center": center, "size": size})
+            cur_inside = set()
+            for region_id, number, name, rect_px in regions_px:
+                if _point_in_rect(center, rect_px):
+                    cur_inside.add(region_id)
+                    if region_id not in prev_inside:
+                        entered.append((number, name))
+
+            new_tracks.append({"center": center, "size": size, "inside": cur_inside})
 
         self.tracks = new_tracks
-        return crossed
+        return entered
 
 
 class CameraStreamThread(QThread):
@@ -237,22 +244,23 @@ class CameraStreamThread(QThread):
     # این عدد از روی تعداد چهره‌های شناسایی‌شده محاسبه می‌شود - رجوع کنید به
     # توضیح بالای فایل - و دیگر هرگز با خطا مواجه نمی‌شود.)
     people_count_signal = pyqtSignal(int)
-    # رفع درخواست: خط فرضی عبور (Tripwire). هر بار شخصی از خط رسم‌شده توسط
-    # کاربر عبور کند، این سیگنال (بدون آرگومان) ارسال می‌شود تا در main.py
-    # کادر دوربین قرمز شود و صدای آلارم پخش شود.
-    line_crossed = pyqtSignal()
+    # رفع درخواست: محدوده‌ی هشدار (Zone). هر بار شخصی وارد یکی از محدوده‌های
+    # رسم‌شده توسط کاربر شود، این سیگنال با شماره و نام همان محدوده ارسال
+    # می‌شود تا در main.py کادر دوربین قرمز شود، صدای آلارم پخش شود و پیام
+    # مربوطه (مثلاً «ورود به محدوده شماره ۱ / اتاق سرور») نمایش داده شود.
+    region_entered = pyqtSignal(int, str)  # (number, name)
 
     def __init__(self, rtsp_url, face_engine, process_every_n=5, parent=None):
         super().__init__(parent)
         self.rtsp_url = rtsp_url
         self.face_engine = face_engine
-        # خط فرضی عبور: (x1,y1,x2,y2) نرمال‌شده‌ی 0..1 نسبت به ابعاد فریم خام،
-        # یا None اگر کاربر هنوز خطی برای این دوربین تایید نکرده باشد. چون از
-        # ترد اصلی (بعد از رسم/تایید کاربر) نوشته می‌شود ولی از ترد پس‌زمینه‌ی
-        # تشخیص خوانده می‌شود، با یک قفل ساده محافظت می‌شود.
-        self._tripwire_lock = threading.Lock()
-        self.tripwire_line = None
-        self._line_tracker = _PersonLineTracker()
+        # محدوده‌های هشدار: لیستی از {"id","number","name","rect"} با rect
+        # نرمال‌شده‌ی 0..1 نسبت به ابعاد فریم خام. چون از ترد اصلی (بعد از
+        # رسم/تایید/حذف توسط کاربر) نوشته می‌شود ولی از ترد پس‌زمینه‌ی تشخیص
+        # خوانده می‌شود، با یک قفل ساده محافظت می‌شود.
+        self._regions_lock = threading.Lock()
+        self.regions = []
+        self._region_tracker = _PersonRegionTracker()
         # این مقدار دیگر تعیین‌کننده‌ی «تاخیر» نیست (چون تشخیص چهره async است)،
         # فقط فاصله‌ی ارسال فریم‌های جدید برای پردازش تشخیص چهره را کنترل می‌کند.
         self.process_every_n = max(1, process_every_n)
@@ -299,14 +307,14 @@ class CameraStreamThread(QThread):
         if not self.count_people_enabled:
             self.people_count_signal.emit(0)
 
-    def set_tripwire_line(self, norm_line):
-        """تنظیم/پاک‌کردن خط فرضی عبور. norm_line یک تاپل (x1,y1,x2,y2) با
-        مقادیر 0..1 (نسبت به عرض/ارتفاع فریم خام) است، یا None برای غیرفعال
-        کردن. با هر تغییر خط، ردیاب داخلی از نو ساخته می‌شود تا مسیرهای
-        محاسبه‌شده با خط قبلی باعث عبور اشتباه نشوند."""
-        with self._tripwire_lock:
-            self.tripwire_line = tuple(norm_line) if norm_line is not None else None
-            self._line_tracker = _PersonLineTracker()
+    def set_regions(self, regions):
+        """تنظیم لیست کامل محدوده‌های هشدار برای این دوربین. regions لیستی
+        از دیکشنری {"id","number","name","rect"} است (یا [] برای غیرفعال
+        کردن کامل). با هر تغییر، ردیاب داخلی از نو ساخته می‌شود تا وضعیتِ
+        «داخل بودن» محاسبه‌شده با محدوده‌های قبلی باعث هشدار اشتباه نشود."""
+        with self._regions_lock:
+            self.regions = list(regions or [])
+            self._region_tracker = _PersonRegionTracker()
 
     def _submit_recognition(self, frame):
         if self._recognize_busy.is_set():
@@ -337,15 +345,15 @@ class CameraStreamThread(QThread):
             self._last_person_boxes = person_detector.detect(frame)
             self._person_detector_available = person_detector.available
 
-            # --- خط فرضی عبور: بعد از هر دور تشخیص شخص، بررسی می‌شود که آیا
-            # مسیر مرکز یکی از افراد بین این دور و دور قبل، از خط تعریف‌شده‌ی
-            # کاربر عبور کرده یا نه (رجوع کنید به _PersonLineTracker بالا).
-            with self._tripwire_lock:
-                line = self.tripwire_line
-            if line is not None and self._person_detector_available:
+            # --- محدوده‌ی هشدار: بعد از هر دور تشخیص شخص، بررسی می‌شود که
+            # آیا مرکز یکی از افراد تازه وارد یکی از محدوده‌های تعریف‌شده‌ی
+            # کاربر شده یا نه (رجوع کنید به _PersonRegionTracker بالا).
+            with self._regions_lock:
+                regions = self.regions
+            if regions and self._person_detector_available:
                 h, w = frame.shape[:2]
-                if self._line_tracker.update(self._last_person_boxes, line, w, h):
-                    self.line_crossed.emit()
+                for number, name in self._region_tracker.update(self._last_person_boxes, regions, w, h):
+                    self.region_entered.emit(number, name)
 
             if unknown_event is not None:
                 unknown_crop = _crop_face(frame, unknown_event)

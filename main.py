@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import uuid
 import threading
 
 import cv2
@@ -8,7 +9,7 @@ import cv2
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QListWidget, QListWidgetItem, QMessageBox,
-    QGroupBox, QMenu, QTreeWidget, QTreeWidgetItem, QInputDialog,
+    QGroupBox, QMenu, QTreeWidget, QTreeWidgetItem, QInputDialog, QDialog,
     QGridLayout, QComboBox, QScrollArea, QSizePolicy, QSplitter
 )
 from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon, QDrag, QFontMetrics, QPainter, QPen, QColor
@@ -86,8 +87,11 @@ def _play_alarm_beep():
 
 
 class VideoDisplayLabel(QLabel):
-    """رفع درخواست: امکان رسم «خط فرضی عبور» با کشیدن ماوس، مستقیماً روی
-    تصویر زنده‌ی یک دوربین.
+    """رفع درخواست: امکان رسم «محدوده‌ی هشدار» (یک مستطیل) با کشیدن (drag)
+    ماوس، مستقیماً روی تصویر زنده‌ی یک دوربین - جایگزین نسخه‌ی قبلی که فقط
+    امکان رسم یک خط فرضی عبور را می‌داد. به‌جای تشخیص «عبور از خط»، حالا
+    ورود شخص به داخل مستطیل تعریف‌شده تشخیص داده می‌شود (رجوع کنید به
+    camera_stream._PersonRegionTracker).
 
     منطق مختصات: چون setPixmap با KeepAspectRatio یک pixmap کوچک‌تر یا
     مساوی اندازه‌ی خودِ لیبل تولید می‌کند و QLabel آن را وسط‌چین (AlignCenter)
@@ -95,16 +99,21 @@ class VideoDisplayLabel(QLabel):
     اندازه‌ی pixmap فعلی است (_frame_rect). نقاط رسم‌شده با ماوس (پیکسل
     لیبل) با این مستطیل به مختصات نرمال 0..1 (نسبت به خودِ فریم دوربین، نه
     اندازه‌ی لیبل) تبدیل و نگه‌داشته می‌شوند تا با تغییر اندازه‌ی پنجره/شبکه
-    هم موقعیت خط درست بماند."""
+    هم موقعیت محدوده‌ها درست بماند."""
 
-    line_drawn = pyqtSignal(tuple)  # ((x1,y1),(x2,y2)) نرمال‌شده‌ی 0..1
+    region_drawn = pyqtSignal(tuple)  # (x1,y1,x2,y2) نرمال‌شده‌ی 0..1
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.draw_mode = False
         self._drag_start = None
         self._drag_current = None
-        self._pending_norm_line = None  # (x1,y1,x2,y2) نرمال - در انتظار تایید کاربر
+        self._pending_norm_rect = None  # (x1,y1,x2,y2) نرمال - در انتظار نام‌گذاری/تایید کاربر
+        # رفع درخواست: برخلاف خط فرضیِ قدیمی (که بعد از تایید دیگر روی
+        # تصویر دیده نمی‌شد)، محدوده‌های تایید‌شده همیشه با یک قاب نازک و
+        # برچسبِ شماره/نام‌شان روی تصویر نمایش داده می‌شوند - چون می‌توانند
+        # چندتایی و نام‌دار باشند و کاربر باید همیشه مرزشان را ببیند.
+        self._confirmed_regions = []  # لیستی از دیکشنری {"number","name","rect"}
 
     def set_draw_mode(self, enabled: bool):
         self.draw_mode = bool(enabled)
@@ -113,11 +122,16 @@ class VideoDisplayLabel(QLabel):
         self._drag_current = None
         self.update()
 
-    def set_pending_line_norm(self, norm_line):
-        """خط «در انتظار تایید» را برای پیش‌نمایش تنظیم می‌کند؛ None یعنی
-        هیچ خطی نمایش داده نشود (رفع درخواست: بعد از تایید، خط دیگر روی
-        تصویر دوربین دیده نمی‌شود)."""
-        self._pending_norm_line = tuple(norm_line) if norm_line is not None else None
+    def set_pending_rect_norm(self, norm_rect):
+        """مستطیل «در انتظار نام‌گذاری/تایید» را برای پیش‌نمایش تنظیم
+        می‌کند؛ None یعنی هیچ مستطیلی در انتظار تایید نیست."""
+        self._pending_norm_rect = tuple(norm_rect) if norm_rect is not None else None
+        self.update()
+
+    def set_confirmed_regions(self, regions):
+        """لیست محدوده‌های نهایی/فعال این دوربین را برای رسم دائمی روی
+        تصویر تنظیم می‌کند."""
+        self._confirmed_regions = list(regions or [])
         self.update()
 
     def _frame_rect(self):
@@ -169,32 +183,58 @@ class VideoDisplayLabel(QLabel):
                 p1 = self._widget_to_norm(start_w)
                 p2 = self._widget_to_norm(end_w)
                 if p1 is not None and p2 is not None:
-                    self.line_drawn.emit((p1, p2))
+                    self.region_drawn.emit((p1[0], p1[1], p2[0], p2[1]))
             self.update()
             return
         super().mouseReleaseEvent(event)
 
     def paintEvent(self, event):
         super().paintEvent(event)
+        painter = QPainter(self)
+
+        # محدوده‌های تایید‌شده - همیشه با قاب آبی نازک و برچسب شماره/نام‌شان
+        # رسم می‌شوند (رجوع کنید به توضیح بالای کلاس).
+        for region in self._confirmed_regions:
+            rect = region.get("rect")
+            if not rect:
+                continue
+            p1 = self._norm_to_widget((rect[0], rect[1]))
+            p2 = self._norm_to_widget((rect[2], rect[3]))
+            if p1 is None or p2 is None:
+                continue
+            box = QRectF(p1, p2).normalized()
+            pen = QPen(QColor("#3498db"))
+            pen.setWidth(2)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(box)
+            label = f"{region.get('number', '')}"
+            if region.get("name"):
+                label += f" / {region['name']}"
+            painter.setPen(QPen(QColor("#ffffff")))
+            painter.drawText(box.topLeft() + QPointF(4, 14), label)
+
+        # مستطیل در حال کشیدن (drag) یا در انتظار تایید - با خط‌چین زرد، برای
+        # تمایز از محدوده‌های نهایی‌شده.
         if self._drag_start is not None and self._drag_current is not None:
             p1, p2 = self._drag_start, self._drag_current
-        elif self._pending_norm_line is not None:
-            line = self._pending_norm_line
-            p1 = self._norm_to_widget((line[0], line[1]))
-            p2 = self._norm_to_widget((line[2], line[3]))
+        elif self._pending_norm_rect is not None:
+            r = self._pending_norm_rect
+            p1 = self._norm_to_widget((r[0], r[1]))
+            p2 = self._norm_to_widget((r[2], r[3]))
             if p1 is None or p2 is None:
+                painter.end()
                 return
         else:
+            painter.end()
             return
 
-        painter = QPainter(self)
         pen = QPen(QColor("#f1c40f"))
-        pen.setWidth(3)
+        pen.setWidth(2)
+        pen.setStyle(Qt.PenStyle.DashLine)
         painter.setPen(pen)
-        painter.drawLine(p1, p2)
-        painter.setBrush(QColor("#f1c40f"))
-        for pt in (p1, p2):
-            painter.drawEllipse(pt, 5, 5)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRect(QRectF(p1, p2).normalized())
         painter.end()
 
 
@@ -203,19 +243,19 @@ class CameraSlotWidget(QWidget):
     یک دوربین را پخش کند. با کلیک انتخاب (highlight) می‌شود تا فریم زنده‌اش
     برای «ثبت چهره از تصویر زنده» در دسترس باشد."""
 
-    # رفع باگ: دکمه‌های «تایید خط»/«رسم مجدد» در MainWindow قبلاً فقط هنگام
-    # عوض‌شدن خانه‌ی انتخاب‌شده (selection_changed) به‌روزرسانی می‌شدند - نه
-    # وقتی خودِ خط داخل همین خانه کشیده/تایید/پاک می‌شد. نتیجه این بود که
-    # بعد از رسم خط، دکمه‌ی «تایید خط» غیرفعال (خاکستری) باقی می‌ماند و کلیک
-    # روی آن هیچ اثری نداشت - و چون تایید هرگز واقعاً اجرا نمی‌شد، خط هم
-    # هرگز روی ترد پخش برای تشخیص عبور فعال نمی‌شد (پس آلارم هم هرگز رخ
-    # نمی‌داد). این سیگنال با هر تغییر وضعیت خط (رسم/تایید/پاک/بارگذاری از
-    # دیسک/بستن دوربین) ارسال می‌شود تا MainWindow._refresh_line_buttons
-    # همیشه با وضعیت واقعی هم‌گام بماند.
+    # رفع باگ: دکمه‌های نوار ابزار محدوده‌ی هشدار در MainWindow قبلاً فقط
+    # هنگام عوض‌شدن خانه‌ی انتخاب‌شده (selection_changed) به‌روزرسانی
+    # می‌شدند - نه وقتی خودِ محدوده داخل همین خانه رسم/تایید/حذف می‌شد.
+    # نتیجه این بود که بعد از رسم محدوده، دکمه‌ی «تایید» غیرفعال (خاکستری)
+    # باقی می‌ماند و کلیک روی آن هیچ اثری نداشت - و چون تایید هرگز واقعاً
+    # اجرا نمی‌شد، محدوده هم هرگز روی ترد پخش برای تشخیص ورود فعال نمی‌شد
+    # (پس آلارم هم هرگز رخ نمی‌داد). این سیگنال با هر تغییر وضعیت محدوده‌ها
+    # (رسم/تایید/حذف/بارگذاری از دیسک/بستن دوربین) ارسال می‌شود تا
+    # MainWindow._refresh_line_buttons همیشه با وضعیت واقعی هم‌گام بماند.
     tripwire_changed = pyqtSignal()
 
     def __init__(self, on_clicked, on_close_requested, on_double_clicked=None,
-                 on_slot_drag_swap=None, on_camera_drag_drop=None, parent=None):
+                 on_slot_drag_swap=None, on_camera_drag_drop=None, on_region_alert=None, parent=None):
         super().__init__(parent)
         self.cam = None
         self.stream_thread = None
@@ -223,6 +263,10 @@ class CameraSlotWidget(QWidget):
         self._selected = False
         self._on_clicked = on_clicked
         self._on_close_requested = on_close_requested
+        # رفع درخواست: با ورود شخصی به یکی از محدوده‌های هشدار این خانه، این
+        # callback (در MainWindow) صدا زده می‌شود تا رویداد در پنل تشخیص
+        # چهره هم به‌صورت متنی ثبت شود.
+        self._on_region_alert = on_region_alert
         # رفع درخواست: وضعیت روشن/خاموش بودن «شمارش افراد Real Time» برای این
         # خانه؛ چون خانه‌ها هنگام عوض شدن تعداد شبکه (set_grid_size) از نو
         # ساخته می‌شوند، این وضعیت فقط تا وقتی همین خانه/دوربین برقرار است
@@ -241,14 +285,16 @@ class CameraSlotWidget(QWidget):
         self._drag_start_pos = None
         self.setAcceptDrops(True)
 
-        # رفع درخواست: خط فرضی عبور (Tripwire) برای این خانه.
-        #   tripwire_pending: خطی که تازه رسم شده ولی هنوز کاربر «تایید»
-        #       نزده - همچنان روی تصویر (کم‌رنگ، زرد) دیده می‌شود.
-        #   tripwire_confirmed: خط نهایی و فعال - از این لحظه دیگر روی
-        #       تصویر رسم نمی‌شود (طبق درخواست)، فقط برای تشخیص عبور در ترد
-        #       پخش (CameraStreamThread) استفاده می‌شود.
-        self.tripwire_pending = None
-        self.tripwire_confirmed = None
+        # رفع درخواست: محدوده‌های هشدار (Zone) برای این خانه - جایگزین خط
+        # فرضی عبور قبلی. کاربر می‌تواند به تعداد دلخواه محدوده‌ی مستطیلی
+        # رسم و نام‌گذاری کند (مثلاً «محدوده ۱ / اتاق سرور»)؛ با ورود هرکسی
+        # به هرکدام، کادر این خانه قرمز می‌شود و آلارم صوتی پخش می‌شود.
+        #   pending_rect: مستطیلی که تازه رسم شده ولی هنوز کاربر نامش را
+        #       تایید نکرده - با خط‌چین زرد روی تصویر دیده می‌شود.
+        #   regions: لیست محدوده‌های نهایی/فعال؛ هر کدام
+        #       {"id","number","name","rect"} - همیشه روی تصویر دیده می‌شوند.
+        self.pending_rect = None
+        self.regions = []
         self._alarm_active = False
         self._alarm_timer = QTimer(self)
         self._alarm_timer.setSingleShot(True)
@@ -307,7 +353,7 @@ class CameraSlotWidget(QWidget):
         # با Ignored، چیدمان این sizeHint را نادیده می‌گیرد و صرفاً فضای واقعی
         # داده‌شده به خانه را ملاک قرار می‌دهد.
         self.video_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        self.video_label.line_drawn.connect(self._on_line_drawn)
+        self.video_label.region_drawn.connect(self._on_region_drawn)
 
         outer.addLayout(header)
         outer.addWidget(self.status_label)
@@ -327,7 +373,7 @@ class CameraSlotWidget(QWidget):
             border = "1px solid #3a3a3a"
         self.setStyleSheet(f"CameraSlotWidget {{ border: {border}; border-radius: 8px; background-color: #262626; }}")
 
-    # -------------------------------------------------------- خط فرضی عبور --
+    # ----------------------------------------------------- محدوده‌ی هشدار --
 
     def set_draw_mode(self, enabled: bool):
         self.video_label.set_draw_mode(enabled)
@@ -335,66 +381,94 @@ class CameraSlotWidget(QWidget):
     def is_draw_mode(self) -> bool:
         return self.video_label.draw_mode
 
-    def has_pending_line(self) -> bool:
-        return self.tripwire_pending is not None
+    def has_pending_region(self) -> bool:
+        return self.pending_rect is not None
 
-    def has_any_line(self) -> bool:
-        return self.tripwire_pending is not None or self.tripwire_confirmed is not None
+    def has_any_region(self) -> bool:
+        return bool(self.regions) or self.pending_rect is not None
 
-    def _on_line_drawn(self, norm_line):
-        (x1, y1), (x2, y2) = norm_line
-        self.tripwire_pending = (x1, y1, x2, y2)
-        self.video_label.set_pending_line_norm(self.tripwire_pending)
+    def _on_region_drawn(self, norm_rect):
+        self.pending_rect = tuple(norm_rect)
+        self.video_label.set_pending_rect_norm(self.pending_rect)
         self.tripwire_changed.emit()
 
-    def confirm_line(self):
-        """رفع درخواست: تایید خط تازه‌رسم‌شده. از این لحظه خط دیگر روی
-        تصویر دوربین نمایش داده نمی‌شود، ولی در ترد پخش برای تشخیص عبور
-        فعال است. مقدار خط تایید‌شده را برمی‌گرداند (برای ذخیره در
-        camera_store) یا None اگر خطی در انتظار تایید نبود."""
-        if self.tripwire_pending is None:
+    def confirm_region(self, name: str):
+        """رفع درخواست: تایید و نام‌گذاری محدوده‌ی تازه‌رسم‌شده. محدوده به
+        لیست محدوده‌های فعال این خانه اضافه و بلافاصله روی ترد پخش برای
+        تشخیص ورود فعال می‌شود. دیکشنری محدوده‌ی تازه (برای ذخیره در
+        camera_store) یا None برمی‌گرداند اگر مستطیلی در انتظار تایید نبود."""
+        if self.pending_rect is None:
             return None
-        self.tripwire_confirmed = self.tripwire_pending
-        self.tripwire_pending = None
-        self.video_label.set_pending_line_norm(None)
+        region = {
+            "id": str(uuid.uuid4()),
+            "number": len(self.regions) + 1,
+            "name": (name or "").strip(),
+            "rect": list(self.pending_rect),
+        }
+        self.regions.append(region)
+        self.pending_rect = None
+        self.video_label.set_pending_rect_norm(None)
+        self.video_label.set_confirmed_regions(self.regions)
         self.video_label.set_draw_mode(False)
         if self.stream_thread is not None:
-            self.stream_thread.set_tripwire_line(self.tripwire_confirmed)
+            self.stream_thread.set_regions(self.regions)
         self.tripwire_changed.emit()
-        return self.tripwire_confirmed
+        return region
 
-    def redraw_line(self):
-        """رفع درخواست: چه قبل و چه بعد از تایید، کاربر می‌تواند خط را پاک
-        و دوباره از نو رسم کند."""
-        self.tripwire_pending = None
-        self.tripwire_confirmed = None
-        self.video_label.set_pending_line_norm(None)
-        self.video_label.set_draw_mode(True)
+    def cancel_pending_region(self):
+        """رفع درخواست: لغو مستطیل در حال رسم/در انتظار نام‌گذاری، بدون
+        هیچ تاثیری روی محدوده‌های قبلاً تایید‌شده."""
+        self.pending_rect = None
+        self.video_label.set_pending_rect_norm(None)
+        self.video_label.set_draw_mode(False)
+        self.tripwire_changed.emit()
+
+    def remove_region(self, region_id):
+        """حذف یک محدوده‌ی مشخص با شناسه‌اش (از پنل مدیریت محدوده‌ها) و
+        شماره‌گذاری مجدد بقیه. لیست محدوده‌های باقی‌مانده را برمی‌گرداند."""
+        self.regions = [r for r in self.regions if r["id"] != region_id]
+        for i, r in enumerate(self.regions, start=1):
+            r["number"] = i
+        self.video_label.set_confirmed_regions(self.regions)
         if self.stream_thread is not None:
-            self.stream_thread.set_tripwire_line(None)
-        self._clear_alarm()
+            self.stream_thread.set_regions(self.regions)
+        self.tripwire_changed.emit()
+        return list(self.regions)
+
+    def set_regions_silent(self, regions):
+        """بارگذاری محدوده‌های از قبل ذخیره‌شده (هنگام باز شدن دوربین) - از
+        همان لحظه هم روی تصویر دیده می‌شوند و هم روی ترد پخش برای تشخیص
+        ورود فعال می‌شوند."""
+        self.regions = [dict(r) for r in (regions or [])]
+        self.video_label.set_confirmed_regions(self.regions)
+        if self.stream_thread is not None and self.regions:
+            self.stream_thread.set_regions(self.regions)
         self.tripwire_changed.emit()
 
-    def set_tripwire_line_silent(self, norm_line):
-        """بارگذاری خط از قبل ذخیره‌شده (هنگام باز شدن دوربین) بدون اینکه
-        هیچ‌وقت پیش‌نمایشِ رسم روی تصویر دیده شود - چون از قبل تایید شده."""
-        self.tripwire_confirmed = tuple(norm_line) if norm_line is not None else None
-        if self.stream_thread is not None and self.tripwire_confirmed is not None:
-            self.stream_thread.set_tripwire_line(self.tripwire_confirmed)
-        self.tripwire_changed.emit()
-
-    def _on_line_crossed(self):
-        # رفع درخواست: با هر عبور، کادر قرمز می‌شود و آلارم صوتی پخش می‌شود؛
-        # تایمر با هر عبور تازه ریست می‌شود تا قرمزی حداقل چند ثانیه بماند
-        # (نه فقط یک لحظه‌ی محو).
+    def _on_region_entered(self, number, name):
+        # رفع درخواست: با هر ورود، کادر قرمز می‌شود، آلارم صوتی پخش می‌شود
+        # و پیام «ورود به محدوده شماره N / نام» زیر نام دوربین نمایش داده
+        # می‌شود؛ تایمر با هر ورود تازه ریست می‌شود تا قرمزی/پیام حداقل چند
+        # ثانیه بماند (نه فقط یک لحظه‌ی محو).
+        label = f"شماره {number}" + (f" / {name}" if name else "")
         self._alarm_active = True
         self._apply_frame_style()
+        self.status_label.setText(f"⚠ ورود به محدوده {label}")
         _play_alarm_beep()
         self._alarm_timer.start(4000)
+        if self._on_region_alert is not None and self.cam is not None:
+            self._on_region_alert(self.cam.get("name", ""), number, name)
 
     def _clear_alarm(self):
         self._alarm_active = False
         self._apply_frame_style()
+        # بعد از پایان قرمزی، اگر وضعیت هنوز پیام هشدار را نشان می‌دهد،
+        # دوباره به متن وضعیت عادی (متصل/خالی) برمی‌گردد.
+        if self.status_label.text().startswith("⚠"):
+            if self.stream_thread is not None and self.stream_thread.isRunning():
+                self.status_label.setText("متصل - پخش زنده")
+            else:
+                self.status_label.setText("")
 
     def _set_name_text(self, full_text: str):
         """متن کامل اسم دوربین را نگه می‌دارد و نسخه‌ی کوتاه‌شده (بر اساس
@@ -531,17 +605,17 @@ class CameraSlotWidget(QWidget):
         self.stream_thread.error_signal.connect(self.on_error)
         self.stream_thread.connected_signal.connect(self.on_connected)
         self.stream_thread.people_count_signal.connect(self.on_people_count)
-        self.stream_thread.line_crossed.connect(self._on_line_crossed)
+        self.stream_thread.region_entered.connect(self._on_region_entered)
         self.stream_thread.face_event_signal.connect(
             lambda person, crop: face_event_cb(cam["name"], person, crop)
         )
         self.stream_thread.start()
-        # رفع درخواست: اگر برای این دوربین قبلاً یک خط فرضی رسم و ذخیره شده
-        # (cameras.json)، همان لحظه‌ی اتصال دوباره روی ترد پخش تازه فعال
-        # می‌شود - بدون نمایش دوباره‌ی پیش‌نمایش رسم (چون از قبل تایید شده).
-        saved_line = cam.get("tripwire_line")
-        if saved_line:
-            self.set_tripwire_line_silent(tuple(saved_line))
+        # رفع درخواست: اگر برای این دوربین قبلاً محدوده‌های هشدار رسم و
+        # ذخیره شده باشند (cameras.json)، همان لحظه‌ی اتصال دوباره روی ترد
+        # پخش تازه فعال می‌شوند.
+        saved_regions = cam.get("regions")
+        if saved_regions:
+            self.set_regions_silent(saved_regions)
         # اگر شمارش افراد به‌صورت سراسری (دکمه‌ی بالای شبکه‌ی دوربین‌ها) از قبل
         # روشن بوده، روی ترد پخش جدید هم بلافاصله اعمال می‌شود (رجوع کنید به
         # CameraGridWidget که بلافاصله بعد از start() هم set_people_counting
@@ -584,15 +658,64 @@ class CameraSlotWidget(QWidget):
         # برچسب تعداد پاک می‌شود.
         self._people_counting_enabled = False
         self.people_count_label.setText("")
-        # پاک‌کردن کامل وضعیت خط فرضی/آلارم این خانه (دوربین بعدی که در این
-        # خانه باز شود، وضعیت خط فرضی خودش را - اگر داشته باشد - جداگانه از
-        # cameras.json بارگذاری می‌کند).
-        self.tripwire_pending = None
-        self.tripwire_confirmed = None
-        self.video_label.set_pending_line_norm(None)
+        # پاک‌کردن کامل وضعیت محدوده‌های هشدار/آلارم این خانه (دوربین بعدی
+        # که در این خانه باز شود، محدوده‌های خودش را - اگر داشته باشد -
+        # جداگانه از cameras.json بارگذاری می‌کند).
+        self.pending_rect = None
+        self.regions = []
+        self.video_label.set_pending_rect_norm(None)
+        self.video_label.set_confirmed_regions([])
         self.video_label.set_draw_mode(False)
         self._clear_alarm()
         self.tripwire_changed.emit()
+
+
+class RegionManagerDialog(QDialog):
+    """رفع درخواست: مدیریت (مشاهده/حذف) محدوده‌های هشدار تعریف‌شده برای
+    دوربین انتخاب‌شده‌ی فعلی - چون هر دوربین می‌تواند هم‌زمان چند محدوده‌ی
+    نام‌دار داشته باشد و راهی برای حذف تک‌تک آن‌ها لازم است."""
+
+    def __init__(self, slot, on_changed, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("مدیریت محدوده‌های هشدار")
+        self.resize(340, 320)
+        self.slot = slot
+        self.on_changed = on_changed
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("محدوده‌های تعریف‌شده برای این دوربین:"))
+        self.list_widget = QListWidget()
+        layout.addWidget(self.list_widget, 1)
+
+        self.remove_btn = QPushButton("🗑 حذف محدوده‌ی انتخاب‌شده")
+        self.remove_btn.clicked.connect(self._on_remove_clicked)
+        layout.addWidget(self.remove_btn)
+
+        close_btn = QPushButton("بستن")
+        close_btn.clicked.connect(self.accept)
+        layout.addWidget(close_btn)
+
+        self._reload()
+
+    def _reload(self):
+        self.list_widget.clear()
+        for region in self.slot.regions:
+            label = f"شماره {region['number']}"
+            if region.get("name"):
+                label += f" / {region['name']}"
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, region["id"])
+            self.list_widget.addItem(item)
+
+    def _on_remove_clicked(self):
+        item = self.list_widget.currentItem()
+        if item is None:
+            return
+        region_id = item.data(Qt.ItemDataRole.UserRole)
+        self.slot.remove_region(region_id)
+        if self.on_changed is not None:
+            self.on_changed()
+        self._reload()
 
 
 class CameraGridWidget(QWidget):
@@ -601,19 +724,24 @@ class CameraGridWidget(QWidget):
     امکان در چیدمان جدید حفظ می‌شوند."""
 
     # رفع درخواست: هر بار خانه‌ی انتخاب‌شده عوض شود (یا با -1 خالی شود)،
-    # این سیگنال ارسال می‌شود تا نوار ابزار «خط فرضی عبور» در MainWindow
-    # وضعیت دکمه‌های تایید/رسم مجدد را برای همان خانه به‌روزرسانی کند.
+    # این سیگنال ارسال می‌شود تا نوار ابزار «محدوده‌ی هشدار» در MainWindow
+    # وضعیت دکمه‌های تایید/لغو/مدیریت را برای همان خانه به‌روزرسانی کند.
     selection_changed = pyqtSignal(int)
-    # رفع باگ: علاوه بر عوض‌شدن انتخاب، با هر تغییر واقعی در وضعیت خط فرضیِ
-    # هر خانه (رسم/تایید/پاک‌کردن - رجوع کنید به CameraSlotWidget.tripwire_changed)
-    # هم باید نوار ابزار به‌روز شود، وگرنه دکمه‌ها با وضعیت واقعی هم‌گام
-    # نمی‌مانند.
+    # رفع باگ: علاوه بر عوض‌شدن انتخاب، با هر تغییر واقعی در وضعیت
+    # محدوده‌های هر خانه (رسم/تایید/حذف - رجوع کنید به
+    # CameraSlotWidget.tripwire_changed) هم باید نوار ابزار به‌روز شود،
+    # وگرنه دکمه‌ها با وضعیت واقعی هم‌گام نمی‌مانند.
     tripwire_changed = pyqtSignal()
 
-    def __init__(self, face_engine: FaceEngine, on_face_event, on_external_camera_drop=None, parent=None):
+    def __init__(self, face_engine: FaceEngine, on_face_event, on_external_camera_drop=None,
+                 on_region_alert=None, parent=None):
         super().__init__(parent)
         self.face_engine = face_engine
         self.on_face_event = on_face_event
+        # رفع درخواست: با ورود شخصی به یکی از محدوده‌های هشدار هر خانه، این
+        # callback (در MainWindow) به هر خانه‌ی تازه‌ساخته‌شده هم پاس داده
+        # می‌شود تا رویداد در پنل تشخیص چهره هم ثبت شود.
+        self.on_region_alert = on_region_alert
         # رفع درخواست: وقتی موردی از لیست دوربین‌ها (خارج از شبکه‌ی نمایش) روی
         # یک خانه رها (drop) شود، این callback (در MainWindow) صدا زده می‌شود
         # تا رمز عبور را در صورت نیاز بپرسد و آدرس RTSP را بسازد.
@@ -669,6 +797,7 @@ class CameraGridWidget(QWidget):
                     self._on_slot_clicked, self._on_slot_close_requested, self._on_slot_double_clicked,
                     on_slot_drag_swap=self._on_slot_drag_swap,
                     on_camera_drag_drop=self._on_camera_drag_drop,
+                    on_region_alert=self.on_region_alert,
                 )
                 slot.slot_index = len(self.slots)
                 slot.tripwire_changed.connect(self.tripwire_changed.emit)
@@ -1016,18 +1145,22 @@ class MainWindow(QMainWindow):
         self.people_toggle_btn.toggled.connect(self._on_people_toggle_all)
         grid_toolbar.addWidget(self.people_toggle_btn)
 
-        # رفع درخواست: خط فرضی عبور (Tripwire). کاربر ابتدا یک دوربین را از
-        # شبکه انتخاب می‌کند (کلیک روی خانه‌اش)، سپس این دکمه را می‌زند تا
-        # بتواند با کشیدن ماوس روی تصویر همان دوربین یک خط بکشد. «تایید»
-        # خط را نهایی و فعال می‌کند (از آن پس دیگر روی تصویر دیده نمی‌شود)
-        # و «رسم مجدد» چه قبل و چه بعد از تایید، امکان کشیدن دوباره را
-        # می‌دهد.
-        self.draw_line_btn = QPushButton("🖊 رسم خط فرضی")
+        # رفع درخواست: محدوده‌ی هشدار (Zone) - جایگزین خط فرضی عبور قبلی.
+        # کاربر ابتدا یک دوربین را از شبکه انتخاب می‌کند (کلیک روی خانه‌اش)،
+        # سپس این دکمه را می‌زند تا بتواند با کشیدن (drag) ماوس روی تصویر
+        # همان دوربین یک محدوده‌ی مستطیلی بکشد. «تایید و نام‌گذاری» یک نام
+        # (مثلاً اسم اتاق) از کاربر می‌پرسد و محدوده را به لیست محدوده‌های
+        # فعال آن دوربین اضافه می‌کند (از آن پس با ورود هرکسی به آن، کادر
+        # دوربین قرمز و آلارم پخش می‌شود)؛ «لغو رسم» فقط مستطیل در انتظار
+        # نام‌گذاری را پاک می‌کند و «مدیریت محدوده‌ها» امکان مشاهده/حذف
+        # محدوده‌های از قبل تایید‌شده را می‌دهد. برخلاف خط قبلی، هر دوربین
+        # می‌تواند هم‌زمان چند محدوده‌ی نام‌دار داشته باشد.
+        self.draw_line_btn = QPushButton("🖊 رسم محدوده هشدار")
         self.draw_line_btn.setCheckable(True)
         self.draw_line_btn.setToolTip(
             "۱) یک دوربین را از شبکه انتخاب کنید (کلیک روی خانه‌اش)\n"
             "۲) این دکمه را بزنید\n"
-            "۳) روی تصویر همان دوربین با ماوس یک خط بکشید"
+            "۳) با کشیدن (drag) ماوس روی تصویر همان دوربین یک محدوده (مستطیل) بکشید"
         )
         self.draw_line_btn.setStyleSheet(
             "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
@@ -1036,9 +1169,11 @@ class MainWindow(QMainWindow):
         self.draw_line_btn.toggled.connect(self._on_draw_line_toggled)
         grid_toolbar.addWidget(self.draw_line_btn)
 
-        self.confirm_line_btn = QPushButton("✅ تایید خط")
+        self.confirm_line_btn = QPushButton("✅ تایید و نام‌گذاری")
         self.confirm_line_btn.setEnabled(False)
-        self.confirm_line_btn.setToolTip("خط رسم‌شده را نهایی می‌کند؛ از این پس دیگر روی تصویر دوربین دیده نمی‌شود ولی برای هشدار عبور فعال است.")
+        self.confirm_line_btn.setToolTip(
+            "محدوده‌ی رسم‌شده را با یک نام (مثلاً نام اتاق) نهایی می‌کند؛ از این پس با ورود هرکسی به آن، کادر دوربین قرمز و آلارم پخش می‌شود."
+        )
         self.confirm_line_btn.setStyleSheet(
             "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
             "QPushButton:enabled{background:#27ae60; color:#fff;}"
@@ -1046,19 +1181,30 @@ class MainWindow(QMainWindow):
         self.confirm_line_btn.clicked.connect(self._on_confirm_line_clicked)
         grid_toolbar.addWidget(self.confirm_line_btn)
 
-        self.redraw_line_btn = QPushButton("🔁 رسم مجدد")
+        self.redraw_line_btn = QPushButton("❌ لغو رسم")
         self.redraw_line_btn.setEnabled(False)
-        self.redraw_line_btn.setToolTip("خط فعلی (تایید‌شده یا در انتظار تایید) را پاک می‌کند تا دوباره از نو رسم کنید.")
+        self.redraw_line_btn.setToolTip("مستطیل در حال رسم/در انتظار نام‌گذاری را لغو می‌کند؛ محدوده‌های قبلاً تایید‌شده حذف نمی‌شوند.")
         self.redraw_line_btn.setStyleSheet(
             "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
         )
         self.redraw_line_btn.clicked.connect(self._on_redraw_line_clicked)
         grid_toolbar.addWidget(self.redraw_line_btn)
 
+        self.manage_regions_btn = QPushButton("📋 مدیریت محدوده‌ها")
+        self.manage_regions_btn.setEnabled(False)
+        self.manage_regions_btn.setToolTip("مشاهده و حذف محدوده‌های هشدار تعریف‌شده برای دوربین انتخاب‌شده.")
+        self.manage_regions_btn.setStyleSheet(
+            "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
+            "QPushButton:enabled{background:#2980b9; color:#fff;}"
+        )
+        self.manage_regions_btn.clicked.connect(self._on_manage_regions_clicked)
+        grid_toolbar.addWidget(self.manage_regions_btn)
+
         grid_toolbar.addStretch()
 
         self.camera_grid = CameraGridWidget(
-            self.face_engine, self.on_face_event, on_external_camera_drop=self.on_camera_dropped_on_grid
+            self.face_engine, self.on_face_event, on_external_camera_drop=self.on_camera_dropped_on_grid,
+            on_region_alert=self.on_region_alert,
         )
         self.camera_grid.selection_changed.connect(lambda _idx: self._refresh_line_buttons())
         self.camera_grid.tripwire_changed.connect(self._refresh_line_buttons)
@@ -1150,7 +1296,7 @@ class MainWindow(QMainWindow):
         به CameraGridWidget.set_people_counting_all)."""
         self.camera_grid.set_people_counting_all(checked)
 
-    # -------------------------------------------------------- خط فرضی عبور --
+    # ----------------------------------------------------- محدوده‌ی هشدار --
 
     def _selected_slot(self):
         idx = self.camera_grid.selected_index
@@ -1166,7 +1312,7 @@ class MainWindow(QMainWindow):
                 self.draw_line_btn.setChecked(False)
                 self.draw_line_btn.blockSignals(False)
                 QMessageBox.information(
-                    self, "رسم خط فرضی",
+                    self, "رسم محدوده هشدار",
                     "ابتدا یک دوربین را از شبکه‌ی نمایش انتخاب کنید (روی خانه‌اش کلیک کنید)، سپس دوباره این دکمه را بزنید."
                 )
             return
@@ -1175,11 +1321,17 @@ class MainWindow(QMainWindow):
 
     def _on_confirm_line_clicked(self):
         slot = self._selected_slot()
-        if slot is None:
+        if slot is None or not slot.has_pending_region():
             return
-        confirmed = slot.confirm_line()
-        if confirmed is not None and slot.cam is not None:
-            self.camera_store.update_camera(slot.cam["id"], tripwire_line=list(confirmed))
+        name, ok = QInputDialog.getText(
+            self, "نام‌گذاری محدوده",
+            "نام این محدوده را وارد کنید (مثلاً اسم اتاق) - اختیاری:"
+        )
+        if not ok:
+            return
+        region = slot.confirm_region(name)
+        if region is not None and slot.cam is not None:
+            self.camera_store.update_camera(slot.cam["id"], regions=list(slot.regions))
         self.draw_line_btn.blockSignals(True)
         self.draw_line_btn.setChecked(False)
         self.draw_line_btn.blockSignals(False)
@@ -1189,23 +1341,50 @@ class MainWindow(QMainWindow):
         slot = self._selected_slot()
         if slot is None:
             return
-        slot.redraw_line()
-        if slot.cam is not None:
-            self.camera_store.update_camera(slot.cam["id"], tripwire_line=None)
+        slot.cancel_pending_region()
         self.draw_line_btn.blockSignals(True)
-        self.draw_line_btn.setChecked(True)
+        self.draw_line_btn.setChecked(False)
         self.draw_line_btn.blockSignals(False)
         self._refresh_line_buttons()
 
-    def _refresh_line_buttons(self):
-        """دکمه‌های «تایید خط»/«رسم مجدد» و وضعیت تیک‌خورده‌ی «رسم خط
-        فرضی» را بر اساس خانه‌ی فعلاً انتخاب‌شده به‌روز می‌کند - چون هر خانه
-        وضعیت خط فرضی مستقل خودش را دارد."""
+    def _on_manage_regions_clicked(self):
         slot = self._selected_slot()
-        has_pending = slot.has_pending_line() if slot is not None else False
-        has_any = slot.has_any_line() if slot is not None else False
+        if slot is None:
+            return
+
+        def _on_changed():
+            if slot.cam is not None:
+                self.camera_store.update_camera(slot.cam["id"], regions=list(slot.regions))
+            self._refresh_line_buttons()
+
+        dialog = RegionManagerDialog(slot, _on_changed, self)
+        dialog.exec()
+
+    def on_region_alert(self, camera_name, number, name):
+        """رفع درخواست: با ورود شخصی به یکی از محدوده‌های هشدار هر دوربین
+        (از CameraSlotWidget._on_region_entered)، یک ردیف متنی قرمز هم در
+        پنل تشخیص چهره (سمت راست) ثبت می‌شود تا سابقه‌ی هشدارها هم در دسترس
+        باشد."""
+        timestamp = time.strftime("%H:%M:%S")
+        label = f"شماره {number}" + (f" / {name}" if name else "")
+        text = f"[{timestamp}] {camera_name}\n⚠ ورود به محدوده {label}"
+        item = QListWidgetItem(text)
+        item.setForeground(QColor("#e74c3c"))
+        self.face_panel_list.insertItem(0, item)
+        while self.face_panel_list.count() > 300:
+            self.face_panel_list.takeItem(self.face_panel_list.count() - 1)
+
+    def _refresh_line_buttons(self):
+        """دکمه‌های «تایید و نام‌گذاری»/«لغو رسم»/«مدیریت محدوده‌ها» و
+        وضعیت تیک‌خورده‌ی «رسم محدوده هشدار» را بر اساس خانه‌ی فعلاً
+        انتخاب‌شده به‌روز می‌کند - چون هر خانه محدوده‌های مستقل خودش را
+        دارد."""
+        slot = self._selected_slot()
+        has_pending = slot.has_pending_region() if slot is not None else False
+        has_confirmed = bool(slot.regions) if slot is not None else False
         self.confirm_line_btn.setEnabled(bool(has_pending))
-        self.redraw_line_btn.setEnabled(bool(has_any))
+        self.redraw_line_btn.setEnabled(bool(has_pending))
+        self.manage_regions_btn.setEnabled(bool(has_confirmed))
         self.draw_line_btn.blockSignals(True)
         self.draw_line_btn.setChecked(bool(slot.is_draw_mode()) if slot is not None else False)
         self.draw_line_btn.blockSignals(False)
