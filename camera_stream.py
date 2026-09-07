@@ -249,6 +249,17 @@ class CameraStreamThread(QThread):
     # می‌شود تا در main.py کادر دوربین قرمز شود، صدای آلارم پخش شود و پیام
     # مربوطه (مثلاً «ورود به محدوده شماره ۱ / اتاق سرور») نمایش داده شود.
     region_entered = pyqtSignal(int, str)  # (number, name)
+    # رفع درخواست: «محدوده رسم می‌شود ولی هشدار هیچ‌وقت فعال نمی‌شود». علت
+    # ریشه‌ای این بود که کل زنجیره‌ی هشدار (region_entered بالا) به بارگذاری
+    # موفق مدل YOLOv8 در person_detector.py وابسته است، ولی وقتی آن مدل
+    # بارگذاری نمی‌شد (ultralytics نصب نبود، فایل وزن پیدا نمی‌شد و ...)،
+    # تنها ردی که می‌ماند یک print() در کنسول بود - که در نسخه‌ی exe نهایی
+    # (build.yml: windows-console-mode=disable) اصلاً دیده نمی‌شود، پس
+    # کاربر بی‌هیچ توضیحی فقط می‌دید محدوده رسم می‌شود ولی هرگز هشدار
+    # نمی‌دهد. این سیگنال یک‌بار (بعد از اولین تلاش واقعی برای بارگذاری
+    # مدل) وضعیت را به‌صورت صریح به main.py اطلاع می‌دهد تا به‌جای سکوت،
+    # پیامی روی خودِ خانه‌ی دوربین نمایش داده شود.
+    person_detector_status_signal = pyqtSignal(bool, str)  # (available, error_message)
 
     def __init__(self, rtsp_url, face_engine, process_every_n=5, parent=None):
         super().__init__(parent)
@@ -300,6 +311,11 @@ class CameraStreamThread(QThread):
         self.count_people_enabled = False
         self._last_people_count = -1  # برای فرستادن سیگنال فقط وقتی عدد واقعاً عوض شود
 
+        # رفع درخواست: فرستادن person_detector_status_signal فقط یک‌بار (بعد
+        # از اولین تلاش واقعی بارگذاری مدل) - نه در هر دور تشخیص - تا سیگنال
+        # اسپم نشود.
+        self._detector_status_emitted = False
+
     def set_people_counting(self, enabled: bool):
         """روشن/خاموش کردن شمارش افراد Real Time برای این دوربین."""
         self.count_people_enabled = bool(enabled)
@@ -344,6 +360,11 @@ class CameraStreamThread(QThread):
             # روی CPU رقابت نمی‌کنند.
             self._last_person_boxes = person_detector.detect(frame)
             self._person_detector_available = person_detector.available
+            if not self._detector_status_emitted:
+                self._detector_status_emitted = True
+                self.person_detector_status_signal.emit(
+                    self._person_detector_available, person_detector.load_error or ""
+                )
 
             # --- محدوده‌ی هشدار: بعد از هر دور تشخیص شخص، بررسی می‌شود که
             # آیا مرکز یکی از افراد تازه وارد یکی از محدوده‌های تعریف‌شده‌ی

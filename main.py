@@ -299,6 +299,16 @@ class CameraSlotWidget(QWidget):
         self._alarm_timer = QTimer(self)
         self._alarm_timer.setSingleShot(True)
         self._alarm_timer.timeout.connect(self._clear_alarm)
+        # رفع درخواست: «محدوده رسم می‌شود ولی هشدار نمی‌دهد» بی‌هیچ توضیحی.
+        # علتش این بود که کل زنجیره‌ی هشدار به بارگذاری موفق مدل تشخیص شخص
+        # (YOLOv8، در person_detector.py) وابسته است و قبلاً وقتی آن مدل
+        # بارگذاری نمی‌شد، هیچ نشانه‌ای روی UI دیده نمی‌شد (فقط یک print()
+        # که در exe نهایی اصلاً قابل‌دیدن نیست - رجوع کنید به
+        # CameraStreamThread.person_detector_status_signal). None یعنی
+        # هنوز وضعیت واقعی مشخص نیست (اولین تلاش بارگذاری هنوز انجام
+        # نشده)، True/False یعنی نتیجه‌ی همان اولین تلاش.
+        self._detector_available = None
+        self._detector_error = ""
 
         self.setMinimumSize(140, 110)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -340,6 +350,15 @@ class CameraSlotWidget(QWidget):
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color:#888888; font-size:9px;")
 
+        # رفع درخواست: وقتی محدوده‌ی هشدار تعریف شده ولی موتور تشخیص شخص
+        # (YOLOv8) بارگذاری نشده - پس هیچ هشداری هرگز صادر نخواهد شد - این
+        # پیام به‌جای سکوت کامل، همین‌جا زیر نام دوربین نشان داده می‌شود.
+        # رجوع کنید به _refresh_detector_warning.
+        self.detector_warn_label = QLabel("")
+        self.detector_warn_label.setStyleSheet("color:#e67e22; font-size:9px; font-weight:bold;")
+        self.detector_warn_label.setWordWrap(True)
+        self.detector_warn_label.setVisible(False)
+
         self.video_label = VideoDisplayLabel("خالی — برای افزودن دوربین،\nدر لیست سمت چپ دابل‌کلیک کنید")
         self.video_label.setWordWrap(True)
         self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -357,6 +376,7 @@ class CameraSlotWidget(QWidget):
 
         outer.addLayout(header)
         outer.addWidget(self.status_label)
+        outer.addWidget(self.detector_warn_label)
         outer.addWidget(self.video_label, 1)
         self._apply_frame_style()
 
@@ -412,6 +432,7 @@ class CameraSlotWidget(QWidget):
         self.video_label.set_draw_mode(False)
         if self.stream_thread is not None:
             self.stream_thread.set_regions(self.regions)
+        self._refresh_detector_warning()
         self.tripwire_changed.emit()
         return region
 
@@ -432,6 +453,7 @@ class CameraSlotWidget(QWidget):
         self.video_label.set_confirmed_regions(self.regions)
         if self.stream_thread is not None:
             self.stream_thread.set_regions(self.regions)
+        self._refresh_detector_warning()
         self.tripwire_changed.emit()
         return list(self.regions)
 
@@ -443,6 +465,7 @@ class CameraSlotWidget(QWidget):
         self.video_label.set_confirmed_regions(self.regions)
         if self.stream_thread is not None and self.regions:
             self.stream_thread.set_regions(self.regions)
+        self._refresh_detector_warning()
         self.tripwire_changed.emit()
 
     def _on_region_entered(self, number, name):
@@ -458,6 +481,33 @@ class CameraSlotWidget(QWidget):
         self._alarm_timer.start(4000)
         if self._on_region_alert is not None and self.cam is not None:
             self._on_region_alert(self.cam.get("name", ""), number, name)
+
+    def _on_detector_status(self, available: bool, error_msg: str):
+        """رفع درخواست: بعد از اولین تلاش (موفق یا ناموفق) برای بارگذاری
+        مدل تشخیص شخص، این متد صدا زده می‌شود (رجوع کنید به
+        CameraStreamThread.person_detector_status_signal). فقط وقتی این
+        خانه محدوده‌ی هشدار هم داشته باشد پیام نشان داده می‌شود - چون تا
+        وقتی محدوده‌ای تعریف نشده، در دسترس نبودن تشخیص شخص برای کاربر
+        این خانه بی‌اهمیت است."""
+        self._detector_available = bool(available)
+        self._detector_error = error_msg or ""
+        self._refresh_detector_warning()
+
+    def _refresh_detector_warning(self):
+        if self._detector_available is False and self.regions:
+            msg = "⚠ تشخیص شخص غیرفعال است؛ هشدار ورود به محدوده کار نمی‌کند"
+            if self._detector_error:
+                msg += f" ({self._detector_error})"
+            self.detector_warn_label.setText(msg)
+            self.detector_warn_label.setToolTip(
+                "برای رفع این مشکل: مطمئن شوید کتابخانه‌ی ultralytics نصب است و فایل "
+                "وزن مدل (yolov8n.pt) در دسترس است (کنار برنامه یا با اتصال اینترنت "
+                "برای دانلود یک‌بار). اگر از نسخه‌ی exe پرتابل استفاده می‌کنید، بررسی "
+                "کنید مرحله‌ی دانلود/بسته‌بندی این فایل در بیلد گیت‌هاب موفق بوده است."
+            )
+            self.detector_warn_label.setVisible(True)
+        else:
+            self.detector_warn_label.setVisible(False)
 
     def _clear_alarm(self):
         self._alarm_active = False
@@ -606,6 +656,14 @@ class CameraSlotWidget(QWidget):
         self.stream_thread.connected_signal.connect(self.on_connected)
         self.stream_thread.people_count_signal.connect(self.on_people_count)
         self.stream_thread.region_entered.connect(self._on_region_entered)
+        self.stream_thread.person_detector_status_signal.connect(self._on_detector_status)
+        # با هر بازِ جدید (دوربین تازه در همین خانه)، وضعیت تشخیص شخص قبلی
+        # (اگر مربوط به دوربین قبلی این خانه بوده) پاک می‌شود تا وضعیت
+        # واقعی دوربین جدید (بعد از اولین دور تشخیصش) دوباره از صفر تعیین
+        # شود - نه اینکه هشدار نادرست از پخش قبلی روی صفحه بماند.
+        self._detector_available = None
+        self._detector_error = ""
+        self._refresh_detector_warning()
         self.stream_thread.face_event_signal.connect(
             lambda person, crop: face_event_cb(cam["name"], person, crop)
         )
@@ -667,6 +725,9 @@ class CameraSlotWidget(QWidget):
         self.video_label.set_confirmed_regions([])
         self.video_label.set_draw_mode(False)
         self._clear_alarm()
+        self._detector_available = None
+        self._detector_error = ""
+        self._refresh_detector_warning()
         self.tripwire_changed.emit()
 
 
@@ -1332,6 +1393,21 @@ class MainWindow(QMainWindow):
         region = slot.confirm_region(name)
         if region is not None and slot.cam is not None:
             self.camera_store.update_camera(slot.cam["id"], regions=list(slot.regions))
+        # رفع درخواست: قبلاً اگر تشخیص شخص (YOLOv8) بارگذاری نشده بود، کاربر
+        # محدوده را تایید می‌کرد و فکر می‌کرد همه‌چیز فعال شده، در حالی که
+        # هشدار هرگز صادر نمی‌شد و هیچ توضیحی هم نمی‌دید. اگر همین الان
+        # می‌دانیم وضعیت تشخیص شخص False است، بلافاصله (نه فقط با برچسب
+        # کوچک زیر تصویر) به کاربر اطلاع می‌دهیم.
+        if region is not None and slot._detector_available is False:
+            QMessageBox.warning(
+                self, "محدوده ذخیره شد، ولی هشدار فعلاً کار نمی‌کند",
+                "این محدوده ذخیره شد و روی تصویر دیده می‌شود، اما تشخیص شخص (YOLOv8) "
+                "روی این برنامه بارگذاری نشده، پس ورود کسی به این محدوده هنوز هشدار "
+                "(کادر قرمز/بوق) صادر نمی‌کند.\n\n"
+                "برای رفع: مطمئن شوید کتابخانه‌ی ultralytics نصب است و فایل وزن مدل "
+                "(yolov8n.pt) در دسترس است، یا نسخه‌ی exe را با بسته‌بندی درستِ این "
+                "فایل دوباره بسازید."
+            )
         self.draw_line_btn.blockSignals(True)
         self.draw_line_btn.setChecked(False)
         self.draw_line_btn.blockSignals(False)

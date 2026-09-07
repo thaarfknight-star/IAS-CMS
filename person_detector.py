@@ -100,6 +100,16 @@ class PersonDetector:
         self._lock = threading.RLock()
 
     @property
+    def load_error(self):
+        """پیام خطای بارگذاری مدل (اگر بارگذاری تلاش و ناموفق بوده)، یا
+        None اگر مدل با موفقیت بارگذاری شده یا هنوز اصلاً تلاشی صورت
+        نگرفته. camera_stream.py از این مقدار برای نمایش وضعیت واقعی
+        (چرا هشدار محدوده کار نمی‌کند) روی UI استفاده می‌کند - قبلاً این
+        پیام فقط با print() به کنسول می‌رفت که در خروجی exe نهایی
+        (windows-console-mode=disable) اصلاً دیده نمی‌شد."""
+        return self._load_error
+
+    @property
     def available(self):
         """True فقط اگر مدل واقعاً با موفقیت بارگذاری شده باشد. اولین
         فراخوانی این property (یا detect) همان لحظه‌ای است که تلاش برای
