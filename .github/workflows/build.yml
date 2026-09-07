@@ -157,7 +157,16 @@ jobs:
           "--include-package=torchvision"
           "--nofollow-import-to=sympy"
           "--nofollow-import-to=torch.onnx"
-          "--nofollow-import-to=torch.distributed"
+          # نکته‌ی مهم: torch.distributed قبلاً اینجا هم exclude شده بود (چون
+          # این پروژه هیچ آموزش توزیع‌شده/چند-GPU انجام نمی‌دهد)، ولی
+          # ultralytics در همان مرحله‌ی import اولیه‌اش (نه فقط هنگام
+          # استفاده‌ی واقعی) این ماژول را بدون قید-و-شرط import می‌کند. چون
+          # Nuitka این ماژول را اصلاً کامپایل نکرده بود، همان اولین
+          # `from ultralytics import YOLO` در person_detector.py با خطا
+          # شکست می‌خورد و تشخیص شخص/هشدار محدوده برای همیشه غیرفعال
+          # می‌ماند - دقیقاً همان چیزی که با پیام "Module 'torch.distributed'
+          # was actively excluded..." روی UI ظاهر شد. پس این خط را نباید
+          # دوباره اضافه کرد، حتی برای کوچک‌تر کردن حجم exe.
           "--nofollow-import-to=torch.utils.tensorboard"
           "--nofollow-import-to=torch.testing"
           "--include-data-files=yolov8n.pt=yolov8n.pt"
