@@ -9,6 +9,11 @@ faces/*.jpg
 faces/*.png
 !faces/.gitkeep
 
+# پایگاه‌داده و تصاویرِ گزارش‌های دائمی (report_store.py) - داده‌ی محلیِ
+# هر سیستم است، نه چیزی که باید روی گیت‌هاب باشد.
+reports.db
+report_images/
+
 # فایل‌های پایتون
 __pycache__/
 *.pyc

@@ -27,6 +27,8 @@ try:
 except ImportError:
     NVRWebViewDialog, _WEBENGINE_AVAILABLE = None, False
 from face_library_dialog import FaceLibraryDialog
+from report_store import report_store
+from reports_dialog import ReportsDialog
 from device_detect import DeviceDetectThread
 
 # بهینه‌سازی برای سیستم‌های ضعیف (رم کم / بدون کارت گرافیک):
@@ -379,6 +381,14 @@ class CameraSlotWidget(QWidget):
         self._detector_available = None
         self._detector_error = ""
 
+        # رفع درخواست: ثبت دائمیِ تاریخچه‌ی شمارش نفرات (report_store.py).
+        # فقط وقتی عدد نسبت به آخرین باری که ثبت شد تغییر کند لاگ می‌شود
+        # (نه هر فریم/هر چند فریم که people_count_signal شلیک می‌شود) تا
+        # حجم گزارش منطقی بماند؛ None یعنی هنوز هیچ عددی برای این خانه لاگ
+        # نشده (بعد از هر start() تازه دوباره None می‌شود - رجوع کنید به
+        # start() پایین‌تر).
+        self._last_logged_count = None
+
         self.setMinimumSize(140, 110)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -642,6 +652,14 @@ class CameraSlotWidget(QWidget):
         # CameraStreamThread.run().
         self.people_count_label.setText(f"👤 {count} نفر")
 
+        # رفع درخواست: ثبت دائمی تاریخچه‌ی شمارش نفرات با ساعت/تاریخ روی
+        # سیستمی که برنامه رویش اجراست (report_store.py) - فقط وقتی عدد
+        # واقعاً نسبت به آخرین ثبت تغییر کرده باشد (وگرنه با نرخ فریم/چند
+        # فریمِ people_count_signal، دیتابیس بی‌دلیل غرق می‌شد).
+        if self.cam is not None and count != self._last_logged_count:
+            self._last_logged_count = count
+            report_store.log_person_count(self.cam.get("name", ""), count)
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start_pos = event.position().toPoint()
@@ -726,6 +744,7 @@ class CameraSlotWidget(QWidget):
         self.stream_thread.people_count_signal.connect(self.on_people_count)
         self.stream_thread.region_entered.connect(self._on_region_entered)
         self.stream_thread.person_detector_status_signal.connect(self._on_detector_status)
+        self._last_logged_count = None
         # با هر بازِ جدید (دوربین تازه در همین خانه)، وضعیت تشخیص شخص قبلی
         # (اگر مربوط به دوربین قبلی این خانه بوده) پاک می‌شود تا وضعیت
         # واقعی دوربین جدید (بعد از اولین دور تشخیصش) دوباره از صفر تعیین
@@ -1233,6 +1252,17 @@ class MainWindow(QMainWindow):
         face_layout.addWidget(self.face_library_btn)
         face_group.setLayout(face_layout)
         left_panel.addWidget(face_group)
+
+        # بخش گزارش‌ها: تاریخچه‌ی دائمیِ ثبت‌شده (شمارش نفرات، ورود به
+        # محدوده، چهره‌ی شناخته‌شده/تعریف‌نشده) - رجوع کنید به
+        # report_store.py و reports_dialog.py.
+        reports_group = QGroupBox("گزارش‌ها")
+        reports_layout = QVBoxLayout()
+        self.reports_btn = QPushButton("📊 مشاهده و خروجی گزارش‌ها")
+        self.reports_btn.clicked.connect(self.open_reports)
+        reports_layout.addWidget(self.reports_btn)
+        reports_group.setLayout(reports_layout)
+        left_panel.addWidget(reports_group)
         left_panel.addStretch()
 
         # ------------------------------------------------ ستون میانی: شبکه‌ی
@@ -1520,6 +1550,9 @@ class MainWindow(QMainWindow):
         item = QListWidgetItem(text)
         item.setForeground(QColor("#e74c3c"))
         self.face_panel_list.insertItem(0, item)
+        # رفع درخواست: علاوه بر نمایش موقت در همین پنل، ثبت دائمی روی سیستم
+        # (report_store.py) - قابل جست‌وجو/خروجی از دیالوگ «گزارش‌ها».
+        report_store.log_region_alert(camera_name, number, name)
         while self.face_panel_list.count() > 300:
             self.face_panel_list.takeItem(self.face_panel_list.count() - 1)
 
@@ -2077,6 +2110,10 @@ class MainWindow(QMainWindow):
         dialog = FaceLibraryDialog(self.face_engine, self.get_active_camera_frame, self)
         dialog.exec()
 
+    def open_reports(self):
+        dialog = ReportsDialog(report_store, self)
+        dialog.exec()
+
     def on_face_event(self, camera_name, person, crop_frame):
         """برای هر چهره‌ای که هر یک از دوربین‌ها ببیند (شناخته‌شده یا
         تعریف‌نشده) فراخوانی می‌شود و یک ردیف جدید - با تصویر برش‌خورده‌ی
@@ -2093,6 +2130,10 @@ class MainWindow(QMainWindow):
         if pixmap is not None:
             item.setIcon(QIcon(pixmap))
         item.setForeground(Qt.GlobalColor.green if person else Qt.GlobalColor.red)
+
+        # رفع درخواست: علاوه بر نمایش موقت در همین پنل، ثبت دائمی (با
+        # ساعت/تاریخ کامل و همین تصویر برش‌خورده) روی سیستم (report_store.py).
+        report_store.log_face_event(camera_name, person, crop_frame)
 
         self.face_panel_list.insertItem(0, item)
         # جلوگیری از رشد بی‌حد پنل در نشست‌های طولانی.
