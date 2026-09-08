@@ -12,13 +12,13 @@ from PyQt6.QtWidgets import (
     QGroupBox, QMenu, QTreeWidget, QTreeWidgetItem, QInputDialog, QDialog,
     QGridLayout, QComboBox, QScrollArea, QSizePolicy, QSplitter
 )
-from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon, QDrag, QFontMetrics, QPainter, QPen, QColor
+from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon, QDrag, QFontMetrics, QPainter, QPen, QColor, QPolygonF
 from PyQt6.QtCore import Qt, QSize, QMimeData, QPointF, QRectF, QTimer, pyqtSignal
 
 from face_engine import FaceEngine
 from scanner import NetworkScanThread
 from camera_store import CameraStore
-from camera_stream import CameraStreamThread
+from camera_stream import CameraStreamThread, region_to_polygon
 from add_camera_dialog import AddCameraDialog
 from add_nvr_dialog import AddNVRDialog
 from nvr_scanner import DirectCameraProbeThread
@@ -87,11 +87,15 @@ def _play_alarm_beep():
 
 
 class VideoDisplayLabel(QLabel):
-    """رفع درخواست: امکان رسم «محدوده‌ی هشدار» (یک مستطیل) با کشیدن (drag)
-    ماوس، مستقیماً روی تصویر زنده‌ی یک دوربین - جایگزین نسخه‌ی قبلی که فقط
-    امکان رسم یک خط فرضی عبور را می‌داد. به‌جای تشخیص «عبور از خط»، حالا
-    ورود شخص به داخل مستطیل تعریف‌شده تشخیص داده می‌شود (رجوع کنید به
-    camera_stream._PersonRegionTracker).
+    """رفع درخواست: امکان رسم «محدوده‌ی هشدار» به‌شکل یک چندضلعیِ دلخواه
+    (Polygon) روی زمین/تصویر زنده‌ی هر دوربین - جایگزین نسخه‌ی قبلی که فقط
+    یک مستطیل با کشیدن (drag) ماوس رسم می‌کرد. کاربر با کلیک‌های متوالی روی
+    نقاط دلخواه (مثلاً گوشه‌های واقعی یک اتاق یا راهرو، که لزوماً مستطیل
+    نیستند) محدوده را می‌سازد؛ برنامه نقاط را به‌ترتیب به هم وصل می‌کند.
+    برای بستن محدوده: یا روی همان نقطه‌ی اول (با یک دایره‌ی متمایز مشخص
+    شده) کلیک کنید، یا دابل‌کلیک کنید (حداقل به ۳ نقطه نیاز است). با کلیک
+    راست، رسمِ در حال انجام (نقاط هنوز بسته‌نشده) بدون تاثیر روی
+    محدوده‌های قبلاً تایید‌شده لغو می‌شود.
 
     منطق مختصات: چون setPixmap با KeepAspectRatio یک pixmap کوچک‌تر یا
     مساوی اندازه‌ی خودِ لیبل تولید می‌کند و QLabel آن را وسط‌چین (AlignCenter)
@@ -101,31 +105,43 @@ class VideoDisplayLabel(QLabel):
     اندازه‌ی لیبل) تبدیل و نگه‌داشته می‌شوند تا با تغییر اندازه‌ی پنجره/شبکه
     هم موقعیت محدوده‌ها درست بماند."""
 
-    region_drawn = pyqtSignal(tuple)  # (x1,y1,x2,y2) نرمال‌شده‌ی 0..1
+    region_drawn = pyqtSignal(list)  # لیستی از (x,y) نرمال‌شده‌ی 0..1، حداقل ۳ نقطه
+
+    # فاصله‌ی (به پیکسلِ لیبل) که کلیک نزدیک نقطه‌ی اول را «بستن محدوده»
+    # حساب می‌کنیم - نه یک نقطه‌ی تازه.
+    _CLOSE_THRESHOLD_PX = 14.0
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.draw_mode = False
-        self._drag_start = None
-        self._drag_current = None
-        self._pending_norm_rect = None  # (x1,y1,x2,y2) نرمال - در انتظار نام‌گذاری/تایید کاربر
+        # نقاطِ نرمال (0..1) محدوده‌ای که کاربر همین الان دارد با کلیک‌های
+        # متوالی می‌سازد و هنوز نبسته (تایید نکرده) است.
+        self._draw_points = []
+        # موقعیت فعلی ماوس (نرمال) - فقط برای رسم خط‌چینِ پیش‌نمایش از آخرین
+        # نقطه‌ی کلیک‌شده تا زیر نشانگر ماوس.
+        self._hover_norm = None
         # رفع درخواست: برخلاف خط فرضیِ قدیمی (که بعد از تایید دیگر روی
         # تصویر دیده نمی‌شد)، محدوده‌های تایید‌شده همیشه با یک قاب نازک و
         # برچسبِ شماره/نام‌شان روی تصویر نمایش داده می‌شوند - چون می‌توانند
         # چندتایی و نام‌دار باشند و کاربر باید همیشه مرزشان را ببیند.
-        self._confirmed_regions = []  # لیستی از دیکشنری {"number","name","rect"}
+        self._confirmed_regions = []  # لیستی از دیکشنری {"number","name","points"}
+        # محدوده‌ای که تازه بسته شده ولی هنوز کاربر نامش را تایید نکرده -
+        # برای پیش‌نمایش با خط‌چین زرد (رجوع کنید به set_pending_points_norm).
+        self._pending_points = None
+        self.setMouseTracking(True)
 
     def set_draw_mode(self, enabled: bool):
         self.draw_mode = bool(enabled)
         self.setCursor(Qt.CursorShape.CrossCursor if self.draw_mode else Qt.CursorShape.ArrowCursor)
-        self._drag_start = None
-        self._drag_current = None
+        self._draw_points = []
+        self._hover_norm = None
         self.update()
 
-    def set_pending_rect_norm(self, norm_rect):
-        """مستطیل «در انتظار نام‌گذاری/تایید» را برای پیش‌نمایش تنظیم
-        می‌کند؛ None یعنی هیچ مستطیلی در انتظار تایید نیست."""
-        self._pending_norm_rect = tuple(norm_rect) if norm_rect is not None else None
+    def set_pending_points_norm(self, points):
+        """محدوده‌ی «بسته‌شده ولی هنوز تایید/نام‌گذاری نشده» را برای
+        پیش‌نمایش تنظیم می‌کند؛ None یعنی هیچ محدوده‌ای در انتظار تایید
+        نیست."""
+        self._pending_points = [tuple(p) for p in points] if points else None
         self.update()
 
     def set_confirmed_regions(self, regions):
@@ -159,34 +175,73 @@ class VideoDisplayLabel(QLabel):
             return None
         return QPointF(rect.x() + norm_point[0] * rect.width(), rect.y() + norm_point[1] * rect.height())
 
-    def mousePressEvent(self, event):
-        if self.draw_mode and event.button() == Qt.MouseButton.LeftButton and self._frame_rect() is not None:
-            self._drag_start = event.position()
-            self._drag_current = self._drag_start
+    def _finish_polygon(self):
+        """رفع درخواست: بستن محدوده‌ی در حال رسم (حداقل ۳ نقطه لازم است) و
+        ارسال سیگنال region_drawn با همان نقاط - یک‌بار، چه از راه کلیک
+        نزدیک نقطه‌ی اول چه از راه دابل‌کلیک."""
+        if len(self._draw_points) >= 3:
+            points = list(self._draw_points)
+            self._draw_points = []
+            self._hover_norm = None
             self.update()
-            return
+            self.region_drawn.emit(points)
+
+    def mousePressEvent(self, event):
+        if self.draw_mode and self._frame_rect() is not None:
+            if event.button() == Qt.MouseButton.RightButton:
+                # لغو رسمِ در حال انجام (نقاط هنوز بسته‌نشده)؛ محدوده‌های
+                # قبلاً تایید‌شده دست‌نخورده می‌مانند.
+                self._draw_points = []
+                self._hover_norm = None
+                self.update()
+                return
+            if event.button() == Qt.MouseButton.LeftButton:
+                norm = self._widget_to_norm(event.position())
+                if norm is None:
+                    return
+                # اگر با شروع یک محدوده‌ی تازه، پیش‌نمایش محدوده‌ی «بسته‌شده
+                # ولی هنوز تاییدنشده‌»ی قبلی روی تصویر معلق مانده بود، همین
+                # الان پاکش می‌کنیم - وگرنه دو پیش‌نمایش هم‌زمان گیج‌کننده
+                # می‌شود (دقیقاً همان رفتار نسخه‌ی قبلیِ مستطیلی: شروع یک drag
+                # تازه، پیش‌نمایش مستطیل معلقِ قبلی را از اولویت رسم می‌انداخت).
+                if not self._draw_points:
+                    self._pending_points = None
+                # اگر حداقل ۳ نقطه داریم و کلیک نزدیک نقطه‌ی اول است، محدوده
+                # بسته می‌شود؛ در غیر این صورت یک نقطه‌ی تازه اضافه می‌شود.
+                if len(self._draw_points) >= 3:
+                    first_widget = self._norm_to_widget(self._draw_points[0])
+                    if first_widget is not None and (event.position() - first_widget).manhattanLength() <= self._CLOSE_THRESHOLD_PX:
+                        self._finish_polygon()
+                        return
+                self._draw_points.append(norm)
+                self.update()
+                return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        if self.draw_mode and self._drag_start is not None:
-            self._drag_current = event.position()
+        if self.draw_mode and self._draw_points:
+            self._hover_norm = self._widget_to_norm(event.position())
             self.update()
             return
         super().mouseMoveEvent(event)
 
-    def mouseReleaseEvent(self, event):
-        if self.draw_mode and self._drag_start is not None:
-            start_w, end_w = self._drag_start, event.position()
-            self._drag_start = None
-            self._drag_current = None
-            if (end_w - start_w).manhattanLength() >= 12:
-                p1 = self._widget_to_norm(start_w)
-                p2 = self._widget_to_norm(end_w)
-                if p1 is not None and p2 is not None:
-                    self.region_drawn.emit((p1[0], p1[1], p2[0], p2[1]))
-            self.update()
+    def mouseDoubleClickEvent(self, event):
+        if self.draw_mode and event.button() == Qt.MouseButton.LeftButton and len(self._draw_points) >= 3:
+            self._finish_polygon()
             return
-        super().mouseReleaseEvent(event)
+        super().mouseDoubleClickEvent(event)
+
+    def _region_polygon_widget(self, region):
+        """نقاط یک محدوده (چه جدید با \"points\" چه قدیمیِ \"rect\") را به
+        مختصات پیکسلِ لیبل (برای رسم) تبدیل می‌کند."""
+        polygon_norm = region_to_polygon(region) if isinstance(region, dict) else list(region)
+        pts = []
+        for p in polygon_norm:
+            wp = self._norm_to_widget(p)
+            if wp is None:
+                return None
+            pts.append(wp)
+        return pts if len(pts) >= 3 else None
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -195,46 +250,58 @@ class VideoDisplayLabel(QLabel):
         # محدوده‌های تایید‌شده - همیشه با قاب آبی نازک و برچسب شماره/نام‌شان
         # رسم می‌شوند (رجوع کنید به توضیح بالای کلاس).
         for region in self._confirmed_regions:
-            rect = region.get("rect")
-            if not rect:
+            pts = self._region_polygon_widget(region)
+            if pts is None:
                 continue
-            p1 = self._norm_to_widget((rect[0], rect[1]))
-            p2 = self._norm_to_widget((rect[2], rect[3]))
-            if p1 is None or p2 is None:
-                continue
-            box = QRectF(p1, p2).normalized()
             pen = QPen(QColor("#3498db"))
             pen.setWidth(2)
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRect(box)
+            painter.drawPolygon(QPolygonF(pts))
             label = f"{region.get('number', '')}"
             if region.get("name"):
                 label += f" / {region['name']}"
             painter.setPen(QPen(QColor("#ffffff")))
-            painter.drawText(box.topLeft() + QPointF(4, 14), label)
+            painter.drawText(pts[0] + QPointF(4, 14), label)
 
-        # مستطیل در حال کشیدن (drag) یا در انتظار تایید - با خط‌چین زرد، برای
-        # تمایز از محدوده‌های نهایی‌شده.
-        if self._drag_start is not None and self._drag_current is not None:
-            p1, p2 = self._drag_start, self._drag_current
-        elif self._pending_norm_rect is not None:
-            r = self._pending_norm_rect
-            p1 = self._norm_to_widget((r[0], r[1]))
-            p2 = self._norm_to_widget((r[2], r[3]))
-            if p1 is None or p2 is None:
-                painter.end()
-                return
-        else:
-            painter.end()
-            return
-
-        pen = QPen(QColor("#f1c40f"))
-        pen.setWidth(2)
-        pen.setStyle(Qt.PenStyle.DashLine)
-        painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRect(QRectF(p1, p2).normalized())
+        # اولویت با «رسمِ در حال انجام» (نقاطی که همین الان کاربر دارد
+        # کلیک می‌کند) است؛ اگر خالی بود، پیش‌نمایش محدوده‌ی تازه‌بسته‌شده
+        # ولی هنوز تاییدنشده نشان داده می‌شود - دقیقاً همان اولویت نسخه‌ی
+        # قبلیِ مستطیلی (drag در حال انجام روی پیش‌نمایشِ معلق اولویت داشت).
+        if self._draw_points:
+            pen = QPen(QColor("#f1c40f"))
+            pen.setWidth(2)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            widget_pts = [self._norm_to_widget(p) for p in self._draw_points]
+            # یال‌های تاکنون کلیک‌شده (باز - هنوز بسته نشده)
+            for i in range(len(widget_pts) - 1):
+                painter.drawLine(widget_pts[i], widget_pts[i + 1])
+            # خط‌چینِ پیش‌نمایش از آخرین نقطه تا زیر نشانگر ماوس
+            if self._hover_norm is not None:
+                hover_pt = self._norm_to_widget(self._hover_norm)
+                if hover_pt is not None:
+                    dash_pen = QPen(QColor("#f1c40f"))
+                    dash_pen.setWidth(1)
+                    dash_pen.setStyle(Qt.PenStyle.DashLine)
+                    painter.setPen(dash_pen)
+                    painter.drawLine(widget_pts[-1], hover_pt)
+                    painter.setPen(pen)
+            # دایره‌ی روی هر نقطه؛ نقطه‌ی اول بزرگ‌تر و متمایز - همان‌جایی
+            # که کلیک روی آن محدوده را می‌بندد.
+            for i, wp in enumerate(widget_pts):
+                r = 5.0 if i == 0 else 3.0
+                painter.setBrush(QColor("#f1c40f") if i == 0 else QColor("#1e1e1e"))
+                painter.drawEllipse(wp, r, r)
+        elif self._pending_points is not None:
+            pts = self._region_polygon_widget({"points": self._pending_points})
+            if pts is not None:
+                pen = QPen(QColor("#f1c40f"))
+                pen.setWidth(2)
+                pen.setStyle(Qt.PenStyle.DashLine)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawPolygon(QPolygonF(pts))
         painter.end()
 
 
@@ -286,14 +353,16 @@ class CameraSlotWidget(QWidget):
         self.setAcceptDrops(True)
 
         # رفع درخواست: محدوده‌های هشدار (Zone) برای این خانه - جایگزین خط
-        # فرضی عبور قبلی. کاربر می‌تواند به تعداد دلخواه محدوده‌ی مستطیلی
-        # رسم و نام‌گذاری کند (مثلاً «محدوده ۱ / اتاق سرور»)؛ با ورود هرکسی
-        # به هرکدام، کادر این خانه قرمز می‌شود و آلارم صوتی پخش می‌شود.
-        #   pending_rect: مستطیلی که تازه رسم شده ولی هنوز کاربر نامش را
-        #       تایید نکرده - با خط‌چین زرد روی تصویر دیده می‌شود.
+        # فرضی عبور قبلی. کاربر می‌تواند به تعداد دلخواه محدوده‌ی چندضلعی
+        # (نقاط دلخواه روی زمین، نه فقط مستطیل) رسم و نام‌گذاری کند (مثلاً
+        # «محدوده ۱ / اتاق سرور»)؛ با ورود هرکسی به هرکدام، کادر این خانه
+        # قرمز می‌شود و آلارم صوتی پخش می‌شود.
+        #   pending_points: نقاطِ محدوده‌ای که تازه با کلیک‌های متوالی بسته
+        #       شده ولی هنوز کاربر نامش را تایید نکرده - با خط‌چین زرد روی
+        #       تصویر دیده می‌شود. None یعنی چیزی در انتظار تایید نیست.
         #   regions: لیست محدوده‌های نهایی/فعال؛ هر کدام
-        #       {"id","number","name","rect"} - همیشه روی تصویر دیده می‌شوند.
-        self.pending_rect = None
+        #       {"id","number","name","points"} - همیشه روی تصویر دیده می‌شوند.
+        self.pending_points = None
         self.regions = []
         self._alarm_active = False
         self._alarm_timer = QTimer(self)
@@ -402,32 +471,32 @@ class CameraSlotWidget(QWidget):
         return self.video_label.draw_mode
 
     def has_pending_region(self) -> bool:
-        return self.pending_rect is not None
+        return self.pending_points is not None
 
     def has_any_region(self) -> bool:
-        return bool(self.regions) or self.pending_rect is not None
+        return bool(self.regions) or self.pending_points is not None
 
-    def _on_region_drawn(self, norm_rect):
-        self.pending_rect = tuple(norm_rect)
-        self.video_label.set_pending_rect_norm(self.pending_rect)
+    def _on_region_drawn(self, norm_points):
+        self.pending_points = list(norm_points)
+        self.video_label.set_pending_points_norm(self.pending_points)
         self.tripwire_changed.emit()
 
     def confirm_region(self, name: str):
-        """رفع درخواست: تایید و نام‌گذاری محدوده‌ی تازه‌رسم‌شده. محدوده به
+        """رفع درخواست: تایید و نام‌گذاری محدوده‌ی تازه‌بسته‌شده. محدوده به
         لیست محدوده‌های فعال این خانه اضافه و بلافاصله روی ترد پخش برای
         تشخیص ورود فعال می‌شود. دیکشنری محدوده‌ی تازه (برای ذخیره در
-        camera_store) یا None برمی‌گرداند اگر مستطیلی در انتظار تایید نبود."""
-        if self.pending_rect is None:
+        camera_store) یا None برمی‌گرداند اگر نقاطی در انتظار تایید نبود."""
+        if self.pending_points is None:
             return None
         region = {
             "id": str(uuid.uuid4()),
             "number": len(self.regions) + 1,
             "name": (name or "").strip(),
-            "rect": list(self.pending_rect),
+            "points": list(self.pending_points),
         }
         self.regions.append(region)
-        self.pending_rect = None
-        self.video_label.set_pending_rect_norm(None)
+        self.pending_points = None
+        self.video_label.set_pending_points_norm(None)
         self.video_label.set_confirmed_regions(self.regions)
         self.video_label.set_draw_mode(False)
         if self.stream_thread is not None:
@@ -437,10 +506,10 @@ class CameraSlotWidget(QWidget):
         return region
 
     def cancel_pending_region(self):
-        """رفع درخواست: لغو مستطیل در حال رسم/در انتظار نام‌گذاری، بدون
-        هیچ تاثیری روی محدوده‌های قبلاً تایید‌شده."""
-        self.pending_rect = None
-        self.video_label.set_pending_rect_norm(None)
+        """رفع درخواست: لغو نقاط در حال رسم/در انتظار نام‌گذاری، بدون هیچ
+        تاثیری روی محدوده‌های قبلاً تایید‌شده."""
+        self.pending_points = None
+        self.video_label.set_pending_points_norm(None)
         self.video_label.set_draw_mode(False)
         self.tripwire_changed.emit()
 
@@ -719,9 +788,9 @@ class CameraSlotWidget(QWidget):
         # پاک‌کردن کامل وضعیت محدوده‌های هشدار/آلارم این خانه (دوربین بعدی
         # که در این خانه باز شود، محدوده‌های خودش را - اگر داشته باشد -
         # جداگانه از cameras.json بارگذاری می‌کند).
-        self.pending_rect = None
+        self.pending_points = None
         self.regions = []
-        self.video_label.set_pending_rect_norm(None)
+        self.video_label.set_pending_points_norm(None)
         self.video_label.set_confirmed_regions([])
         self.video_label.set_draw_mode(False)
         self._clear_alarm()
@@ -1208,20 +1277,24 @@ class MainWindow(QMainWindow):
 
         # رفع درخواست: محدوده‌ی هشدار (Zone) - جایگزین خط فرضی عبور قبلی.
         # کاربر ابتدا یک دوربین را از شبکه انتخاب می‌کند (کلیک روی خانه‌اش)،
-        # سپس این دکمه را می‌زند تا بتواند با کشیدن (drag) ماوس روی تصویر
-        # همان دوربین یک محدوده‌ی مستطیلی بکشد. «تایید و نام‌گذاری» یک نام
-        # (مثلاً اسم اتاق) از کاربر می‌پرسد و محدوده را به لیست محدوده‌های
-        # فعال آن دوربین اضافه می‌کند (از آن پس با ورود هرکسی به آن، کادر
-        # دوربین قرمز و آلارم پخش می‌شود)؛ «لغو رسم» فقط مستطیل در انتظار
-        # نام‌گذاری را پاک می‌کند و «مدیریت محدوده‌ها» امکان مشاهده/حذف
-        # محدوده‌های از قبل تایید‌شده را می‌دهد. برخلاف خط قبلی، هر دوربین
-        # می‌تواند هم‌زمان چند محدوده‌ی نام‌دار داشته باشد.
+        # سپس این دکمه را می‌زند تا بتواند با کلیک‌های متوالی روی نقاط دلخواه
+        # زمین/تصویر همان دوربین یک محدوده‌ی چندضلعی (نه لزوماً مستطیل) بسازد.
+        # «تایید و نام‌گذاری» یک نام (مثلاً اسم اتاق) از کاربر می‌پرسد و
+        # محدوده را به لیست محدوده‌های فعال آن دوربین اضافه می‌کند (از آن پس
+        # با ورود هرکسی به آن، کادر دوربین قرمز و آلارم پخش می‌شود)؛ «لغو
+        # رسم» فقط نقاط در انتظار نام‌گذاری را پاک می‌کند و «مدیریت
+        # محدوده‌ها» امکان مشاهده/حذف محدوده‌های از قبل تایید‌شده را می‌دهد.
+        # هر دوربین می‌تواند هم‌زمان چند محدوده‌ی نام‌دار داشته باشد.
         self.draw_line_btn = QPushButton("🖊 رسم محدوده هشدار")
         self.draw_line_btn.setCheckable(True)
         self.draw_line_btn.setToolTip(
             "۱) یک دوربین را از شبکه انتخاب کنید (کلیک روی خانه‌اش)\n"
             "۲) این دکمه را بزنید\n"
-            "۳) با کشیدن (drag) ماوس روی تصویر همان دوربین یک محدوده (مستطیل) بکشید"
+            "۳) روی تصویر همان دوربین، به‌ترتیب روی نقاط زمین/اتاق کلیک کنید "
+            "(برنامه نقاط را به هم وصل می‌کند)\n"
+            "۴) برای بستن محدوده: روی نقطه‌ی اول (دایره‌ی بزرگ‌تر) کلیک کنید، "
+            "یا دابل‌کلیک کنید (حداقل ۳ نقطه لازم است)\n"
+            "کلیک راست: لغو رسمِ در حال انجام"
         )
         self.draw_line_btn.setStyleSheet(
             "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
@@ -1244,7 +1317,7 @@ class MainWindow(QMainWindow):
 
         self.redraw_line_btn = QPushButton("❌ لغو رسم")
         self.redraw_line_btn.setEnabled(False)
-        self.redraw_line_btn.setToolTip("مستطیل در حال رسم/در انتظار نام‌گذاری را لغو می‌کند؛ محدوده‌های قبلاً تایید‌شده حذف نمی‌شوند.")
+        self.redraw_line_btn.setToolTip("نقاط در حال رسم/در انتظار نام‌گذاری را لغو می‌کند؛ محدوده‌های قبلاً تایید‌شده حذف نمی‌شوند.")
         self.redraw_line_btn.setStyleSheet(
             "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
         )

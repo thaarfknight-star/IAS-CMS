@@ -155,18 +155,46 @@ class _FaceTracker:
 # ---------------------------------------------------------------------------
 # محدوده‌ی هشدار (Zone/ROI) و تشخیص ورود شخص به آن
 # ---------------------------------------------------------------------------
-# این بخش جایگزین نسخه‌ی قبلی («خط فرضی عبور») شده است: به‌جای یک خط، کاربر
-# با drag کردن روی تصویر یک یا چند محدوده‌ی مستطیلی و نام‌دار (مثلاً «محدوده
-# ۱ / اتاق سرور») تعریف می‌کند و با ورود هر شخصی به هرکدام از آن‌ها هشدار
-# صادر می‌شود.
-def _point_in_rect(point, rect_px):
-    """آیا نقطه‌ی point=(x,y) داخل مستطیل rect_px=(x1,y1,x2,y2) است؟ ترتیب
-    گوشه‌ها مهم نیست (هر کدام می‌تواند بالا/پایین یا چپ/راست باشد)."""
+# رفع درخواست: قبلاً کاربر با drag کردن یک مستطیل می‌کشید. حالا به‌جای آن،
+# کاربر با کلیک‌های متوالی روی نقاط دلخواه (مثلاً گوشه‌های واقعی زمین/اتاق در
+# تصویر دوربین - که لزوماً مستطیل نیستند، مثلاً یک راهرو کج یا فضای چندضلعی)
+# یک چندضلعی (Polygon) دلخواه تعریف می‌کند؛ برنامه نقاط را به‌ترتیب به هم وصل
+# می‌کند. به همین دلیل، هر منطقه (region) دیگر یک "rect" چهارگوشه‌ی ساده
+# نیست، بلکه یک "points": [[x,y], [x,y], ...] (حداقل ۳ نقطه، نرمال‌شده‌ی
+# 0..1) است. برای سازگاری با محدوده‌های قدیمی‌ای که قبلاً به‌صورت مستطیل
+# ("rect": [x1,y1,x2,y2]) ذخیره شده‌اند، region_to_polygon همچنان از آن‌ها
+# پشتیبانی می‌کند (با تبدیل به همان ۴ گوشه به‌صورت چندضلعی).
+def region_to_polygon(region):
+    """نقاط چندضلعیِ نرمال‌شده‌ی (0..1) یک region را برمی‌گرداند - چه به شکل
+    جدید ("points") ذخیره شده باشد چه به شکل قدیمیِ مستطیلی ("rect"،
+    برای فایل‌های ذخیره‌شده‌ی نسخه‌های قبلی برنامه)."""
+    points = region.get("points")
+    if points:
+        return [(float(p[0]), float(p[1])) for p in points]
+    rect = region.get("rect")
+    if rect:
+        x1, y1, x2, y2 = rect
+        return [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
+    return []
+
+
+def _point_in_polygon(point, polygon_px):
+    """آیا نقطه‌ی point=(x,y) داخل چندضلعیِ polygon_px (لیستی از (x,y) به
+    پیکسل، حداقل ۳ نقطه) است؟ الگوریتم استاندارد «پرتوافکنی» (ray casting):
+    از نقطه یک پرتوی افقی به راست رسم می‌کنیم و تعداد برخوردش با یال‌های
+    چندضلعی را می‌شماریم - فرد بودن یعنی داخل است. برخلاف تست مستطیلی قبلی،
+    این الگوریتم برای هر چندضلعیِ دلخواه (نه فقط مستطیل) درست کار می‌کند."""
+    if len(polygon_px) < 3:
+        return False
     x, y = point
-    x1, y1, x2, y2 = rect_px
-    left, right = (x1, x2) if x1 <= x2 else (x2, x1)
-    top, bottom = (y1, y2) if y1 <= y2 else (y2, y1)
-    return left <= x <= right and top <= y <= bottom
+    inside = False
+    n = len(polygon_px)
+    x1, y1 = polygon_px[-1]
+    for x2, y2 in polygon_px:
+        if ((y1 > y) != (y2 > y)) and (x < (x2 - x1) * (y - y1) / (y2 - y1 + 1e-9) + x1):
+            inside = not inside
+        x1, y1 = x2, y2
+    return inside
 
 
 class _PersonRegionTracker:
@@ -187,8 +215,8 @@ class _PersonRegionTracker:
 
     def update(self, boxes, regions, frame_w, frame_h):
         """boxes: خروجی PersonDetector.detect (پیکسل خام، (top,right,bottom,left)).
-        regions: لیستی از دیکشنری {"id","number","name","rect":(x1,y1,x2,y2)}
-        که rect نرمال‌شده‌ی 0..1 (نسبت به عرض/ارتفاع فریم خام) است.
+        regions: لیستی از دیکشنری {"id","number","name","points"} (یا قدیمی
+        "rect") که نقاطش نرمال‌شده‌ی 0..1 (نسبت به عرض/ارتفاع فریم خام) است.
         خروجی: لیستی از (number, name) برای هر «ورود تازه» در همین دور."""
         entered = []
         unmatched = list(self.tracks)
@@ -196,11 +224,11 @@ class _PersonRegionTracker:
 
         regions_px = []
         for r in (regions or []):
-            x1, y1, x2, y2 = r["rect"]
-            regions_px.append((
-                r.get("id"), r.get("number"), r.get("name", ""),
-                (x1 * frame_w, y1 * frame_h, x2 * frame_w, y2 * frame_h),
-            ))
+            polygon_norm = region_to_polygon(r)
+            if len(polygon_norm) < 3:
+                continue
+            polygon_px = [(px * frame_w, py * frame_h) for px, py in polygon_norm]
+            regions_px.append((r.get("id"), r.get("number"), r.get("name", ""), polygon_px))
 
         for box in boxes:
             top, right, bottom, left = box
@@ -219,8 +247,8 @@ class _PersonRegionTracker:
                 prev_inside = best["inside"]
 
             cur_inside = set()
-            for region_id, number, name, rect_px in regions_px:
-                if _point_in_rect(center, rect_px):
+            for region_id, number, name, polygon_px in regions_px:
+                if _point_in_polygon(center, polygon_px):
                     cur_inside.add(region_id)
                     if region_id not in prev_inside:
                         entered.append((number, name))
