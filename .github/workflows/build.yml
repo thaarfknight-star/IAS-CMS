@@ -122,15 +122,15 @@ jobs:
         Write-Host "Build mode: $(if ($isQuick) { 'QUICK TEST (standalone)' } else { 'FULL (onefile)' })"
 
         # کاهش فشار روی رم: کامپایل هم‌زمانِ torch + ultralytics + dlib +
-        # PyQt6 با تعداد کامل هسته‌ها (NUMBER_OF_PROCESSORS) روی رانرهای
-        # windows-latest (که رم محدودی دارند) می‌تواند gcc را وسط کار با
-        # کمبود حافظه (OOM) از کار بیندازد - دقیقاً یک الگوی رایج برای
-        # شکست‌های بی‌پیام و زودهنگام. --jobs را به حداکثر ۴ محدود می‌کنیم
-        # و --low-memory را هم فعال می‌کنیم تا خودِ نویتکا مصرف حافظه‌اش را
-        # پایین نگه دارد.
-        $cpuCount = [int]$Env:NUMBER_OF_PROCESSORS
-        $jobCount = [Math]::Min($cpuCount, 4)
-        Write-Host "CPU cores: $cpuCount -> using --jobs=$jobCount"
+        # PyQt6 روی رانرهای windows-latest (که رم محدودی دارند) می‌تواند
+        # gcc را وسط کار با کمبود حافظه (OOM) از کار بیندازد - دقیقاً یک
+        # الگوی رایج برای شکست‌های بی‌پیام و زودهنگام. --low-memory را
+        # فعال می‌کنیم تا خودِ نویتکا مصرف حافظه‌اش را پایین نگه دارد.
+        # نکته‌ی مهم: --low-memory به‌صورت ضمنی --jobs=1 را هم اعمال
+        # می‌کند (طبق مستندات خودِ Nuitka)، پس قبلاً گذاشتن هم‌زمانِ
+        # --jobs=4 و --low-memory هیچ اثری نداشت و فقط گیج‌کننده بود -
+        # حذف شد تا رفتار واقعی (jobs=1) با چیزی که در لاگ دیده می‌شود
+        # یکی باشد.
 
         # به‌جای دستور تک‌خطیِ طولانی با ادامه‌خط بک‌تیک (`) - که با هر
         # فاصله‌ی نامرئی بعدش کل خط بعدی را جدا می‌کند و همین می‌تواند
@@ -174,10 +174,27 @@ jobs:
           # غیرفعال بماند.
 
           "--include-data-files=yolov8n.pt=yolov8n.pt"
+
+          # نکته‌ی مهم: این سه ماژول جداگانه از exclude‌های قبلی (torch.onnx،
+          # torch.distributed و ...) هستند و به همان دلیل حذف نشدند - این‌ها
+          # فقط جدول‌های عددیِ خودکار-تولیدشده‌ی sympy برای حل معادلات درجه‌ی
+          # ۵ و محاسبه‌ی گروه‌های گالوا هستند (sympy خودش مستقیم در
+          # requirements.txt نیست؛ از طریق torch.fx وارد می‌شود). فایل
+          # polyquinticconst.py به‌تنهایی چند مگابایت کد تولیدی است و
+          # کامپایلش با gcc ساعت‌ها طول می‌کشد (همان چیزی که در لاگ با
+          # "Slow C compilation detected... scalability problem" روی
+          # module.sympy.polys.polyquinticconst.o دیده شد). این پروژه هرگز
+          # معادلات درجه‌بالا/گروه گالوا را در مسیر اینفرنس YOLO یا
+          # face_recognition صدا نمی‌زند، پس exclude کردن این زیرماژول‌های
+          # مشخص (نه کل sympy یا کل torch) ریسکی برای کارکرد برنامه ندارد
+          # و ساعت‌ها از زمان build کم می‌کند.
+          "--nofollow-import-to=sympy.polys.polyquinticconst"
+          "--nofollow-import-to=sympy.polys.numberfields.resolvent_lookup"
+          "--nofollow-import-to=sympy.polys.numberfields.galoisgroups"
+
           "--output-dir=dist"
           "--output-filename=CCTV_CMS.exe"
           "--assume-yes-for-downloads"
-          "--jobs=$jobCount"
           "main.py"
         )
 
