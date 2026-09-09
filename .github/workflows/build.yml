@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       quick_test:
-        description: 'بیلد سریع برای تست: standalone (پوشه) بجای onefile (یک exe فشرده) - فقط وقتی دستی (Run workflow) اجرا کنید فعال است'
+        description: 'بیلد سریع برای تست: PyInstaller (چند دقیقه، بدون کامپایل C) بجای Nuitka onefile (چند ساعت) - فقط وقتی دستی (Run workflow) اجرا کنید فعال است'
         type: boolean
         default: true
 
@@ -78,6 +78,9 @@ jobs:
         Write-Host "yolov8n.pt آماده‌ی بسته‌بندی است: $((Get-Item yolov8n.pt).Length) بایت"
 
     - name: Restore Nuitka cache (MinGW64 + ماژول‌های کامپایل‌شده)
+      # روی مسیر quick_test (PyInstaller) اصلاً از Nuitka استفاده نمی‌شود، پس
+      # restore این کش (که می‌تواند چند گیگابایت باشد) فقط وقت تلف می‌کند.
+      if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.quick_test == 'true') }}
       id: nuitka-cache
       uses: actions/cache/restore@v4
       with:
@@ -120,19 +123,51 @@ jobs:
           nuitka-cache-windows-${{ hashFiles('requirements.txt') }}-
           nuitka-cache-windows-
 
-    # رفع درخواست «سریع خروجی بده برای تست»: وقتی این workflow را دستی
-    # (Run workflow) با quick_test=true اجرا کنید، بجای --onefile از
-    # --standalone استفاده می‌شود. --onefile یک مرحله‌ی اضافه (فشرده‌سازی
-    # کل باینری + باز کردن خودکارش در حافظه‌ی موقت هر بار که کاربر اجرا
-    # می‌کند) دارد که برای این حجم (torch+ultralytics+dlib) خودش چند دقیقه
-    # از زمان build را می‌گیرد و اصلاً به سرعت *کامپایل* کمکی نمی‌کند، فقط
-    # مرحله‌ی بسته‌بندی نهایی را کند می‌کند. --standalone همان کامپایل و
-    # همان فایل‌ها را تولید می‌کند اما در یک پوشه (dist/main.dist) رها
-    # می‌شوند، بدون فشرده‌سازی - برای تستِ سریعِ داخلی کافی است، فقط باید
-    # کل پوشه با هم منتقل/اجرا شود، نه یک exe تکی قابل توزیع.
-    # روی push به main (بدون ورودی دستی) رفتار قبلی (onefile کامل) دست
-    # نخورده باقی می‌ماند - یعنی نسخه‌ی نهایی/توزیعی هنوز همان یک exe است.
+    # رفع درخواست «سریع خروجی بده برای تست»: تا اینجا quick_test=true فقط
+    # --standalone به‌جای --onefile می‌داد، اما bottleneck واقعی («کامپایل C»)
+    # در هر دو حالت یکسان و کند بود (Nuitka همیشه به C کامپایل می‌کند، فارغ از
+    # onefile/standalone) - یعنی هیچ‌کدام واقعاً «سریع» نبودند. حالا برای
+    # quick_test از ابزار کاملاً متفاوتی (PyInstaller) استفاده می‌شود که هیچ
+    # کامپایل Cای انجام نمی‌دهد (فقط bytecode پایتون را جمع‌آوری/بسته‌بندی
+    # می‌کند)، پس معمولاً چند دقیقه طول می‌کشد، نه چند ساعت - دقیقاً برای
+    # تستِ سریعِ عملکرد برنامه کافی است. روی push به main (بدون ورودی دستی)
+    # رفتار قبلی (Nuitka کامل با --onefile، باینری واقعی ماشین) دست‌نخورده
+    # باقی می‌ماند - یعنی نسخه‌ی نهایی/توزیعی هنوز همان یک exe کامپایل‌شده است.
+    - name: Build Executable with PyInstaller (quick test only - no C compile)
+      if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.quick_test == 'true' }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        python -m pip install pyinstaller
+        if ($LASTEXITCODE -ne 0) { throw "نصب PyInstaller با کد $LASTEXITCODE شکست خورد." }
+
+        $pyiArgs = @(
+          "--onedir"
+          "--noconfirm"
+          "--name=CCTV_CMS"
+          "--windowed"
+          "--add-data=faces;faces"
+          "--add-data=yolov8n.pt;."
+          "--collect-all=ultralytics"
+          "--collect-all=torch"
+          "--collect-all=torchvision"
+          "--collect-all=face_recognition_models"
+          "--collect-all=cv2"
+          "--distpath=dist"
+          "main.py"
+        )
+
+        Write-Host "PyInstaller command: python -m PyInstaller $($pyiArgs -join ' ')"
+        python -m PyInstaller @pyiArgs
+
+        if ($LASTEXITCODE -ne 0) {
+          Write-Host "##[error] PyInstaller با کد خروج $LASTEXITCODE شکست خورد. متن بالای همین لاگ را ببینید."
+          throw "PyInstaller build failed with exit code $LASTEXITCODE"
+        }
+
     - name: Build Executable with Nuitka (portable, compiled to machine code)
+      if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.quick_test == 'true') }}
       shell: pwsh
       run: |
         # نکته‌ی مهم: بدون این خط، اگر یکی از دستورات زیر (pip install یا
@@ -145,9 +180,7 @@ jobs:
         python -m pip install nuitka
         if ($LASTEXITCODE -ne 0) { throw "نصب Nuitka با کد $LASTEXITCODE شکست خورد." }
 
-        $isQuick = "${{ github.event.inputs.quick_test }}" -eq "true"
-        $modeArgs = if ($isQuick) { @("--standalone") } else { @("--onefile") }
-        Write-Host "Build mode: $(if ($isQuick) { 'QUICK TEST (standalone)' } else { 'FULL (onefile)' })"
+        $modeArgs = @("--onefile")
 
         # رفع ریشه‌ی اصلیِ «بیلد به سقف ۶ ساعته‌ی گیت‌هاب می‌خورد»:
         # ---------------------------------------------------------------
@@ -290,16 +323,18 @@ jobs:
     # است تا هیچ‌وقت با کلید (immutable) یک کش قبلی برخورد نکند - رجوع کنید
     # به توضیح داخل step «Restore Nuitka cache» بالاتر.
     - name: Save Nuitka cache (حتی اگر ساخت ناموفق/کنسل شود)
-      if: always()
+      # روی مسیر quick_test اصلاً Nuitka اجرا نشده، پس چیزی برای ذخیره نیست.
+      if: ${{ always() && !(github.event_name == 'workflow_dispatch' && github.event.inputs.quick_test == 'true') }}
       uses: actions/cache/save@v4
       with:
         path: |
           ~\AppData\Local\Nuitka\Nuitka\Cache
         key: nuitka-cache-windows-${{ hashFiles('requirements.txt') }}-${{ github.run_id }}
 
-    # پوشش هر دو حالت در یک آپلود: در حالت onefile فقط dist/CCTV_CMS.exe
-    # وجود دارد، در حالت standalone فقط پوشه‌ی dist/main.dist - هرکدام
-    # نبود، با if-no-files-found: ignore بدون خطا رد می‌شود.
+    # پوشش هر سه حالت در یک آپلود: onefile فقط dist/CCTV_CMS.exe دارد،
+    # standalone قدیمی پوشه‌ی dist/main.dist، و PyInstaller (quick_test) هم
+    # پوشه‌ی dist/CCTV_CMS - هرکدام نبود، با if-no-files-found: ignore
+    # بدون خطا رد می‌شود.
     - name: Upload Build Artifact
       uses: actions/upload-artifact@v4
       with:
@@ -307,4 +342,5 @@ jobs:
         path: |
           dist/CCTV_CMS.exe
           dist/main.dist/**
+          dist/CCTV_CMS/**
         if-no-files-found: ignore
