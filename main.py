@@ -29,6 +29,7 @@ except ImportError:
 from face_library_dialog import FaceLibraryDialog
 from report_store import report_store
 from reports_dialog import ReportsDialog
+from nvr_storage_dialog import NVRStorageDialog
 from device_detect import DeviceDetectThread
 
 # بهینه‌سازی برای سیستم‌های ضعیف (رم کم / بدون کارت گرافیک):
@@ -1736,6 +1737,35 @@ class MainWindow(QMainWindow):
             self.camera_store.remove_nvr(nvr_id, cascade=True)
             self.reload_camera_list()
 
+    def open_nvr_storage(self, nvr_id):
+        """رفع درخواست: وضعیت هارددیسک NVR و جست‌وجوی بازه‌های واقعاً
+        ضبط‌شده روی آن را نشان می‌دهد (رجوع کنید به nvr_storage_dialog.py /
+        nvr_storage_api.py). قبل از باز کردن دیالوگ، رمز NVR باید در حافظه
+        موجود باشد (دقیقاً همان جریان _ensure_password که برای پخش زنده
+        استفاده می‌شود، چون این قابلیت هم به یوزرنیم/رمز NVR نیاز دارد)."""
+        nvr = self.camera_store.get_nvr(nvr_id)
+        if not nvr:
+            return
+        if not nvr.get("pass"):
+            pwd, ok = QInputDialog.getText(
+                self, "رمز عبور مورد نیاز",
+                f"برای بررسی هارد/ضبط‌های NVR «{nvr['name']}»، رمز عبور آن را وارد کنید:",
+                QLineEdit.EchoMode.Password,
+            )
+            if not ok:
+                return
+            nvr["pass"] = pwd
+            for sibling in self.camera_store.cameras_for_nvr(nvr["id"]):
+                sibling["pass"] = pwd
+
+        channels = sorted(
+            ((c.get("channel"), c.get("name", "")) for c in self.camera_store.cameras_for_nvr(nvr_id)
+             if c.get("channel") is not None),
+            key=lambda x: x[0],
+        )
+        dialog = NVRStorageDialog(nvr, channels, self)
+        dialog.exec()
+
     def open_nvr_webview(self, nvr_id):
         """رفع درخواست: باز کردن پنل وب واقعی NVR داخل برنامه (با موتور
         Chromium از طریق PyQt6-WebEngine)، برای دستگاه‌هایی که سرویس RTSP
@@ -1878,10 +1908,16 @@ class MainWindow(QMainWindow):
             # می‌توان لیست کانال‌های واقعی را از همان‌جا گرفت.
             webview_action = QAction("باز کردن پنل وب NVR (برای دستگاه‌های با RTSP خراب)", self)
             webview_action.triggered.connect(lambda: self.open_nvr_webview(data["id"]))
+            # رفع درخواست: بررسی وضعیت هارددیسک NVR و جست‌وجوی بازه‌های
+            # زمانی‌ای که واقعاً روی هارد خودِ NVR ضبط شده - از طریق همان
+            # API وب رسمی سازنده (رجوع کنید به nvr_storage_api.py).
+            storage_action = QAction("🗄 هارد و ضبط‌های NVR", self)
+            storage_action.triggered.connect(lambda: self.open_nvr_storage(data["id"]))
             delete_action = QAction("حذف NVR و همه کانال‌ها", self)
             delete_action.triggered.connect(lambda: self.delete_nvr(data["id"]))
             menu.addAction(rescan_action)
             menu.addAction(webview_action)
+            menu.addAction(storage_action)
             menu.addAction(delete_action)
         menu.exec(self.camera_list.mapToGlobal(pos))
 
