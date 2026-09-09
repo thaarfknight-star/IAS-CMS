@@ -14,10 +14,15 @@
 هر رویداد چهره هم به‌صورت فایل jpg در پوشه‌ی report_images/<تاریخ>/ ذخیره
 می‌شود (نه داخل خودِ دیتابیس، تا حجم دیتابیس کوچک بماند).
 
-این ماژول عمداً NVR را درگیر نمی‌کند: NVR همچنان فقط ویدیوی خام دوربین‌ها
-را طبق تنظیمات خودش ضبط می‌کند (کاری که مستقل از این برنامه انجام می‌دهد)؛
-این گزارش‌های متنی/تصویری صرفاً روی سیستمی که CMS رویش اجراست نگه داشته
-می‌شوند - دقیقاً همان چیزی که درخواست شد.
+به‌روزرسانی (رفع درخواست «گزارش‌ها روی NVR ضبط بشه»): متن/تصویر گزارش‌ها
+همچنان فقط همین‌جا (روی سیستمی که CMS رویش اجراست) نگه داشته می‌شود - چون
+NVRهای رایج (Hikvision/Dahua) API عمومی برای نوشتن/آپلود فایل دلخواه روی
+هاردشان ندارند. اما هر رویداد حالا nvr_id و channel دوربینِ منبع را هم (در
+صورتی که آن دوربین زیرمجموعه‌ی یک NVR باشد) ذخیره می‌کند تا از دیالوگ
+گزارش‌ها بشود دکمه‌ی «پخش ویدیوی NVR در همین لحظه» را زد و ویدیوی واقعیِ
+همان بازه را مستقیماً از روی خودِ NVR (نه از این دیتابیس) پخش کرد - رجوع
+کنید به nvr_playback.py و nvr_playback_dialog.py. برای دوربین‌های مستقل
+(بدون NVR)، این دو فیلد خالی می‌مانند و آن دکمه غیرفعال است.
 """
 
 import csv
@@ -73,15 +78,34 @@ class ReportStore:
                         region_number TEXT,
                         region_name TEXT,
                         person_count INTEGER,
-                        image_path TEXT
+                        image_path TEXT,
+                        nvr_id TEXT,
+                        channel TEXT
                     )
                     """
                 )
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)")
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)")
                 conn.commit()
+                self._migrate_add_nvr_columns(conn)
         except Exception as e:
             print(f"خطا در ساخت پایگاه‌داده‌ی گزارش‌ها: {e}")
+
+    def _migrate_add_nvr_columns(self, conn):
+        """رفع مهاجرت: پایگاه‌داده‌های reports.db ساخته‌شده با نسخه‌های قبلی
+        این ماژول ستون‌های nvr_id/channel را ندارند؛ CREATE TABLE IF NOT
+        EXISTS بالا روی جدول از قبل موجود اثری ندارد، پس این دو ستون در صورت
+        نبود، جداگانه با ALTER TABLE اضافه می‌شوند (بدون از دست رفتن هیچ
+        رویداد قبلاً ثبت‌شده‌ای)."""
+        try:
+            existing = {row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
+            if "nvr_id" not in existing:
+                conn.execute("ALTER TABLE events ADD COLUMN nvr_id TEXT")
+            if "channel" not in existing:
+                conn.execute("ALTER TABLE events ADD COLUMN channel TEXT")
+            conn.commit()
+        except Exception as e:
+            print(f"خطا در به‌روزرسانی ساختار پایگاه‌داده‌ی گزارش‌ها: {e}")
 
     # ------------------------------------------------------------- ذخیره -
 
@@ -103,26 +127,29 @@ class ReportStore:
 
     def _insert(self, ts, event_type, camera_name=None, person_name=None, phone=None,
                 employee_id=None, region_number=None, region_name=None,
-                person_count=None, image_path=None):
+                person_count=None, image_path=None, nvr_id=None, channel=None):
         try:
             with closing(self._connect()) as conn:
                 conn.execute(
                     """
                     INSERT INTO events
                         (ts, event_type, camera_name, person_name, phone, employee_id,
-                         region_number, region_name, person_count, image_path)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         region_number, region_name, person_count, image_path, nvr_id, channel)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (ts, event_type, camera_name, person_name, phone, employee_id,
-                     region_number, region_name, person_count, image_path),
+                     region_number, region_name, person_count, image_path,
+                     str(nvr_id) if nvr_id else None, str(channel) if channel not in (None, "") else None),
                 )
                 conn.commit()
         except Exception as e:
             print(f"خطا در ثبت رویداد گزارش: {e}")
 
-    def log_face_event(self, camera_name, person, crop_frame=None):
+    def log_face_event(self, camera_name, person, crop_frame=None, nvr_id=None, channel=None):
         """هر تشخیص چهره (چه شناخته‌شده چه تعریف‌نشده) را با ساعت/تاریخ
-        کامل و تصویر برش‌خورده ثبت می‌کند."""
+        کامل و تصویر برش‌خورده ثبت می‌کند. ``nvr_id``/``channel``: در صورتی
+        که این دوربین زیرمجموعه‌ی یک NVR باشد، برای دکمه‌ی «پخش ویدیوی NVR»
+        در دیالوگ گزارش‌ها ذخیره می‌شود (رجوع کنید به main.py:on_face_event)."""
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         if person:
             event_type = "face_known"
@@ -134,27 +161,31 @@ class ReportStore:
             person_name = phone = employee_id = None
         image_path = self._save_image(crop_frame, event_type)
         self._insert(now, event_type, camera_name=camera_name, person_name=person_name,
-                     phone=phone, employee_id=employee_id, image_path=image_path)
+                     phone=phone, employee_id=employee_id, image_path=image_path,
+                     nvr_id=nvr_id, channel=channel)
 
-    def log_region_alert(self, camera_name, number, name):
+    def log_region_alert(self, camera_name, number, name, nvr_id=None, channel=None):
         """با ورود شخصی به یک محدوده‌ی هشدار، ثبت می‌شود."""
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         self._insert(now, "zone_entry", camera_name=camera_name,
-                     region_number=str(number), region_name=name)
+                     region_number=str(number), region_name=name,
+                     nvr_id=nvr_id, channel=channel)
 
-    def log_person_count(self, camera_name, count):
+    def log_person_count(self, camera_name, count, nvr_id=None, channel=None):
         """تغییر تعداد نفراتِ یک دوربین را ثبت می‌کند (فراخوان مسئول
         فراخوانی فقط هنگام *تغییر* عدد است، نه هر فریم - رجوع کنید به
         CameraSlotWidget.on_people_count در main.py)."""
         now = time.strftime("%Y-%m-%d %H:%M:%S")
-        self._insert(now, "person_count", camera_name=camera_name, person_count=count)
+        self._insert(now, "person_count", camera_name=camera_name, person_count=count,
+                     nvr_id=nvr_id, channel=channel)
 
     # -------------------------------------------------------------- خواندن -
 
     def query(self, start=None, end=None, event_type=None, camera_name=None, limit=5000):
         """start/end: رشته‌ی 'YYYY-MM-DD HH:MM:SS' یا 'YYYY-MM-DD'."""
         q = ("SELECT ts, event_type, camera_name, person_name, phone, employee_id, "
-             "region_number, region_name, person_count, image_path FROM events WHERE 1=1")
+             "region_number, region_name, person_count, image_path, nvr_id, channel "
+             "FROM events WHERE 1=1")
         params = []
         if start:
             q += " AND ts >= ?"
@@ -206,7 +237,8 @@ class ReportStore:
             writer = csv.writer(f)
             writer.writerow(headers_fa)
             for r in rows:
-                row = list(r)
+                row = list(r[:10])  # دو ستون آخر (nvr_id/channel) فقط برای دکمه‌ی
+                # «پخش ویدیوی NVR» داخل خودِ برنامه لازم‌اند، نه خروجی اکسل کاربر.
                 row[1] = EVENT_TYPE_LABELS_FA.get(row[1], row[1])
                 writer.writerow(["" if v is None else v for v in row])
         return path

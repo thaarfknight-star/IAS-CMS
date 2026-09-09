@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
 """دیالوگ «گزارش‌ها»: جست‌وجو در تاریخچه‌ی ذخیره‌شده‌ی report_store.py
 (شمارش نفرات، ورود به محدوده، چهره‌ی شناخته‌شده/تعریف‌نشده) بر اساس بازه‌ی
-تاریخ، دوربین و نوع رویداد، به‌همراه خروجی CSV/Excel."""
+تاریخ، دوربین و نوع رویداد، به‌همراه خروجی CSV/Excel و دکمه‌ی «پخش ویدیوی
+NVR» برای دیدن ویدیوی واقعیِ همان لحظه از روی خودِ NVR (رجوع کنید به
+nvr_playback_dialog.py)."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtGui import QIcon, QPixmap
@@ -14,12 +16,21 @@ from PyQt6.QtWidgets import (
 )
 
 from report_store import EVENT_TYPE_LABELS_FA
+from nvr_playback_dialog import NVRPlaybackDialog
+
+# چند ثانیه قبل/بعد از لحظه‌ی ثبت‌شده‌ی هر رویداد که برای پخش بازبینی از NVR
+# درخواست می‌شود - چون ساعت رویداد دقیقاً لحظه‌ی تشخیص در برنامه است، نه
+# شروع/پایان یک بازه؛ کمی حاشیه لازم است تا لحظه‌ی واقعی وسط ویدیوی پخش‌شده
+# بیفتد (نه دقیقاً روی مرز اول/آخر آن).
+PLAYBACK_MARGIN_BEFORE = timedelta(seconds=10)
+PLAYBACK_MARGIN_AFTER = timedelta(seconds=30)
 
 
 class ReportsDialog(QDialog):
-    def __init__(self, report_store, parent=None):
+    def __init__(self, report_store, camera_store=None, parent=None):
         super().__init__(parent)
         self.report_store = report_store
+        self.camera_store = camera_store
         self.setWindowTitle("گزارش‌ها")
         self.resize(1000, 600)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
@@ -66,10 +77,10 @@ class ReportsDialog(QDialog):
         layout.addLayout(filter_row)
 
         # ----------------------------------------------------------- جدول -
-        self.table = QTableWidget(0, 9)
+        self.table = QTableWidget(0, 10)
         self.table.setHorizontalHeaderLabels([
             "تاریخ و ساعت", "نوع رویداد", "دوربین", "نام فرد", "تلفن",
-            "شماره کارمندی", "محدوده", "تعداد نفرات", "تصویر",
+            "شماره کارمندی", "محدوده", "تعداد نفرات", "تصویر", "ویدیوی NVR",
         ])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -106,7 +117,8 @@ class ReportsDialog(QDialog):
         self.table.setRowCount(0)
         for row_data in rows:
             (ts, ev_type, camera, person_name, phone, employee_id,
-             region_number, region_name, person_count, image_path) = row_data
+             region_number, region_name, person_count, image_path,
+             nvr_id, channel) = row_data
 
             r = self.table.rowCount()
             self.table.insertRow(r)
@@ -130,7 +142,39 @@ class ReportsDialog(QDialog):
                 img_item.setToolTip(image_path)
             self.table.setItem(r, 8, img_item)
 
+            # رفع درخواست «گزارش‌ها روی NVR ضبط بشه»: اگر این رویداد از یک
+            # دوربین زیرمجموعه‌ی NVR بوده (nvr_id/channel ذخیره‌شده)، دکمه‌ی
+            # پخش ویدیوی همان لحظه فعال می‌شود؛ برای دوربین‌های مستقل (بدون
+            # NVR) و رویدادهای ثبت‌شده قبل از این نسخه، این ستون خالی می‌ماند.
+            if nvr_id and channel and self.camera_store is not None:
+                play_btn = QPushButton("▶ پخش از NVR")
+                play_btn.clicked.connect(
+                    lambda _checked=False, _ts=ts, _nvr_id=nvr_id, _ch=channel, _cam=camera:
+                    self._open_nvr_playback(_ts, _nvr_id, _ch, _cam)
+                )
+                self.table.setCellWidget(r, 9, play_btn)
+            else:
+                self.table.setItem(r, 9, QTableWidgetItem(""))
+
         self.summary_label.setText(f"{self.table.rowCount()} ردیف یافت شد.")
+
+    def _open_nvr_playback(self, ts, nvr_id, channel, camera_name):
+        nvr = self.camera_store.get_nvr(nvr_id)
+        if not nvr:
+            QMessageBox.warning(
+                self, "خطا",
+                "این NVR دیگر در لیست «دوربین‌ها و NVRهای من» وجود ندارد (احتمالاً حذف شده)."
+            )
+            return
+        try:
+            event_dt = datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            QMessageBox.warning(self, "خطا", "ساعت این رویداد نامعتبر است.")
+            return
+        start_dt = event_dt - PLAYBACK_MARGIN_BEFORE
+        end_dt = event_dt + PLAYBACK_MARGIN_AFTER
+        dialog = NVRPlaybackDialog(nvr, channel, start_dt, end_dt, camera_label=camera_name, parent=self)
+        dialog.exec()
 
     def export_csv(self):
         default_name = f"report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
