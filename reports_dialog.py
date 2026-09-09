@@ -142,11 +142,19 @@ class ReportsDialog(QDialog):
                 img_item.setToolTip(image_path)
             self.table.setItem(r, 8, img_item)
 
-            # رفع درخواست «گزارش‌ها روی NVR ضبط بشه»: اگر این رویداد از یک
-            # دوربین زیرمجموعه‌ی NVR بوده (nvr_id/channel ذخیره‌شده)، دکمه‌ی
-            # پخش ویدیوی همان لحظه فعال می‌شود؛ برای دوربین‌های مستقل (بدون
-            # NVR) و رویدادهای ثبت‌شده قبل از این نسخه، این ستون خالی می‌ماند.
-            if nvr_id and channel and self.camera_store is not None:
+            # رفع درخواست «دکمه‌ی پخش ویدیو ظاهر نمی‌شود»: قبلاً این دکمه فقط
+            # وقتی ساخته می‌شد که خودِ ردیف گزارش از قبل nvr_id/channel
+            # ذخیره‌شده داشت؛ برای ردیف‌های قدیمی‌تر (قبل از این ویژگی) یا
+            # هر رویدادی که این دو مقدار به هر دلیلی هنگام ثبت خالی مانده
+            # بود، اصلاً دکمه‌ای نشان داده نمی‌شد. حالا تا وقتی camera_store
+            # در دسترس است، دکمه همیشه ساخته می‌شود؛ خودِ تلاش برای پخش
+            # (_open_nvr_playback) در لحظه‌ی کلیک هم از nvr_id/channel ذخیره‌
+            # شده در ردیف استفاده می‌کند و هم - اگر آن دو خالی بودند - با
+            # نام دوربین در لیست فعلی دوربین‌ها/NVRها می‌گردد
+            # (camera_store.find_nvr_channel_by_camera_name)؛ فقط اگر واقعاً
+            # هیچ NVR ای برای این دوربین پیدا نشود، با کلیک روی دکمه پیام
+            # روشن نمایش داده می‌شود (نه اینکه از همان اول دکمه پنهان بماند).
+            if self.camera_store is not None:
                 play_btn = QPushButton("▶ پخش از NVR")
                 play_btn.clicked.connect(
                     lambda _checked=False, _ts=ts, _nvr_id=nvr_id, _ch=channel, _cam=camera:
@@ -159,6 +167,24 @@ class ReportsDialog(QDialog):
         self.summary_label.setText(f"{self.table.rowCount()} ردیف یافت شد.")
 
     def _open_nvr_playback(self, ts, nvr_id, channel, camera_name):
+        # اگر این ردیف گزارش از قبل nvr_id/channel نداشت (رویداد قدیمی یا
+        # ثبت‌شده قبل از این ویژگی)، با نام دوربین در لیست فعلی دوربین‌ها/
+        # NVRها می‌گردیم - رجوع کنید به توضیح بالای متد run_search.
+        if not nvr_id or not channel:
+            fallback_nvr_id, fallback_channel = self.camera_store.find_nvr_channel_by_camera_name(camera_name)
+            nvr_id = nvr_id or fallback_nvr_id
+            channel = channel or fallback_channel
+
+        if not nvr_id or not channel:
+            QMessageBox.warning(
+                self, "خطا",
+                "برای این رویداد اطلاعات NVR/کانال ثبت نشده و دوربینی با همین نام هم "
+                "زیرمجموعه‌ی هیچ NVR ای در لیست «دوربین‌ها و NVRهای من» پیدا نشد؛ پخش "
+                "بازبینی از روی NVR برای این ردیف ممکن نیست (احتمالاً این دوربین مستقل "
+                "است یا نام آن تغییر کرده/حذف شده)."
+            )
+            return
+
         nvr = self.camera_store.get_nvr(nvr_id)
         if not nvr:
             QMessageBox.warning(

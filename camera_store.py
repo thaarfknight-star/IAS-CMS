@@ -137,6 +137,28 @@ class CameraStore:
     def cameras_for_nvr(self, nvr_id):
         return [c for c in self.cameras if c.get("nvr_id") == nvr_id]
 
+    def find_nvr_channel_by_camera_name(self, camera_name):
+        """رفع درخواست «دکمه‌ی پخش ویدیو ظاهر نمی‌شود»: خیلی از ردیف‌های
+        قدیمی‌تر گزارش‌ها (ثبت‌شده قبل از اضافه‌شدن ستون‌های nvr_id/channel
+        به report_store.py، یا لحظه‌ای که به هر دلیلی این دو مقدار هنگام
+        ثبت رویداد خالی مانده) در پایگاه‌داده nvr_id/channel ندارند و دکمه
+        برایشان اصلاً ساخته نمی‌شد. اینجا به‌عنوان یک راه جایگزین، بر اساس
+        همان نامِ دوربینِ ذخیره‌شده در ردیف گزارش، در لیست *فعلیِ* دوربین‌ها/
+        NVRها (cameras.json) دنبال یک دوربین با همین نام که زیرمجموعه‌ی یک
+        NVR باشد می‌گردیم؛ اگر پیدا شد، nvr_id/channel همان دوربین برگردانده
+        می‌شود تا بازپخش همچنان امکان‌پذیر باشد.
+
+        این یک تطبیق دقیق (نه قطعی) است: اگر دوربین بعداً حذف/تغییرنام داده
+        شده باشد یا چند دوربین هم‌نام وجود داشته باشد، ممکن است نتیجه نادرست
+        یا خالی باشد - برای همین فقط وقتی از ستون‌های خودِ ردیف گزارش چیزی در
+        دسترس نیست به‌کار می‌رود."""
+        if not camera_name:
+            return None, None
+        for cam in self.cameras:
+            if cam.get("name") == camera_name and cam.get("nvr_id"):
+                return cam.get("nvr_id"), cam.get("channel")
+        return None, None
+
     def standalone_cameras(self):
         """دوربین‌هایی که به هیچ NVR متصل نیستند (اتصال مستقیم)."""
         return [c for c in self.cameras if not c.get("nvr_id")]
