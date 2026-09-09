@@ -100,6 +100,15 @@ class VideoDisplayLabel(QLabel):
     راست، رسمِ در حال انجام (نقاط هنوز بسته‌نشده) بدون تاثیر روی
     محدوده‌های قبلاً تایید‌شده لغو می‌شود.
 
+    رفع درخواست «قابلیت ادیت‌کردن»: هر محدوده‌ی «در انتظار» - چه تازه با
+    کلیک‌ها بسته شده و هنوز نام‌گذاری نشده، چه یک محدوده‌ی قبلاً تایید‌شده
+    که کاربر از دیالوگ «مدیریت محدوده‌ها» برای ویرایش شکلش را باز کرده، چه
+    محدوده‌ی خودکارِ «کل تصویر» (رجوع کنید به
+    CameraSlotWidget.start_auto_full_frame_region) - همیشه با ماوس قابل
+    تغییر است: کلیک-و-درگ روی هر گوشه جابه‌جایش می‌کند، کلیک روی وسط یک
+    یال یک گوشه‌ی تازه اضافه می‌کند و کلیک راست روی یک گوشه حذفش می‌کند
+    (حداقل ۳ گوشه لازم است).
+
     منطق مختصات: چون setPixmap با KeepAspectRatio یک pixmap کوچک‌تر یا
     مساوی اندازه‌ی خودِ لیبل تولید می‌کند و QLabel آن را وسط‌چین (AlignCenter)
     نمایش می‌دهد، مستطیل واقعیِ تصویر داخل لیبل همیشه یک مستطیل هم‌مرکز به
@@ -113,6 +122,15 @@ class VideoDisplayLabel(QLabel):
     # فاصله‌ی (به پیکسلِ لیبل) که کلیک نزدیک نقطه‌ی اول را «بستن محدوده»
     # حساب می‌کنیم - نه یک نقطه‌ی تازه.
     _CLOSE_THRESHOLD_PX = 14.0
+
+    # رفع درخواست «بتونه اندازه و شکل محدوده رو تغییر بده»: فاصله‌ی (به
+    # پیکسلِ لیبل) که کلیک/درگ نزدیک یکی از گوشه‌های محدوده‌ی در انتظار
+    # (pending - چه تازه رسم‌شده و هنوز نام‌گذاری‌نشده، چه یک محدوده‌ی
+    # قبلاً تایید‌شده که برای ویرایش شکل بارگذاری شده) را «گرفتنِ همان
+    # گوشه برای جابه‌جایی/حذف» حساب می‌کنیم؛ همین آستانه برای «کلیک روی
+    # نزدیک‌ترین یال» هم استفاده می‌شود که یک نقطه‌ی تازه به آن یال اضافه
+    # می‌کند (برای ریزتر کردن شکل).
+    _VERTEX_HIT_PX = 10.0
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -128,9 +146,19 @@ class VideoDisplayLabel(QLabel):
         # برچسبِ شماره/نام‌شان روی تصویر نمایش داده می‌شوند - چون می‌توانند
         # چندتایی و نام‌دار باشند و کاربر باید همیشه مرزشان را ببیند.
         self._confirmed_regions = []  # لیستی از دیکشنری {"number","name","points"}
-        # محدوده‌ای که تازه بسته شده ولی هنوز کاربر نامش را تایید نکرده -
-        # برای پیش‌نمایش با خط‌چین زرد (رجوع کنید به set_pending_points_norm).
+        # محدوده‌ای که تازه بسته شده ولی هنوز کاربر نامش را تایید نکرده، یا
+        # یک محدوده‌ی قبلاً تایید‌شده که همین الان برای ویرایش شکل/اندازه
+        # بارگذاری شده - برای پیش‌نمایش (رجوع کنید به set_pending_points_norm).
+        # برخلاف نقاطِ در حال رسم (_draw_points)، این نقاط همیشه با ماوس
+        # قابل کشیدن/افزودن/حذف‌کردن هستند (رجوع کنید به mousePressEvent).
         self._pending_points = None
+        # True یعنی این پیش‌نمایش، ویرایشِ یک محدوده‌ی از قبل تایید‌شده است
+        # (رنگ سبز) - False یعنی یک محدوده‌ی تازه که هنوز تایید نشده (رنگ
+        # زرد، رفتار قبلی). فقط برای تمایز بصری استفاده می‌شود.
+        self._editing_existing = False
+        # اندیس گوشه‌ای که همین الان با درگ ماوس در حال جابه‌جایی است؛ None
+        # یعنی هیچ گوشه‌ای در حال کشیده‌شدن نیست.
+        self._drag_vertex_idx = None
         self.setMouseTracking(True)
 
     def set_draw_mode(self, enabled: bool):
@@ -140,12 +168,22 @@ class VideoDisplayLabel(QLabel):
         self._hover_norm = None
         self.update()
 
-    def set_pending_points_norm(self, points):
-        """محدوده‌ی «بسته‌شده ولی هنوز تایید/نام‌گذاری نشده» را برای
-        پیش‌نمایش تنظیم می‌کند؛ None یعنی هیچ محدوده‌ای در انتظار تایید
-        نیست."""
+    def set_pending_points_norm(self, points, editing_existing=False):
+        """محدوده‌ی «بسته‌شده ولی هنوز تایید/نام‌گذاری نشده» یا «در حال
+        ویرایش» را برای پیش‌نمایش تنظیم می‌کند؛ None یعنی هیچ محدوده‌ای در
+        انتظار نیست. ``editing_existing=True`` یعنی این نقاط متعلق به یک
+        محدوده‌ی قبلاً تایید‌شده است که کاربر دارد شکلش را ویرایش می‌کند
+        (رنگ سبز به‌جای زرد - رجوع کنید به CameraSlotWidget.start_edit_region)."""
         self._pending_points = [tuple(p) for p in points] if points else None
+        self._editing_existing = bool(editing_existing) if self._pending_points else False
+        self._drag_vertex_idx = None
         self.update()
+
+    def pending_points_norm(self):
+        """نقاطِ نرمال‌شده‌ی فعلیِ محدوده‌ی در انتظار/در حال ویرایش (شامل
+        هر جابه‌جایی/افزودن/حذف گوشه‌ای که کاربر تا همین لحظه با ماوس انجام
+        داده) را برمی‌گرداند؛ None اگر چیزی در انتظار نیست."""
+        return list(self._pending_points) if self._pending_points else None
 
     def set_confirmed_regions(self, regions):
         """لیست محدوده‌های نهایی/فعال این دوربین را برای رسم دائمی روی
@@ -177,6 +215,55 @@ class VideoDisplayLabel(QLabel):
         if rect is None:
             return None
         return QPointF(rect.x() + norm_point[0] * rect.width(), rect.y() + norm_point[1] * rect.height())
+
+    def _pending_vertex_at(self, widget_pos):
+        """اندیسِ نزدیک‌ترین گوشه‌ی محدوده‌ی در انتظار به widget_pos را
+        برمی‌گرداند - اگر در فاصله‌ی _VERTEX_HIT_PX بود؛ وگرنه None."""
+        if not self._pending_points:
+            return None
+        for i, norm_p in enumerate(self._pending_points):
+            wp = self._norm_to_widget(norm_p)
+            if wp is None:
+                continue
+            if (widget_pos - wp).manhattanLength() <= self._VERTEX_HIT_PX:
+                return i
+        return None
+
+    @staticmethod
+    def _closest_point_on_segment(p, a, b):
+        """نزدیک‌ترین نقطه روی پاره‌خط a-b به نقطه‌ی p و فاصله‌اش تا آن."""
+        ax, ay, bx, by, px, py = a.x(), a.y(), b.x(), b.y(), p.x(), p.y()
+        dx, dy = bx - ax, by - ay
+        length_sq = dx * dx + dy * dy
+        t = 0.0 if length_sq < 1e-9 else min(max(((px - ax) * dx + (py - ay) * dy) / length_sq, 0.0), 1.0)
+        cx, cy = ax + t * dx, ay + t * dy
+        return QPointF(cx, cy), ((px - cx) ** 2 + (py - cy) ** 2) ** 0.5
+
+    def _pending_edge_insert(self, widget_pos):
+        """رفع درخواست «تغییر شکل محدوده»: اگر widget_pos به یکی از یال‌های
+        محدوده‌ی در انتظار نزدیک باشد، اندیسی که باید یک گوشه‌ی تازه در آن
+        درج شود + مختصات نرمال همان نقطه را برمی‌گرداند - وگرنه None. این
+        اجازه می‌دهد کاربر با کلیک روی وسط یک ضلع، آن را به دو ضلع تبدیل
+        کند و شکل را دقیق‌تر کند (مثلاً دور زدن یک مانع)."""
+        pts = self._pending_points
+        if not pts or len(pts) < 2:
+            return None
+        n = len(pts)
+        best = None
+        for i in range(n):
+            a = self._norm_to_widget(pts[i])
+            b = self._norm_to_widget(pts[(i + 1) % n])
+            if a is None or b is None:
+                continue
+            _, dist = self._closest_point_on_segment(widget_pos, a, b)
+            if dist <= self._VERTEX_HIT_PX and (best is None or dist < best[1]):
+                best = (i, dist)
+        if best is None:
+            return None
+        norm_point = self._widget_to_norm(widget_pos)
+        if norm_point is None:
+            return None
+        return best[0] + 1, norm_point
 
     def _finish_polygon(self):
         """رفع درخواست: بستن محدوده‌ی در حال رسم (حداقل ۳ نقطه لازم است) و
@@ -219,14 +306,52 @@ class VideoDisplayLabel(QLabel):
                 self._draw_points.append(norm)
                 self.update()
                 return
+        # رفع درخواست «بتونه اندازه و شکل محدوده تغییر بده»: وقتی در حالت
+        # رسمِ فعال (کلیک‌های متوالی) نیستیم ولی یک محدوده‌ی در انتظار/در
+        # حال ویرایش روی تصویر هست، همان محدوده همیشه با ماوس قابل تغییر
+        # است - کلیک چپ روی یک گوشه = گرفتنِ آن برای جابه‌جایی (درگ)، کلیک
+        # چپ روی وسط یک یال = افزودن گوشه‌ی تازه در همان‌جا، کلیک راست روی
+        # یک گوشه = حذف همان گوشه (تا وقتی حداقل ۳ گوشه باقی بماند).
+        if not self.draw_mode and self._pending_points and self._frame_rect() is not None:
+            pos = event.position()
+            if event.button() == Qt.MouseButton.RightButton:
+                idx = self._pending_vertex_at(pos)
+                if idx is not None and len(self._pending_points) > 3:
+                    del self._pending_points[idx]
+                    self.update()
+                return
+            if event.button() == Qt.MouseButton.LeftButton:
+                idx = self._pending_vertex_at(pos)
+                if idx is not None:
+                    self._drag_vertex_idx = idx
+                    return
+                inserted = self._pending_edge_insert(pos)
+                if inserted is not None:
+                    insert_at, norm_point = inserted
+                    self._pending_points.insert(insert_at, norm_point)
+                    self._drag_vertex_idx = insert_at
+                    self.update()
+                return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self._drag_vertex_idx is not None and self._pending_points:
+            norm = self._widget_to_norm(event.position())
+            if norm is not None:
+                self._pending_points[self._drag_vertex_idx] = norm
+                self.update()
+            return
         if self.draw_mode and self._draw_points:
             self._hover_norm = self._widget_to_norm(event.position())
             self.update()
             return
         super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._drag_vertex_idx is not None:
+            self._drag_vertex_idx = None
+            return
+        super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event):
         if self.draw_mode and event.button() == Qt.MouseButton.LeftButton and len(self._draw_points) >= 3:
@@ -299,12 +424,27 @@ class VideoDisplayLabel(QLabel):
         elif self._pending_points is not None:
             pts = self._region_polygon_widget({"points": self._pending_points})
             if pts is not None:
-                pen = QPen(QColor("#f1c40f"))
+                # رفع درخواست: رنگ سبز = این پیش‌نمایش، ویرایشِ یک محدوده‌ی
+                # قبلاً تایید‌شده است؛ رنگ زرد = یک محدوده‌ی تازه (چه با
+                # کلیک‌های متوالی رسم شده، چه با «تشخیص خودکار محدوده»
+                # ساخته شده) که هنوز تایید/نام‌گذاری نشده.
+                color = QColor("#2ecc71") if self._editing_existing else QColor("#f1c40f")
+                pen = QPen(color)
                 pen.setWidth(2)
                 pen.setStyle(Qt.PenStyle.DashLine)
                 painter.setPen(pen)
                 painter.setBrush(Qt.BrushStyle.NoBrush)
                 painter.drawPolygon(QPolygonF(pts))
+                # رفع درخواست «بتونه اندازه و شکل محدوده تغییر بده»: یک
+                # دسته‌ی توپُر روی هر گوشه - نشانه‌ی این‌که این گوشه با ماوس
+                # قابل کشیدن (تغییر شکل/اندازه) است (رجوع کنید به
+                # mousePressEvent/mouseMoveEvent بالا).
+                handle_pen = QPen(QColor("#1e1e1e"))
+                handle_pen.setWidth(1)
+                painter.setPen(handle_pen)
+                painter.setBrush(color)
+                for wp in pts:
+                    painter.drawEllipse(wp, 5.0, 5.0)
         painter.end()
 
 
@@ -367,6 +507,14 @@ class CameraSlotWidget(QWidget):
         #       {"id","number","name","points"} - همیشه روی تصویر دیده می‌شوند.
         self.pending_points = None
         self.regions = []
+        # رفع درخواست: وقتی کاربر از دیالوگ «مدیریت محدوده‌ها» یکی از
+        # محدوده‌های قبلاً تایید‌شده را برای «ویرایش شکل/اندازه» باز کرده،
+        # id همان محدوده اینجا نگه داشته می‌شود تا با «ذخیره ویرایش» روی
+        # همان محدوده به‌جای ساختن یک محدوده‌ی تازه اعمال شود (رجوع کنید به
+        # start_edit_region/save_region_edit/cancel_region_edit پایین‌تر).
+        # None یعنی الان در حال ویرایش هیچ محدوده‌ی از قبل تایید‌شده‌ای
+        # نیستیم (حالت عادی رسم محدوده‌ی تازه).
+        self._editing_region_id = None
         self._alarm_active = False
         self._alarm_timer = QTimer(self)
         self._alarm_timer.setSingleShot(True)
@@ -523,6 +671,99 @@ class CameraSlotWidget(QWidget):
         self.video_label.set_pending_points_norm(None)
         self.video_label.set_draw_mode(False)
         self.tripwire_changed.emit()
+
+    def is_editing_region(self) -> bool:
+        """آیا همین الان در حال ویرایش شکل/اندازه‌ی یک محدوده‌ی قبلاً
+        تایید‌شده هستیم؟ (رجوع کنید به start_edit_region)."""
+        return self._editing_region_id is not None
+
+    def start_edit_region(self, region_id) -> bool:
+        """رفع درخواست «بتونه اندازه و شکل محدوده تغییر بده»: محدوده‌ی
+        تایید‌شده با شناسه‌ی region_id را به‌عنوان پیش‌نمایشِ سبزِ قابل‌کشیدن
+        روی تصویر می‌گذارد (موقتاً از فهرست محدوده‌های ثابت/آبی بیرون
+        می‌آید تا دوبار دیده نشود) تا کاربر گوشه‌هایش را با ماوس جابه‌جا/
+        اضافه/حذف کند؛ نتیجه با save_region_edit ذخیره یا با
+        cancel_region_edit لغو می‌شود. اگر چیزی در انتظار رسم/ویرایشِ
+        دیگری باشد یا محدوده پیدا نشود، False برمی‌گرداند."""
+        if self.pending_points is not None:
+            return False
+        region = next((r for r in self.regions if r["id"] == region_id), None)
+        if region is None:
+            return False
+        self._editing_region_id = region_id
+        self.pending_points = list(region["points"])
+        visible = [r for r in self.regions if r["id"] != region_id]
+        self.video_label.set_confirmed_regions(visible)
+        self.video_label.set_pending_points_norm(self.pending_points, editing_existing=True)
+        self.video_label.set_draw_mode(False)
+        self.tripwire_changed.emit()
+        return True
+
+    def save_region_edit(self):
+        """رفع درخواست: شکل/اندازه‌ی ویرایش‌شده (نقاطِ فعلیِ روی video_label،
+        شاملِ هر جابه‌جایی/افزودن/حذف گوشه‌ای که کاربر انجام داده) را روی
+        همان محدوده‌ی قبلاً تایید‌شده می‌نویسد و بلافاصله روی ترد پخش هم
+        برای تشخیص ورود به‌روز می‌کند. دیکشنری محدوده‌ی به‌روزشده (برای
+        ذخیره در camera_store) یا None برمی‌گرداند (اگر در حال ویرایش
+        نبودیم یا کمتر از ۳ گوشه باقی مانده بود - عملاً غیرممکن چون خودِ
+        VideoDisplayLabel اجازه‌ی حذف گوشه‌ی چهارم به بعد را فقط تا حداقل ۳
+        گوشه می‌دهد)."""
+        if self._editing_region_id is None:
+            return None
+        points = self.video_label.pending_points_norm()
+        if not points or len(points) < 3:
+            return None
+        region = None
+        for r in self.regions:
+            if r["id"] == self._editing_region_id:
+                r["points"] = list(points)
+                region = r
+                break
+        self._editing_region_id = None
+        self.pending_points = None
+        self.video_label.set_pending_points_norm(None)
+        self.video_label.set_confirmed_regions(self.regions)
+        if self.stream_thread is not None:
+            self.stream_thread.set_regions(self.regions)
+        self.tripwire_changed.emit()
+        return region
+
+    def cancel_region_edit(self):
+        """رفع درخواست: انصراف از ویرایشِ در حال انجام - محدوده به شکل/
+        اندازه‌ی قبلی (قبل از شروع ویرایش) دست‌نخورده برمی‌گردد، چون
+        start_edit_region هیچ تغییری روی خودِ self.regions اعمال نکرده
+        بود (فقط یک کپی برای پیش‌نمایش ساخته بود)."""
+        self._editing_region_id = None
+        self.pending_points = None
+        self.video_label.set_pending_points_norm(None)
+        self.video_label.set_confirmed_regions(self.regions)
+        self.tripwire_changed.emit()
+
+    def start_auto_full_frame_region(self) -> bool:
+        """رفع درخواست «یک حالت جدید که خودش سطح زمین رو تشخیص بده و کلش
+        رو محدوده محسوب کنه»: چون این برنامه به مدلی برای تشخیص دقیقِ کفِ
+        زمین (Ground/Floor Segmentation - جدا از تشخیص شخص) دسترسی ندارد،
+        این حالت کل کادر تصویر زنده‌ی همین دوربین را - که در عمل تقریباً
+        معادل «کل زمینی است که دوربین می‌بیند» - به‌عنوان یک محدوده‌ی تازه و
+        در انتظار تایید می‌گذارد؛ دقیقاً مثل یک محدوده‌ی دستی‌رسم‌شده، کاملاً
+        قابل ویرایش است (کاربر می‌تواند مثلاً گوشه‌ای را عقب بکشد تا یک در
+        ورودی یا راهرو را از محدوده کنار بگذارد) و در پایان با همان دکمه‌ی
+        «تایید و نام‌گذاری» یا «لغو رسم» ذخیره/لغو می‌شود. اگر چیزی در حال
+        رسم/ویرایش دیگری باشد، False برمی‌گرداند."""
+        if self.pending_points is not None or self._editing_region_id is not None:
+            return False
+        # کمی فاصله از لبه‌ی دقیق کادر (۰ و ۱) تا دسته‌های چهارگوشه کاملاً
+        # داخل تصویر و به‌راحتی با ماوس قابل‌گرفتن باشند.
+        inset = 0.015
+        points = [
+            (inset, inset), (1 - inset, inset),
+            (1 - inset, 1 - inset), (inset, 1 - inset),
+        ]
+        self.pending_points = points
+        self.video_label.set_pending_points_norm(points, editing_existing=False)
+        self.video_label.set_draw_mode(False)
+        self.tripwire_changed.emit()
+        return True
 
     def remove_region(self, region_id):
         """حذف یک محدوده‌ی مشخص با شناسه‌اش (از پنل مدیریت محدوده‌ها) و
@@ -818,6 +1059,7 @@ class CameraSlotWidget(QWidget):
         # جداگانه از cameras.json بارگذاری می‌کند).
         self.pending_points = None
         self.regions = []
+        self._editing_region_id = None
         self.video_label.set_pending_points_norm(None)
         self.video_label.set_confirmed_regions([])
         self.video_label.set_draw_mode(False)
@@ -844,6 +1086,20 @@ class RegionManagerDialog(QDialog):
         layout.addWidget(QLabel("محدوده‌های تعریف‌شده برای این دوربین:"))
         self.list_widget = QListWidget()
         layout.addWidget(self.list_widget, 1)
+
+        # رفع درخواست «بتونه اندازه و شکل محدوده تغییر بده»: این دکمه همین
+        # دیالوگ را می‌بندد و روی تصویر زنده‌ی همان دوربین، محدوده‌ی
+        # انتخاب‌شده را به‌شکل یک پیش‌نمایش سبزِ قابل‌کشیدن درمی‌آورد
+        # (رجوع کنید به CameraSlotWidget.start_edit_region) - از همان
+        # دکمه‌های «✅ تایید و نام‌گذاری»/«❌ لغو رسم» نوار ابزار (که در حالت
+        # ویرایش به «💾 ذخیره ویرایش شکل»/«↩ لغو ویرایش» تغییر متن می‌دهند)
+        # برای ذخیره یا انصراف استفاده می‌شود.
+        self.edit_btn = QPushButton("✏ ویرایش شکل/اندازه")
+        self.edit_btn.setToolTip(
+            "این دیالوگ را می‌بندد و امکان کشیدن گوشه‌های این محدوده را روی تصویر دوربین فعال می‌کند."
+        )
+        self.edit_btn.clicked.connect(self._on_edit_clicked)
+        layout.addWidget(self.edit_btn)
 
         self.remove_btn = QPushButton("🗑 حذف محدوده‌ی انتخاب‌شده")
         self.remove_btn.clicked.connect(self._on_remove_clicked)
@@ -874,6 +1130,27 @@ class RegionManagerDialog(QDialog):
         if self.on_changed is not None:
             self.on_changed()
         self._reload()
+
+    def _on_edit_clicked(self):
+        item = self.list_widget.currentItem()
+        if item is None:
+            QMessageBox.information(self, "ویرایش شکل/اندازه", "ابتدا یک محدوده را از فهرست انتخاب کنید.")
+            return
+        region_id = item.data(Qt.ItemDataRole.UserRole)
+        if not self.slot.start_edit_region(region_id):
+            QMessageBox.information(
+                self, "ویرایش شکل/اندازه",
+                "الان امکان شروع ویرایش نیست (یک رسم/ویرایش دیگر در حال انجام است)."
+            )
+            return
+        QMessageBox.information(
+            self, "ویرایش شکل/اندازه",
+            "گوشه‌های سبزِ روی تصویر را با کلیک-و-درگ جابه‌جا کنید. برای افزودن گوشه‌ی "
+            "تازه روی وسط یک ضلع کلیک کنید؛ برای حذف یک گوشه، روی آن کلیک راست کنید "
+            "(حداقل ۳ گوشه لازم است). در پایان از نوار ابزار «💾 ذخیره ویرایش شکل» یا "
+            "«↩ لغو ویرایش» را بزنید."
+        )
+        self.accept()
 
 
 class CameraGridWidget(QWidget):
@@ -1342,6 +1619,29 @@ class MainWindow(QMainWindow):
         self.draw_line_btn.toggled.connect(self._on_draw_line_toggled)
         grid_toolbar.addWidget(self.draw_line_btn)
 
+        # رفع درخواست «یک حالت جدید که خودش سطح زمین رو تشخیص بده و کلش رو
+        # محدوده محسوب کنه»: به‌جای کلیک‌های متوالی دستی، این دکمه بلافاصله
+        # کل کادر تصویر زنده‌ی دوربین انتخاب‌شده را - در عمل معادل «کل زمینی
+        # که دوربین می‌بیند» - به‌عنوان یک محدوده‌ی تازه و در انتظار تایید
+        # می‌گذارد (دقیقاً مثل رسم دستی، با همان دکمه‌های تایید/لغوِ پایین).
+        # این محدوده هم مثل هر محدوده‌ی دیگری کاملاً قابل ویرایش است - قبل
+        # از تایید (با کشیدن گوشه‌ها) یا بعداً از «مدیریت محدوده‌ها».
+        self.auto_region_btn = QPushButton("🌐 تشخیص خودکار محدوده (کل تصویر)")
+        self.auto_region_btn.setToolTip(
+            "۱) یک دوربین را از شبکه انتخاب کنید (کلیک روی خانه‌اش)\n"
+            "۲) این دکمه را بزنید - کل تصویر دوربین به‌عنوان محدوده در نظر گرفته می‌شود\n"
+            "۳) در صورت نیاز، گوشه‌های آن را با ماوس بکشید تا شکل/اندازه‌اش را دقیق‌تر کنید\n"
+            "   (مثلاً گوشه‌ای را عقب بکشید تا یک در ورودی از محدوده کنار برود)\n"
+            "۴) «✅ تایید و نام‌گذاری» را بزنید\n"
+            "توجه: این برنامه مدل جداگانه‌ای برای تشخیص دقیقِ کفِ زمین ندارد؛ «تشخیص خودکار» "
+            "یعنی کل کادر تصویر دوربین به‌عنوان محدوده گرفته می‌شود، نه شناسایی هوشمند مرز زمین."
+        )
+        self.auto_region_btn.setStyleSheet(
+            "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
+        )
+        self.auto_region_btn.clicked.connect(self._on_auto_region_clicked)
+        grid_toolbar.addWidget(self.auto_region_btn)
+
         self.confirm_line_btn = QPushButton("✅ تایید و نام‌گذاری")
         self.confirm_line_btn.setEnabled(False)
         self.confirm_line_btn.setToolTip(
@@ -1492,9 +1792,38 @@ class MainWindow(QMainWindow):
         slot.set_draw_mode(checked)
         self._refresh_line_buttons()
 
+    def _on_auto_region_clicked(self):
+        slot = self._selected_slot()
+        if slot is None or slot.cam is None:
+            QMessageBox.information(
+                self, "تشخیص خودکار محدوده",
+                "ابتدا یک دوربین را از شبکه‌ی نمایش انتخاب کنید (روی خانه‌اش کلیک کنید)."
+            )
+            return
+        if slot.is_draw_mode():
+            self.draw_line_btn.setChecked(False)
+        if not slot.start_auto_full_frame_region():
+            QMessageBox.information(
+                self, "تشخیص خودکار محدوده",
+                "ابتدا محدوده‌ی در انتظار/در حال ویرایشِ فعلی را با «✅ تایید» یا «❌ لغو» تمام کنید."
+            )
+            return
+        self._refresh_line_buttons()
+
     def _on_confirm_line_clicked(self):
         slot = self._selected_slot()
         if slot is None or not slot.has_pending_region():
+            return
+        # رفع درخواست «قابلیت ادیت‌کردن»: اگر در حال ویرایشِ شکل/اندازه‌ی یک
+        # محدوده‌ی از قبل تایید‌شده هستیم (رجوع کنید به
+        # CameraSlotWidget.start_edit_region)، همین دکمه به‌جای پرسیدن یک
+        # نام تازه، فقط نقاط جدید را روی همان محدوده ذخیره می‌کند - نامش
+        # دست‌نخورده می‌ماند.
+        if slot.is_editing_region():
+            region = slot.save_region_edit()
+            if region is not None and slot.cam is not None:
+                self.camera_store.update_camera(slot.cam["id"], regions=list(slot.regions))
+            self._refresh_line_buttons()
             return
         name, ok = QInputDialog.getText(
             self, "نام‌گذاری محدوده",
@@ -1529,7 +1858,13 @@ class MainWindow(QMainWindow):
         slot = self._selected_slot()
         if slot is None:
             return
-        slot.cancel_pending_region()
+        # رفع درخواست «قابلیت ادیت‌کردن»: در حالت ویرایشِ یک محدوده‌ی
+        # قبلاً تایید‌شده، این دکمه فقط ویرایش را لغو می‌کند (خودِ محدوده با
+        # شکل/اندازه‌ی قبلی دست‌نخورده می‌ماند) - نه اینکه محدوده حذف شود.
+        if slot.is_editing_region():
+            slot.cancel_region_edit()
+        else:
+            slot.cancel_pending_region()
         self.draw_line_btn.blockSignals(True)
         self.draw_line_btn.setChecked(False)
         self.draw_line_btn.blockSignals(False)
@@ -1576,9 +1911,24 @@ class MainWindow(QMainWindow):
         slot = self._selected_slot()
         has_pending = slot.has_pending_region() if slot is not None else False
         has_confirmed = bool(slot.regions) if slot is not None else False
+        is_editing = slot.is_editing_region() if slot is not None else False
         self.confirm_line_btn.setEnabled(bool(has_pending))
         self.redraw_line_btn.setEnabled(bool(has_pending))
         self.manage_regions_btn.setEnabled(bool(has_confirmed))
+        # رفع درخواست «قابلیت ادیت‌کردن»: وقتی یک محدوده‌ی «در انتظار» (چه
+        # تازه رسم‌شده، چه محدوده‌ی خودکارِ کل تصویر، چه در حال ویرایش شکلِ
+        # یک محدوده‌ی قبلی) روی تصویر هست، رسم/تشخیص خودکارِ تازه غیرفعال
+        # می‌شود تا دو جریان هم‌زمان با هم قاطی نشوند؛ متن دکمه‌های
+        # تایید/لغو هم بسته به این‌که «ویرایش یک محدوده‌ی موجود» است یا
+        # «محدوده‌ی تازه»، عوض می‌شود.
+        self.draw_line_btn.setEnabled(not has_pending)
+        self.auto_region_btn.setEnabled(not has_pending)
+        if is_editing:
+            self.confirm_line_btn.setText("💾 ذخیره ویرایش شکل")
+            self.redraw_line_btn.setText("↩ لغو ویرایش")
+        else:
+            self.confirm_line_btn.setText("✅ تایید و نام‌گذاری")
+            self.redraw_line_btn.setText("❌ لغو رسم")
         self.draw_line_btn.blockSignals(True)
         self.draw_line_btn.setChecked(bool(slot.is_draw_mode()) if slot is not None else False)
         self.draw_line_btn.blockSignals(False)
