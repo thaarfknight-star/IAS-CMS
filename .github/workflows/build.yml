@@ -77,6 +77,27 @@ jobs:
         }
         Write-Host "yolov8n.pt آماده‌ی بسته‌بندی است: $((Get-Item yolov8n.pt).Length) بایت"
 
+    - name: Cache SegFormer floor-detection weights
+      # رفع درخواست «تشخیص هوشمند زمین با AI»: دقیقاً همان الگوی cache‌ی
+      # yolov8n.pt بالا - وزن مدل SegFormer-B0 (ADE20K) هم فقط یک‌بار
+      # دانلود و در کش نگه داشته می‌شود تا build‌های بعدی دوباره دانلودش
+      # نکنند (رجوع کنید به floor_detector.py: _LOCAL_MODEL_DIRNAME).
+      id: segformer-weights-cache
+      uses: actions/cache@v4
+      with:
+        path: segformer_floor_model
+        key: segformer-floor-weights-v1
+
+    - name: Download SegFormer floor-detection weights (فقط اگر در کش نبود)
+      if: steps.segformer-weights-cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        python -c "from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation; m='nvidia/segformer-b0-finetuned-ade-512-512'; p=SegformerImageProcessor.from_pretrained(m); mdl=SegformerForSemanticSegmentation.from_pretrained(m); p.save_pretrained('segformer_floor_model'); mdl.save_pretrained('segformer_floor_model')"
+        if (-not (Test-Path "segformer_floor_model\config.json")) {
+          throw "دانلود وزن مدل SegFormer (تشخیص هوشمند زمین) موفق نشد."
+        }
+        Write-Host "segformer_floor_model آماده‌ی بسته‌بندی است."
+
     - name: Restore Nuitka cache (MinGW64 + ماژول‌های کامپایل‌شده)
       # روی مسیر quick_test (PyInstaller) اصلاً از Nuitka استفاده نمی‌شود، پس
       # restore این کش (که می‌تواند چند گیگابایت باشد) فقط وقت تلف می‌کند.
@@ -149,9 +170,11 @@ jobs:
           "--windowed"
           "--add-data=faces;faces"
           "--add-data=yolov8n.pt;."
+          "--add-data=segformer_floor_model;segformer_floor_model"
           "--collect-all=ultralytics"
           "--collect-all=torch"
           "--collect-all=torchvision"
+          "--collect-all=transformers"
           "--collect-all=face_recognition_models"
           "--collect-all=cv2"
           "--distpath=dist"
@@ -229,6 +252,8 @@ jobs:
           "--include-package-data=ultralytics"
           "--include-package=torch"
           "--include-package=torchvision"
+          "--include-package=transformers"
+          "--include-package-data=transformers"
           # نکته‌ی مهم - تاریخچه‌ی این تصمیم: قبلاً اینجا چند ماژول از torch/
           # وابستگی‌هایش با --nofollow-import-to کنار گذاشته می‌شدند (sympy،
           # torch.onnx، torch.distributed، torch.utils.tensorboard،
@@ -248,6 +273,14 @@ jobs:
           # غیرفعال بماند.
 
           "--include-data-files=yolov8n.pt=yolov8n.pt"
+          # رفع درخواست «تشخیص هوشمند زمین با AI»: پوشه‌ی وزن مدل SegFormer
+          # (دانلود‌شده در step «Download SegFormer floor-detection weights»
+          # بالاتر) هم مثل yolov8n.pt مستقیم داخل exe پرتابل بسته‌بندی
+          # می‌شود - روی سیستم کاربر نهایی نه دانلود و نه نصبی لازم است.
+          # floor_detector.py._resolve_model_dir همین پوشه‌ی بسته‌بندی‌شده
+          # را (کنار محل استخراج __nuitka_binary_dir__) در زمان اجرا پیدا
+          # می‌کند.
+          "--include-data-dir=segformer_floor_model=segformer_floor_model"
 
           # نکته‌ی مهم: این سه ماژول جداگانه از exclude‌های قبلی (torch.onnx،
           # torch.distributed و ...) هستند و به همان دلیل حذف نشدند - این‌ها
