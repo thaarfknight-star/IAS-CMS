@@ -19,6 +19,7 @@ from face_engine import FaceEngine
 from scanner import NetworkScanThread
 from camera_store import CameraStore
 from camera_stream import CameraStreamThread, region_to_polygon
+from floor_detector import FloorDetectThread
 from add_camera_dialog import AddCameraDialog
 from add_nvr_dialog import AddNVRDialog
 from nvr_scanner import DirectCameraProbeThread
@@ -759,6 +760,30 @@ class CameraSlotWidget(QWidget):
             (inset, inset), (1 - inset, inset),
             (1 - inset, 1 - inset), (inset, 1 - inset),
         ]
+        self.pending_points = points
+        self.video_label.set_pending_points_norm(points, editing_existing=False)
+        self.video_label.set_draw_mode(False)
+        self.tripwire_changed.emit()
+        return True
+
+    def start_ai_floor_region(self, points_norm) -> bool:
+        """رفع درخواست «یک حالت جدید که خودش سطح زمین رو تشخیص بده و کلش
+        رو محدوده محسوب کنه ولی بازم قابل ادیت باشه، دقیق‌تر با مدل هوش
+        مصنوعی (Segmentation)»: برخلاف start_auto_full_frame_region (که
+        همیشه ۴ گوشه‌ی ثابتِ کل کادر را می‌گذاشت چون مدلی در دسترس نبود)،
+        اینجا points_norm همان چندضلعیِ واقعاً تشخیص‌داده‌شده‌ی سطح زمین است
+        (رجوع کنید به floor_detector.FloorDetector.detect_polygon، صدا
+        زده‌شده از MainWindow._on_ai_floor_detect_finished). دقیقاً مثل هر
+        محدوده‌ی دیگر - چه دستی‌رسم‌شده چه خودکارِ کل تصویر - قبل از تایید
+        کاملاً با ماوس قابل ویرایش (جابه‌جایی/افزودن/حذف گوشه) است؛ کاربر
+        می‌تواند مثلاً گوشه‌ای را که اشتباهی روی یک فرش/سایه رفته عقب بکشد.
+        اگر چیزی در حال رسم/ویرایش دیگری باشد یا کمتر از ۳ نقطه داده شده
+        باشد، False برمی‌گرداند."""
+        if self.pending_points is not None or self._editing_region_id is not None:
+            return False
+        if not points_norm or len(points_norm) < 3:
+            return False
+        points = [tuple(p) for p in points_norm]
         self.pending_points = points
         self.video_label.set_pending_points_norm(points, editing_existing=False)
         self.video_label.set_draw_mode(False)
@@ -1642,6 +1667,42 @@ class MainWindow(QMainWindow):
         self.auto_region_btn.clicked.connect(self._on_auto_region_clicked)
         grid_toolbar.addWidget(self.auto_region_btn)
 
+        # رفع درخواست «یک حالت جدید که خودش سطح زمین رو تشخیص بده و کلش رو
+        # محدوده محسوب کنه، ولی بازم قابل ادیت باشه، دقیق‌تر با مدل هوش
+        # مصنوعی (Segmentation)»: برخلاف دکمه‌ی بالا (که فقط کل کادر تصویر
+        # را می‌گذارد چون مدل جداگانه‌ای نداشت)، این دکمه واقعاً از یک مدل
+        # Segmentation (SegFormer/ADE20K - رجوع کنید به floor_detector.py)
+        # روی آخرین فریمِ زنده‌ی همین دوربین استفاده می‌کند تا فقط سطح
+        # زمین/کفِ واقعی را (نه کل کادر شامل دیوار/سقف/اثاثیه) به‌عنوان
+        # محدوده‌ی پیشنهادی بگذارد. نتیجه، دقیقاً مثل هر محدوده‌ی دیگر،
+        # کاملاً با ماوس قابل ویرایش است. چون بارگذاری/اجرای مدل چند ثانیه
+        # طول می‌کشد، در یک ترد جدا (FloorDetectThread) اجرا می‌شود تا UI
+        # فریز نشود - رجوع کنید به _on_ai_floor_region_clicked.
+        self.ai_floor_btn = QPushButton("🧭 تشخیص هوشمند زمین (AI)")
+        self.ai_floor_btn.setToolTip(
+            "۱) یک دوربین را از شبکه انتخاب کنید (کلیک روی خانه‌اش)\n"
+            "۲) این دکمه را بزنید - با مدل هوش مصنوعی (Segmentation)، فقط "
+            "سطح زمین/کفِ واقعیِ تصویر تشخیص داده و به‌عنوان محدوده پیشنهاد "
+            "می‌شود (نه کل کادر تصویر)\n"
+            "۳) در صورت نیاز، گوشه‌ها را با ماوس بکشید/اضافه/حذف کنید تا "
+            "دقیق‌تر شود\n"
+            "۴) «✅ تایید و نام‌گذاری» را بزنید\n"
+            "نکته: اولین استفاده ممکن است به‌خاطر دانلود یک‌بارِ مدل (حدود "
+            "۱۴ مگابایت) چند ثانیه بیشتر طول بکشد. اگر این قابلیت روی سیستم "
+            "شما در دسترس نباشد، به‌جایش می‌توانید از «تشخیص خودکار محدوده "
+            "(کل تصویر)» یا رسم دستی استفاده کنید."
+        )
+        self.ai_floor_btn.setStyleSheet(
+            "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
+        )
+        self.ai_floor_btn.clicked.connect(self._on_ai_floor_region_clicked)
+        grid_toolbar.addWidget(self.ai_floor_btn)
+        # نگه‌داشتن ارجاع به تردِ در حال اجرا (اگر باشد) - هم برای جلوگیری
+        # از garbage-collect شدنِ زودهنگام QThread در حال اجرا، هم برای
+        # اینکه بدانیم همین الان یک تشخیص در جریان است (رجوع کنید به
+        # _on_ai_floor_region_clicked).
+        self._floor_detect_thread = None
+
         self.confirm_line_btn = QPushButton("✅ تایید و نام‌گذاری")
         self.confirm_line_btn.setEnabled(False)
         self.confirm_line_btn.setToolTip(
@@ -1810,6 +1871,74 @@ class MainWindow(QMainWindow):
             return
         self._refresh_line_buttons()
 
+    def _on_ai_floor_region_clicked(self):
+        """رفع درخواست «حالت جدید که خودش سطح زمین رو تشخیص بده»: برخلاف
+        _on_auto_region_clicked (که فوری و همزمان کل کادر را می‌گذارد)،
+        اینجا باید روی آخرین فریمِ زنده‌ی دوربین یک مدل واقعی اجرا شود -
+        این کار در یک ترد جدا (FloorDetectThread) انجام می‌شود تا در طول
+        چند ثانیه‌ی پردازش (به‌خصوص بار اول، وقتی مدل هنوز دانلود/بارگذاری
+        نشده)، بقیه‌ی برنامه (از جمله پخش زنده‌ی سایر دوربین‌های باز) فریز
+        نشود."""
+        if self._floor_detect_thread is not None:
+            return  # یک تشخیص از قبل در حال اجراست؛ از کلیک تکراری صرف‌نظر می‌شود
+        slot = self._selected_slot()
+        if slot is None or slot.cam is None:
+            QMessageBox.information(
+                self, "تشخیص هوشمند زمین",
+                "ابتدا یک دوربین را از شبکه‌ی نمایش انتخاب کنید (روی خانه‌اش کلیک کنید)."
+            )
+            return
+        if slot.has_pending_region() or slot.is_editing_region():
+            QMessageBox.information(
+                self, "تشخیص هوشمند زمین",
+                "ابتدا محدوده‌ی در انتظار/در حال ویرایشِ فعلی را با «✅ تایید» یا «❌ لغو» تمام کنید."
+            )
+            return
+        frame = slot.latest_raw_frame
+        if frame is None:
+            QMessageBox.information(
+                self, "تشخیص هوشمند زمین",
+                "هنوز هیچ فریمی از این دوربین دریافت نشده - چند لحظه صبر کنید تا تصویر زنده بیاید و دوباره امتحان کنید."
+            )
+            return
+        if slot.is_draw_mode():
+            self.draw_line_btn.setChecked(False)
+        self.ai_floor_btn.setEnabled(False)
+        self.ai_floor_btn.setText("⏳ در حال تحلیل تصویر...")
+        thread = FloorDetectThread(frame.copy(), parent=self)
+        thread.finished_signal.connect(
+            lambda points, message, _slot=slot: self._on_ai_floor_detect_finished(_slot, points, message)
+        )
+        thread.finished.connect(self._on_ai_floor_detect_thread_done)
+        self._floor_detect_thread = thread
+        thread.start()
+
+    def _on_ai_floor_detect_thread_done(self):
+        self._floor_detect_thread = None
+        self.ai_floor_btn.setText("🧭 تشخیص هوشمند زمین (AI)")
+        self._refresh_line_buttons()
+
+    def _on_ai_floor_detect_finished(self, slot, points, message):
+        """رفع درخواست: نتیجه‌ی FloorDetectThread را روی تصویر همان دوربین
+        (slot) به‌عنوان یک محدوده‌ی «در انتظار» و کاملاً قابل‌ویرایش قرار
+        می‌دهد - دقیقاً مثل خروجی رسم دستی یا تشخیص خودکار کل تصویر. اگر
+        مدل چیزی پیدا نکرد یا اصلاً در دسترس نبود، به‌جای گذاشتن یک محدوده‌ی
+        نادرست/حدسی، فقط دلیل را روشن به کاربر می‌گوید و پیشنهاد می‌دهد از
+        «تشخیص خودکار محدوده (کل تصویر)» یا رسم دستی استفاده کند."""
+        if points is None:
+            QMessageBox.warning(self, "تشخیص هوشمند زمین ناموفق بود", message)
+            return
+        # ممکن است در طول چند ثانیه‌ی پردازش، کاربر دوربین دیگری انتخاب
+        # کرده یا محدوده‌ی دیگری روی همین دوربین شروع کرده باشد؛ در این
+        # حالت نتیجه‌ی دیرکرد‌شده را بی‌سروصدا نادیده می‌گیریم تا چیزی
+        # غیرمنتظره روی تصویر ظاهر نشود.
+        if slot.has_pending_region() or slot.is_editing_region():
+            return
+        if not slot.start_ai_floor_region(points):
+            return
+        if self._selected_slot() is slot:
+            self._refresh_line_buttons()
+
     def _on_confirm_line_clicked(self):
         slot = self._selected_slot()
         if slot is None or not slot.has_pending_region():
@@ -1923,6 +2052,13 @@ class MainWindow(QMainWindow):
         # «محدوده‌ی تازه»، عوض می‌شود.
         self.draw_line_btn.setEnabled(not has_pending)
         self.auto_region_btn.setEnabled(not has_pending)
+        # رفع درخواست: دکمه‌ی «تشخیص هوشمند زمین» هم مثل «تشخیص خودکار
+        # (کل تصویر)» وقتی محدوده‌ای در انتظار/در حال ویرایش است غیرفعال
+        # می‌شود؛ علاوه بر آن، اگر همین الان یک تشخیص در حال اجرا باشد
+        # (self._floor_detect_thread) هم غیرفعال می‌ماند تا این تابع (که از
+        # چند رویداد دیگر - مثل تغییر انتخاب دوربین - هم صدا زده می‌شود)
+        # وسط پردازش دوباره فعالش نکند.
+        self.ai_floor_btn.setEnabled(not has_pending and self._floor_detect_thread is None)
         if is_editing:
             self.confirm_line_btn.setText("💾 ذخیره ویرایش شکل")
             self.redraw_line_btn.setText("↩ لغو ویرایش")
