@@ -2213,7 +2213,7 @@ class MainWindow(QMainWindow):
         while self.fire_panel_list.count() > 300:
             self.fire_panel_list.takeItem(self.fire_panel_list.count() - 1)
 
-
+    def _refresh_line_buttons(self):
         """دکمه‌های «تایید و نام‌گذاری»/«لغو رسم»/«مدیریت محدوده‌ها» و
         وضعیت تیک‌خورده‌ی «رسم محدوده هشدار» را بر اساس خانه‌ی فعلاً
         انتخاب‌شده به‌روز می‌کند - چون هر خانه محدوده‌های مستقل خودش را
