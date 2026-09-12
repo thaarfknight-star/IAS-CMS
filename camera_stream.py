@@ -361,6 +361,37 @@ class CameraStreamThread(QThread):
         self._last_fire_detections = []  # برای رسم باکس روی display_frame در run()
         self._last_fire_event_ts = 0.0  # زمان آخرین fire_event_signal ارسال‌شده (برای cooldown)
 
+        # --- رفع درخواست «تصویر با تاخیر خیلی زیادی می‌آید» ---
+        # علت واقعی این تاخیر، برخلاف تصور اول، در همین ترد (خواندن RTSP)
+        # نبود - اینجا هر فریم بلافاصله بعد از رسیدن با frame_ready.emit
+        # ارسال می‌شد. مشکل در سمت GUI (main.py: CameraSlotWidget.on_frame_ready)
+        # بود: تبدیل BGR->RGB، ساخت QImage و Scale با کیفیت بالا (Smooth)
+        # روی *هر* فریم انجام می‌شد؛ چون این کار روی ترد UI کندتر از نرخ
+        # واقعی فریم‌های شبکه (مخصوصاً با چند دوربین هم‌زمان باز) بود،
+        # سیگنال‌های صف‌شده‌ی Qt (چون فرستنده/گیرنده تردهای متفاوتی دارند)
+        # پشت سر هم انباشته می‌شدند و فاصله‌ی «تصویر نمایش‌داده‌شده» تا
+        # «تصویر واقعی» به‌مرور بیشتر و بیشتر می‌شد - دقیقاً حسِ «تاخیر خیلی
+        # زیاد»، حتی با اینکه خودِ اتصال RTSP همیشه کم‌تاخیر بود.
+        # راه‌حل: یک الگوی «آخرین‌مقدار» (backpressure) بین این ترد و GUI:
+        # قبل از emit، بررسی می‌شود که آیا GUI فریمِ قبلی را تمام‌کرده (Event
+        # ست‌شده) یا نه؛ اگر GUI هنوز مشغول است، این فریم فقط برای *نمایش*
+        # دور انداخته می‌شود (نه برای تشخیص - آن مسیر کاملاً جدا و از قبل
+        # async است). به این ترتیب هیچ‌وقت بیش از یک فریم در صفِ GUI منتظر
+        # نمی‌ماند و تاخیر نمایش هرگز به‌صورت تصاعدی بالا نمی‌رود - همیشه
+        # تقریباً برابر «زمان رسم یک فریم» است، فارغ از تعداد دوربین‌های
+        # هم‌زمان باز. رجوع کنید به mark_display_done (صدا زده‌شده از
+        # main.py بعد از پایان setPixmap هر فریم).
+        self._gui_ready = threading.Event()
+        self._gui_ready.set()
+
+    def mark_display_done(self):
+        """باید بعد از پایانِ واقعیِ رسمِ هر فریم روی GUI (setPixmap) صدا
+        زده شود - رجوع کنید به توضیح بالا. اجازه می‌دهد فریمِ بعدی برای
+        نمایش ارسال شود؛ بدون این فراخوانی، این ترد فرض می‌کند GUI هنوز
+        مشغول فریم قبلی است و فریم‌های تازه‌تر را فقط برای نمایش (نه
+        تشخیص) رد می‌کند."""
+        self._gui_ready.set()
+
     def set_people_counting(self, enabled: bool):
         """روشن/خاموش کردن شمارش افراد Real Time برای این دوربین."""
         self.count_people_enabled = bool(enabled)
@@ -514,7 +545,14 @@ class CameraStreamThread(QThread):
                 fire_smoke_detector.draw_boxes(display_frame, self._last_fire_detections)
 
             # frame خام (بدون باکس) هم ارسال می‌شود تا برای «ثبت چهره از تصویر زنده» استفاده شود.
-            self.frame_ready.emit(display_frame, frame)
+            # رفع تاخیر تصاعدی نمایش: فقط وقتی GUI فریمِ قبلی را تمام کرده
+            # باشد (mark_display_done صدا زده شده) فریمِ تازه برای *نمایش*
+            # ارسال می‌شود؛ در غیر این صورت همین فریم فقط دور انداخته
+            # می‌شود (نه این‌که در صفِ Qt منتظر بماند) - رجوع کنید به توضیح
+            # self._gui_ready در __init__.
+            if self._gui_ready.is_set():
+                self._gui_ready.clear()
+                self.frame_ready.emit(display_frame, frame)
 
         cap.release()
         self._executor.shutdown(wait=False)

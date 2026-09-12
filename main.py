@@ -1062,16 +1062,29 @@ class CameraSlotWidget(QWidget):
         self.status_label.setText(f"خطا: {msg}")
 
     def on_frame_ready(self, display_frame, raw_frame):
-        self.latest_raw_frame = raw_frame
-        pixmap = _bgr_to_pixmap(display_frame)
-        if pixmap is None:
-            return
-        self.video_label.setPixmap(
-            pixmap.scaled(
-                self.video_label.width(), self.video_label.height(),
-                Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
+        try:
+            self.latest_raw_frame = raw_frame
+            pixmap = _bgr_to_pixmap(display_frame)
+            if pixmap is None:
+                return
+            # رفع درخواست «تصویر با تاخیر خیلی زیاد می‌آید»: SmoothTransformation
+            # (درون‌یابی دوخطی با کیفیت بالا) روی هر فریمِ هر دوربینِ باز
+            # قابل‌توجه کند است؛ FastTransformation (نزدیک‌ترین‌همسایه) از نظر
+            # کیفیت روی یک ویدیوی زنده (نه یک عکس ثابت) عملاً غیرقابل‌تشخیص
+            # است ولی چند برابر سریع‌تر است - رجوع کنید به توضیح کامل‌تر در
+            # camera_stream.CameraStreamThread.__init__ (self._gui_ready).
+            self.video_label.setPixmap(
+                pixmap.scaled(
+                    self.video_label.width(), self.video_label.height(),
+                    Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation
+                )
             )
-        )
+        finally:
+            # مهم: در finally تا حتی اگر رسم به هر دلیلی استثنا بدهد، ترد
+            # پخط برای همیشه منتظر «تمام‌شدنِ GUI» نماند و پخش زنده کاملاً
+            # متوقف نشود.
+            if self.stream_thread is not None:
+                self.stream_thread.mark_display_done()
 
     def stop(self):
         if self.stream_thread and self.stream_thread.isRunning():
