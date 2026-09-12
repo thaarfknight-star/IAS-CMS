@@ -32,6 +32,9 @@ from report_store import report_store
 from reports_dialog import ReportsDialog
 from nvr_storage_dialog import NVRStorageDialog
 from device_detect import DeviceDetectThread
+from fire_alarm_store import FireAlarmStore
+from fire_alarm_io import FireAlarmMonitorThread
+from add_fire_alarm_dialog import AddFireAlarmDialog
 
 # بهینه‌سازی برای سیستم‌های ضعیف (رم کم / بدون کارت گرافیک):
 # OpenCV به‌صورت پیش‌فرض برای عملیات داخلی (resize، cvtColor و ...) روی *تمام*
@@ -993,7 +996,7 @@ class CameraSlotWidget(QWidget):
 
     # --------------------------------------------------------------- start -
 
-    def start(self, cam: dict, rtsp_url: str, face_engine: FaceEngine, face_event_cb):
+    def start(self, cam: dict, rtsp_url: str, face_engine: FaceEngine, face_event_cb, fire_event_cb=None):
         self.cam = cam
         # نمایش اسم دوربین همراه با IP (کنار هم، جلوی شمارش افراد در همین
         # هدر). اگر کاربر برای دوربین اسمی وارد نکرده باشد، cam["name"] از
@@ -1030,6 +1033,13 @@ class CameraSlotWidget(QWidget):
         self.stream_thread.face_event_signal.connect(
             lambda person, crop: face_event_cb(cam, person, crop)
         )
+        # رفع درخواست: رویداد آتش/دود این خانه هم (در صورت وجود callback) به
+        # همان الگوی face_event_signal بالا، همراه با کل دیکشنری دوربین (cam)
+        # به MainWindow.on_fire_event پاس داده می‌شود.
+        if fire_event_cb is not None:
+            self.stream_thread.fire_event_signal.connect(
+                lambda label, frame, confidence: fire_event_cb(cam, label, frame, confidence)
+            )
         self.stream_thread.start()
         # رفع درخواست: اگر برای این دوربین قبلاً محدوده‌های هشدار رسم و
         # ذخیره شده باشند (cameras.json)، همان لحظه‌ی اتصال دوباره روی ترد
@@ -1194,10 +1204,15 @@ class CameraGridWidget(QWidget):
     tripwire_changed = pyqtSignal()
 
     def __init__(self, face_engine: FaceEngine, on_face_event, on_external_camera_drop=None,
-                 on_region_alert=None, parent=None):
+                 on_region_alert=None, on_fire_event=None, parent=None):
         super().__init__(parent)
         self.face_engine = face_engine
         self.on_face_event = on_face_event
+        # رفع درخواست: تشخیص تصویری آتش/دود هر خانه (camera_stream.py:
+        # fire_event_signal)، مثل on_face_event، به این callback در
+        # MainWindow پاس داده می‌شود تا هم در پنل رویدادهای حریق نمایش داده
+        # شود و هم در report_store ثبت شود.
+        self.on_fire_event = on_fire_event
         # رفع درخواست: با ورود شخصی به یکی از محدوده‌های هشدار هر خانه، این
         # callback (در MainWindow) به هر خانه‌ی تازه‌ساخته‌شده هم پاس داده
         # می‌شود تا رویداد در پنل تشخیص چهره هم ثبت شود.
@@ -1294,7 +1309,7 @@ class CameraGridWidget(QWidget):
 
         for i, slot in enumerate(self.slots):
             if slot.cam is None:
-                slot.start(cam, rtsp_url, self.face_engine, self.on_face_event)
+                slot.start(cam, rtsp_url, self.face_engine, self.on_face_event, self.on_fire_event)
                 # اعمال وضعیت فعلیِ دکمه‌ی سراسریِ شمارش افراد روی دوربین
                 # تازه‌باز.
                 slot.set_people_counting(self._people_counting_enabled)
@@ -1321,7 +1336,7 @@ class CameraGridWidget(QWidget):
                 return
         target = self.slots[slot_index]
         target.stop()
-        target.start(cam, rtsp_url, self.face_engine, self.on_face_event)
+        target.start(cam, rtsp_url, self.face_engine, self.on_face_event, self.on_fire_event)
         target.set_people_counting(self._people_counting_enabled)
         self._select_index(slot_index)
 
@@ -1345,10 +1360,10 @@ class CameraGridWidget(QWidget):
         slot_a.stop()
         slot_b.stop()
         if cam_b is not None:
-            slot_a.start(cam_b, url_b, self.face_engine, self.on_face_event)
+            slot_a.start(cam_b, url_b, self.face_engine, self.on_face_event, self.on_fire_event)
             slot_a.set_people_counting(self._people_counting_enabled)
         if cam_a is not None:
-            slot_b.start(cam_a, url_a, self.face_engine, self.on_face_event)
+            slot_b.start(cam_a, url_a, self.face_engine, self.on_face_event, self.on_fire_event)
             slot_b.set_people_counting(self._people_counting_enabled)
 
         if self.selected_index == idx_a:
@@ -1460,8 +1475,17 @@ class MainWindow(QMainWindow):
         self._scan_ports_by_ip = {}  # ip -> [ports...] از آخرین اسکن شبکه
         self._detect_queue = []  # صف IPهایی که با انتخاب چندتایی باید پشت‌سرهم تشخیص داده شوند
 
+        # --- پنل‌های اعلام حریق فیزیکی (fire_alarm_store.py/fire_alarm_io.py) ---
+        self.fire_alarm_store = FireAlarmStore()
+        self.fire_alarm_threads: dict[str, FireAlarmMonitorThread] = {}
+        # بافرِ درون‌حافظه‌ی رویدادهای حریق/دود اخیر برای پنل ستون راست
+        # (تشخیص تصویری + پنل فیزیکی)؛ سقف تعداد برای جلوگیری از رشد بی‌رویه.
+        self._fire_events: list[dict] = []
+
         self.init_ui()
         self.reload_camera_list()
+        self.reload_fire_alarm_list()
+        self.start_all_fire_alarm_monitors()
 
     # ---------------------------------------------------------------- UI ---
 
@@ -1574,6 +1598,31 @@ class MainWindow(QMainWindow):
         reports_layout.addWidget(self.reports_btn)
         reports_group.setLayout(reports_layout)
         left_panel.addWidget(reports_group)
+
+        # بخش پنل‌های اعلام حریق فیزیکی: افزودن/لیست/حذف پنل‌های ISAPI/CGI/
+        # Modbus TCP - رجوع کنید به fire_alarm_store.py و fire_alarm_io.py.
+        fire_panel_group = QGroupBox("پنل‌های اعلام حریق")
+        fire_panel_layout = QVBoxLayout()
+
+        fire_btn_row = QHBoxLayout()
+        self.add_fire_panel_btn = QPushButton("+ افزودن پنل")
+        self.add_fire_panel_btn.clicked.connect(lambda: self.open_add_fire_alarm_dialog())
+        self.remove_fire_panel_btn = QPushButton("حذف پنل انتخاب‌شده")
+        self.remove_fire_panel_btn.clicked.connect(self.remove_selected_fire_panel)
+        fire_btn_row.addWidget(self.add_fire_panel_btn)
+        fire_btn_row.addWidget(self.remove_fire_panel_btn)
+
+        self.fire_panel_list = QListWidget()
+        self.fire_panel_list.itemDoubleClicked.connect(self.edit_fire_panel_item)
+        fire_panel_hint = QLabel("دابل‌کلیک: ویرایش پنل. 🟢 = مانیتورینگ فعال، ⚪ = متوقف")
+        fire_panel_hint.setStyleSheet("color: #888; font-size: 10px;")
+
+        fire_panel_layout.addLayout(fire_btn_row)
+        fire_panel_layout.addWidget(self.fire_panel_list)
+        fire_panel_layout.addWidget(fire_panel_hint)
+        fire_panel_group.setLayout(fire_panel_layout)
+        left_panel.addWidget(fire_panel_group)
+
         left_panel.addStretch()
 
         # ------------------------------------------------ ستون میانی: شبکه‌ی
@@ -1738,7 +1787,7 @@ class MainWindow(QMainWindow):
 
         self.camera_grid = CameraGridWidget(
             self.face_engine, self.on_face_event, on_external_camera_drop=self.on_camera_dropped_on_grid,
-            on_region_alert=self.on_region_alert,
+            on_region_alert=self.on_region_alert, on_fire_event=self.on_fire_event,
         )
         self.camera_grid.selection_changed.connect(lambda _idx: self._refresh_line_buttons())
         self.camera_grid.tripwire_changed.connect(self._refresh_line_buttons)
@@ -1762,6 +1811,21 @@ class MainWindow(QMainWindow):
         self.face_panel_list.setIconSize(QSize(64, 64))
         self.face_panel_list.setWordWrap(True)
         face_panel_layout.addWidget(self.face_panel_list)
+
+        # رفع درخواست: پنل رویدادهای حریق/دود زنده (تشخیص تصویری + پنل
+        # فیزیکی) - در همان ستون راست، زیر پنل تشخیص چهره، همراه با یک
+        # کادر جست‌وجو/فیلتر ساده (substring، بدون وابستگی جدید).
+        fire_events_group = QGroupBox("رویدادهای حریق/دود (زنده)")
+        fire_events_layout = QVBoxLayout()
+        self.fire_event_filter_input = QLineEdit()
+        self.fire_event_filter_input.setPlaceholderText("جست‌وجو (دوربین، نوع رویداد، پنل)...")
+        self.fire_event_filter_input.textChanged.connect(self._refresh_fire_event_list)
+        self.fire_event_list = QListWidget()
+        fire_events_layout.addWidget(self.fire_event_filter_input)
+        fire_events_layout.addWidget(self.fire_event_list)
+        fire_events_group.setLayout(fire_events_layout)
+        face_panel_layout.addWidget(fire_events_group)
+
         face_panel_group.setLayout(face_panel_layout)
 
         # رفع درخواست: عرض پنل سمت راست (پنل تشخیص چهره) باید دقیقاً هم‌اندازه‌ی
@@ -2678,6 +2742,152 @@ class MainWindow(QMainWindow):
         while self.face_panel_list.count() > 300:
             self.face_panel_list.takeItem(self.face_panel_list.count() - 1)
 
+    # -------------------------------------------------------- fire/smoke --
+
+    def reload_fire_alarm_list(self):
+        """لیست پنل‌های اعلام حریق ذخیره‌شده (fire_alarm_store.py) را در
+        fire_panel_list سمت چپ بازسازی می‌کند؛ 🟢/⚪ وضعیت فعلیِ ترد
+        مانیتورینگ هر پنل را نشان می‌دهد."""
+        self.fire_panel_list.clear()
+        for panel in self.fire_alarm_store.panels:
+            status = "🟢" if panel.get("id") in self.fire_alarm_threads else "⚪"
+            item = QListWidgetItem(f"{status} {panel['name']} ({panel.get('protocol', '?')})")
+            item.setData(Qt.ItemDataRole.UserRole, panel["id"])
+            self.fire_panel_list.addItem(item)
+
+    def open_add_fire_alarm_dialog(self, existing_panel: dict | None = None):
+        dialog = AddFireAlarmDialog(self, existing_panel=existing_panel)
+        if dialog.exec():
+            data = dialog.get_data()
+            if existing_panel:
+                self.fire_alarm_store.update_panel(existing_panel["id"], **data)
+                self.restart_fire_alarm_monitor(existing_panel["id"])
+            else:
+                panel = self.fire_alarm_store.add_panel(**data)
+                self.start_fire_alarm_monitor(panel)
+            self.reload_fire_alarm_list()
+
+    def edit_fire_panel_item(self, item: QListWidgetItem):
+        panel_id = item.data(Qt.ItemDataRole.UserRole)
+        panel = self.fire_alarm_store.get_panel(panel_id)
+        if panel:
+            self.open_add_fire_alarm_dialog(existing_panel=panel)
+
+    def remove_selected_fire_panel(self):
+        item = self.fire_panel_list.currentItem()
+        if not item:
+            QMessageBox.information(self, "توجه", "ابتدا یک پنل از لیست انتخاب کنید.")
+            return
+        panel_id = item.data(Qt.ItemDataRole.UserRole)
+        self.stop_fire_alarm_monitor(panel_id)
+        self.fire_alarm_store.remove_panel(panel_id)
+        self.reload_fire_alarm_list()
+
+    # --------------------------------------------------- fire event panel -
+
+    def _push_fire_event(self, text: str):
+        """رویداد جدید را به بافر درون‌حافظه اضافه و پنل فیلترشده را
+        بازسازی می‌کند."""
+        self._fire_events.insert(0, text)
+        self._fire_events = self._fire_events[:200]  # سقف بافر برای جلوگیری از رشد بی‌رویه
+        self._refresh_fire_event_list()
+
+    def _refresh_fire_event_list(self):
+        query = self.fire_event_filter_input.text().strip().lower()
+        self.fire_event_list.clear()
+        for text in self._fire_events:
+            if query and query not in text.lower():
+                continue
+            self.fire_event_list.addItem(text)
+
+    # -------------------------------------------------------------- خطاها -
+
+    def on_fire_event(self, cam: dict, label: str, frame, confidence: float):
+        """تشخیص تصویری آتش/دود روی یک دوربین (camera_stream.py:
+        fire_event_signal، به‌صورت cooldown-limited ارسال می‌شود). این
+        اسلات روی ترد اصلی UI اجرا می‌شود (Qt سیگنال بین‌تردی را خودکار به
+        صف ترد گیرنده می‌فرستد)، پس دستکاری ویجت‌ها اینجا امن است."""
+        camera_name = cam.get("name", "")
+        label_fa = "آتش" if label == "fire" else ("دود" if label == "smoke" else label)
+        ts = time.strftime("%H:%M:%S")
+        self._push_fire_event(f"[{ts}] 🔥 {camera_name} — {label_fa} ({confidence:.0%})")
+        report_store.log_fire_smoke_visual(
+            camera_name, label, frame, confidence,
+            nvr_id=cam.get("nvr_id"), channel=cam.get("channel"),
+        )
+
+    def on_fire_alarm_panel_triggered(self, panel_id: str, zone: str):
+        """با فعال شدن یک منطقه/ورودی پنل فیزیکی اعلام حریق فراخوانی
+        می‌شود (FireAlarmMonitorThread.panel_triggered - فقط روی تغییر
+        وضعیت، نه هر poll)."""
+        panel = self.fire_alarm_store.get_panel(panel_id)
+        name = panel["name"] if panel else panel_id
+        ts = time.strftime("%H:%M:%S")
+        self._push_fire_event(f"[{ts}] 🚨 پنل «{name}» — منطقه {zone} فعال شد")
+        report_store.log_fire_alarm_panel(name, zone, state="triggered")
+
+    def on_fire_alarm_panel_cleared(self, panel_id: str, zone: str):
+        panel = self.fire_alarm_store.get_panel(panel_id)
+        name = panel["name"] if panel else panel_id
+        ts = time.strftime("%H:%M:%S")
+        self._push_fire_event(f"[{ts}] ✅ پنل «{name}» — منطقه {zone} رفع شد")
+        report_store.log_fire_alarm_panel(name, zone, state="cleared")
+
+    def on_fire_alarm_panel_error(self, panel_id: str, message: str):
+        """خطای اتصال/وابستگی (مثلاً pymodbus نصب نیست) - فقط در پنل
+        رویدادها نمایش داده می‌شود، برنامه هرگز کرش نمی‌کند."""
+        panel = self.fire_alarm_store.get_panel(panel_id)
+        name = panel["name"] if panel else panel_id
+        ts = time.strftime("%H:%M:%S")
+        self._push_fire_event(f"[{ts}] ⚠️ پنل «{name}»: {message}")
+
+    # ----------------------------------------------- fire alarm lifecycle -
+
+    def start_fire_alarm_monitor(self, panel: dict):
+        """یک FireAlarmMonitorThread جدید برای این پنل می‌سازد و
+        سیگنال‌هایش را به هندلرهای بالا وصل می‌کند. اگر از قبل ترد فعالی
+        برای همین پنل وجود داشته باشد، کاری نمی‌کند (idempotent)."""
+        panel_id = panel["id"]
+        if panel_id in self.fire_alarm_threads:
+            return
+        thread = FireAlarmMonitorThread(panel, parent=self)
+        thread.panel_triggered.connect(
+            lambda zone, pid=panel_id: self.on_fire_alarm_panel_triggered(pid, zone)
+        )
+        thread.panel_cleared.connect(
+            lambda zone, pid=panel_id: self.on_fire_alarm_panel_cleared(pid, zone)
+        )
+        thread.connection_error.connect(
+            lambda msg, pid=panel_id: self.on_fire_alarm_panel_error(pid, msg)
+        )
+        thread.start()
+        self.fire_alarm_threads[panel_id] = thread
+
+    def stop_fire_alarm_monitor(self, panel_id: str):
+        """توقف تمیز ترد مانیتورینگ یک پنل: پرچم اجرای آن خاموش می‌شود و
+        حداکثر ۳ ثانیه برای پایان واقعی run() صبر می‌کنیم تا Qt هنگام
+        تخریب یک QThread در حال اجرا کرش نکند."""
+        thread = self.fire_alarm_threads.pop(panel_id, None)
+        if thread is not None:
+            thread.stop()
+            thread.wait(3000)
+
+    def restart_fire_alarm_monitor(self, panel_id: str):
+        self.stop_fire_alarm_monitor(panel_id)
+        panel = self.fire_alarm_store.get_panel(panel_id)
+        if panel:
+            self.start_fire_alarm_monitor(panel)
+
+    def start_all_fire_alarm_monitors(self):
+        """با هر بار بالا آمدن برنامه، مانیتورینگ تمام پنل‌های ذخیره‌شده
+        (fire_alarms.json) خودکار شروع می‌شود."""
+        for panel in self.fire_alarm_store.panels:
+            self.start_fire_alarm_monitor(panel)
+
+    def stop_all_fire_alarm_monitors(self):
+        for panel_id in list(self.fire_alarm_threads.keys()):
+            self.stop_fire_alarm_monitor(panel_id)
+
     # ------------------------------------------------------------- scan ---
 
     def run_network_scan(self):
@@ -2719,6 +2929,12 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.camera_grid.stop_all()
+        # رفع درخواست: تمام تردهای مانیتورینگ پنل‌های اعلام حریق فیزیکی هم
+        # باید قبل از بسته شدن پنجره متوقف شوند - وگرنه دقیقاً همان کرش
+        # «QThread destroyed while running» که چند خط پایین‌تر برای اسکن
+        # شبکه/تشخیص نوع دستگاه توضیح داده شده، برای این تردها هم رخ می‌دهد.
+        self.stop_all_fire_alarm_monitors()
+        self.fire_alarm_store.clear_all_passwords()
         # جلوگیری از کرش هنگام بستن برنامه در حین اسکن شبکه/تشخیص نوع دستگاه:
         # Qt هنگام تخریب یک QThread که هنوز در حال اجراست، کرش می‌کند.
         if self.network_scan_thread is not None and self.network_scan_thread.isRunning():
