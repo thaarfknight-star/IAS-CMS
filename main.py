@@ -1067,16 +1067,15 @@ class CameraSlotWidget(QWidget):
             pixmap = _bgr_to_pixmap(display_frame)
             if pixmap is None:
                 return
-            # رفع درخواست «تصویر با تاخیر خیلی زیاد می‌آید»: SmoothTransformation
-            # (درون‌یابی دوخطی با کیفیت بالا) روی هر فریمِ هر دوربینِ باز
-            # قابل‌توجه کند است؛ FastTransformation (نزدیک‌ترین‌همسایه) از نظر
-            # کیفیت روی یک ویدیوی زنده (نه یک عکس ثابت) عملاً غیرقابل‌تشخیص
-            # است ولی چند برابر سریع‌تر است - رجوع کنید به توضیح کامل‌تر در
-            # camera_stream.CameraStreamThread.__init__ (self._gui_ready).
+            # رفع درخواست «تصویر بلور/پیکسلیه»: FastTransformation (نزدیک‌ترین‌
+            # همسایه) باعث می‌شد فریم هنگام scale-up به سایز پنل، بلوکی/پیکسلی
+            # دیده شود. SmoothTransformation (درون‌یابی دوخطی) کمی سنگین‌تر است
+            # ولی کیفیت تصویر را به حالت قبل برمی‌گرداند؛ روی سخت‌افزار معمولی و
+            # با تعداد محدود دوربین هم‌زمان باز، این تفاوت سرعت در عمل محسوس نیست.
             self.video_label.setPixmap(
                 pixmap.scaled(
                     self.video_label.width(), self.video_label.height(),
-                    Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation
+                    Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
                 )
             )
         finally:
