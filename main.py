@@ -1675,14 +1675,43 @@ class MainWindow(QMainWindow):
         # رسم» فقط نقاط در انتظار نام‌گذاری را پاک می‌کند و «مدیریت
         # محدوده‌ها» امکان مشاهده/حذف محدوده‌های از قبل تایید‌شده را می‌دهد.
         # هر دوربین می‌تواند هم‌زمان چند محدوده‌ی نام‌دار داشته باشد.
-        self.draw_line_btn = QPushButton("🖊 رسم محدوده هشدار")
+        # رفع درخواست: به‌جای نمایش هم‌زمان هر سه دکمه‌ی روش رسم محدوده
+        # (رسم دستی/کل کادر/تشخیص AI) در نوار اصلی، فقط یک دکمه‌ی والدِ
+        # «🖊 رسم محدوده» در نوار اصلی دیده می‌شود. با زدنِ همین دکمه، یک
+        # ردیفِ زیرینِ جدید (self.region_options_row) با آن سه گزینه ظاهر
+        # می‌شود؛ به محض انتخاب هرکدام (یا در طول انجامش)، آن ردیف پنهان و
+        # ردیفِ دیگری (self.region_actions_row) با سه دکمه‌ی «لغو / رسم
+        # مجدد / تایید» جای آن را می‌گیرد - رجوع کنید به
+        # _on_draw_region_master_toggled و _refresh_line_buttons.
+        self.draw_region_master_btn = QPushButton("🖊 رسم محدوده")
+        self.draw_region_master_btn.setCheckable(True)
+        self.draw_region_master_btn.setToolTip(
+            "۱) یک دوربین را از شبکه انتخاب کنید (کلیک روی خانه‌اش)\n"
+            "۲) این دکمه را بزنید تا گزینه‌های رسم محدوده (رسم دستی، کل کادر، تشخیص با AI) زیرش ظاهر شود\n"
+            "۳) یکی از آن گزینه‌ها را انتخاب کنید"
+        )
+        self.draw_region_master_btn.setStyleSheet(
+            "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
+            "QPushButton:checked{background:#9b59b6; color:#fff;}"
+        )
+        self.draw_region_master_btn.toggled.connect(self._on_draw_region_master_toggled)
+        grid_toolbar.addWidget(self.draw_region_master_btn)
+
+        # ردیف گزینه‌های رسم محدوده (رسم دستی/کل کادر/تشخیص AI) - فقط وقتی
+        # self.draw_region_master_btn تیک‌خورده باشد نمایان می‌شود (رجوع
+        # کنید به _refresh_line_buttons).
+        self.region_options_row = QWidget()
+        region_options_layout = QHBoxLayout(self.region_options_row)
+        region_options_layout.setContentsMargins(24, 0, 0, 0)
+        region_options_layout.setSpacing(6)
+
+        self.draw_line_btn = QPushButton("✏️ رسم دستی")
         self.draw_line_btn.setCheckable(True)
         self.draw_line_btn.setToolTip(
-            "۱) یک دوربین را از شبکه انتخاب کنید (کلیک روی خانه‌اش)\n"
-            "۲) این دکمه را بزنید\n"
-            "۳) روی تصویر همان دوربین، به‌ترتیب روی نقاط زمین/اتاق کلیک کنید "
+            "۱) این گزینه را بزنید\n"
+            "۲) روی تصویر همان دوربین، به‌ترتیب روی نقاط زمین/اتاق کلیک کنید "
             "(برنامه نقاط را به هم وصل می‌کند)\n"
-            "۴) برای بستن محدوده: روی نقطه‌ی اول (دایره‌ی بزرگ‌تر) کلیک کنید، "
+            "۳) برای بستن محدوده: روی نقطه‌ی اول (دایره‌ی بزرگ‌تر) کلیک کنید، "
             "یا دابل‌کلیک کنید (حداقل ۳ نقطه لازم است)\n"
             "کلیک راست: لغو رسمِ در حال انجام"
         )
@@ -1691,7 +1720,7 @@ class MainWindow(QMainWindow):
             "QPushButton:checked{background:#9b59b6; color:#fff;}"
         )
         self.draw_line_btn.toggled.connect(self._on_draw_line_toggled)
-        grid_toolbar.addWidget(self.draw_line_btn)
+        region_options_layout.addWidget(self.draw_line_btn)
 
         # رفع درخواست «یک حالت جدید که خودش سطح زمین رو تشخیص بده و کلش رو
         # محدوده محسوب کنه»: به‌جای کلیک‌های متوالی دستی، این دکمه بلافاصله
@@ -1700,7 +1729,7 @@ class MainWindow(QMainWindow):
         # می‌گذارد (دقیقاً مثل رسم دستی، با همان دکمه‌های تایید/لغوِ پایین).
         # این محدوده هم مثل هر محدوده‌ی دیگری کاملاً قابل ویرایش است - قبل
         # از تایید (با کشیدن گوشه‌ها) یا بعداً از «مدیریت محدوده‌ها».
-        self.auto_region_btn = QPushButton("🌐 تشخیص خودکار محدوده (کل تصویر)")
+        self.auto_region_btn = QPushButton("🌐 کل کادر")
         self.auto_region_btn.setToolTip(
             "۱) یک دوربین را از شبکه انتخاب کنید (کلیک روی خانه‌اش)\n"
             "۲) این دکمه را بزنید - کل تصویر دوربین به‌عنوان محدوده در نظر گرفته می‌شود\n"
@@ -1714,7 +1743,7 @@ class MainWindow(QMainWindow):
             "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
         )
         self.auto_region_btn.clicked.connect(self._on_auto_region_clicked)
-        grid_toolbar.addWidget(self.auto_region_btn)
+        region_options_layout.addWidget(self.auto_region_btn)
 
         # رفع درخواست «یک حالت جدید که خودش سطح زمین رو تشخیص بده و کلش رو
         # محدوده محسوب کنه، ولی بازم قابل ادیت باشه، دقیق‌تر با مدل هوش
@@ -1727,7 +1756,7 @@ class MainWindow(QMainWindow):
         # کاملاً با ماوس قابل ویرایش است. چون بارگذاری/اجرای مدل چند ثانیه
         # طول می‌کشد، در یک ترد جدا (FloorDetectThread) اجرا می‌شود تا UI
         # فریز نشود - رجوع کنید به _on_ai_floor_region_clicked.
-        self.ai_floor_btn = QPushButton("🧭 تشخیص هوشمند زمین (AI)")
+        self.ai_floor_btn = QPushButton("🧭 تشخیص با AI")
         self.ai_floor_btn.setToolTip(
             "۱) یک دوربین را از شبکه انتخاب کنید (کلیک روی خانه‌اش)\n"
             "۲) این دکمه را بزنید - با مدل هوش مصنوعی (Segmentation)، فقط "
@@ -1745,12 +1774,45 @@ class MainWindow(QMainWindow):
             "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
         )
         self.ai_floor_btn.clicked.connect(self._on_ai_floor_region_clicked)
-        grid_toolbar.addWidget(self.ai_floor_btn)
+        region_options_layout.addWidget(self.ai_floor_btn)
+        region_options_layout.addStretch()
+        self.region_options_row.setVisible(False)
         # نگه‌داشتن ارجاع به تردِ در حال اجرا (اگر باشد) - هم برای جلوگیری
         # از garbage-collect شدنِ زودهنگام QThread در حال اجرا، هم برای
         # اینکه بدانیم همین الان یک تشخیص در جریان است (رجوع کنید به
         # _on_ai_floor_region_clicked).
         self._floor_detect_thread = None
+        # رفع درخواست: کدام گزینه (رسم دستی/کل کادر/تشخیص AI) آخرین‌بار
+        # استفاده شده - تا دکمه‌ی «🔄 رسم مجدد» بتواند همان روش را دوباره
+        # از نو شروع کند بدون این‌که کاربر مجبور شود دوباره از ردیف
+        # گزینه‌ها انتخاب کند (رجوع کنید به _on_restart_line_clicked).
+        self._last_region_mode = None
+
+        # ردیف دکمه‌های عملیاتِ محدوده‌ی در انتظار: لغو / رسم مجدد / تایید.
+        # فقط وقتی یک محدوده‌ی در انتظار (چه تازه رسم‌شده، چه کل کادر، چه
+        # AI، چه در حال ویرایش) روی تصویر باشد نمایان می‌شود.
+        self.region_actions_row = QWidget()
+        region_actions_layout = QHBoxLayout(self.region_actions_row)
+        region_actions_layout.setContentsMargins(24, 0, 0, 0)
+        region_actions_layout.setSpacing(6)
+
+        self.redraw_line_btn = QPushButton("❌ لغو")
+        self.redraw_line_btn.setEnabled(False)
+        self.redraw_line_btn.setToolTip("نقاط در حال رسم/در انتظار نام‌گذاری را لغو می‌کند؛ محدوده‌های قبلاً تایید‌شده حذف نمی‌شوند.")
+        self.redraw_line_btn.setStyleSheet(
+            "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
+        )
+        self.redraw_line_btn.clicked.connect(self._on_redraw_line_clicked)
+        region_actions_layout.addWidget(self.redraw_line_btn)
+
+        self.restart_line_btn = QPushButton("🔄 رسم مجدد")
+        self.restart_line_btn.setEnabled(False)
+        self.restart_line_btn.setToolTip("محدوده‌ی در انتظار فعلی را لغو و همان روش (رسم دستی/کل کادر/تشخیص AI) را دوباره از نو شروع می‌کند.")
+        self.restart_line_btn.setStyleSheet(
+            "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
+        )
+        self.restart_line_btn.clicked.connect(self._on_restart_line_clicked)
+        region_actions_layout.addWidget(self.restart_line_btn)
 
         self.confirm_line_btn = QPushButton("✅ تایید و نام‌گذاری")
         self.confirm_line_btn.setEnabled(False)
@@ -1762,16 +1824,9 @@ class MainWindow(QMainWindow):
             "QPushButton:enabled{background:#27ae60; color:#fff;}"
         )
         self.confirm_line_btn.clicked.connect(self._on_confirm_line_clicked)
-        grid_toolbar.addWidget(self.confirm_line_btn)
-
-        self.redraw_line_btn = QPushButton("❌ لغو رسم")
-        self.redraw_line_btn.setEnabled(False)
-        self.redraw_line_btn.setToolTip("نقاط در حال رسم/در انتظار نام‌گذاری را لغو می‌کند؛ محدوده‌های قبلاً تایید‌شده حذف نمی‌شوند.")
-        self.redraw_line_btn.setStyleSheet(
-            "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
-        )
-        self.redraw_line_btn.clicked.connect(self._on_redraw_line_clicked)
-        grid_toolbar.addWidget(self.redraw_line_btn)
+        region_actions_layout.addWidget(self.confirm_line_btn)
+        region_actions_layout.addStretch()
+        self.region_actions_row.setVisible(False)
 
         self.manage_regions_btn = QPushButton("📋 مدیریت محدوده‌ها")
         self.manage_regions_btn.setEnabled(False)
@@ -1796,6 +1851,8 @@ class MainWindow(QMainWindow):
         grid_scroll.setWidget(self.camera_grid)
 
         grid_column.addLayout(grid_toolbar)
+        grid_column.addWidget(self.region_options_row)
+        grid_column.addWidget(self.region_actions_row)
         grid_column.addWidget(grid_scroll, 1)
 
         # ------------------------------------------------ ستون راست: پنل
@@ -1902,6 +1959,25 @@ class MainWindow(QMainWindow):
             return None
         return self.camera_grid.slots[idx]
 
+    def _on_draw_region_master_toggled(self, checked):
+        """رفع درخواست: با زدنِ دکمه‌ی اصلیِ «🖊 رسم محدوده»، ردیف گزینه‌های
+        رسم (رسم دستی/کل کادر/تشخیص AI) زیرش ظاهر می‌شود. اگر هنوز
+        دوربینی انتخاب نشده باشد، دکمه به‌جای باز شدن دوباره خاموش می‌شود و
+        پیام راهنما نشان داده می‌شود - دقیقاً مثل رفتار قبلیِ خودِ دکمه‌ی
+        رسم دستی."""
+        if checked:
+            slot = self._selected_slot()
+            if slot is None or slot.cam is None:
+                self.draw_region_master_btn.blockSignals(True)
+                self.draw_region_master_btn.setChecked(False)
+                self.draw_region_master_btn.blockSignals(False)
+                QMessageBox.information(
+                    self, "رسم محدوده هشدار",
+                    "ابتدا یک دوربین را از شبکه‌ی نمایش انتخاب کنید (روی خانه‌اش کلیک کنید)، سپس دوباره این دکمه را بزنید."
+                )
+                return
+        self._refresh_line_buttons()
+
     def _on_draw_line_toggled(self, checked):
         slot = self._selected_slot()
         if slot is None or slot.cam is None:
@@ -1915,6 +1991,8 @@ class MainWindow(QMainWindow):
                 )
             return
         slot.set_draw_mode(checked)
+        if checked:
+            self._last_region_mode = "manual"
         self._refresh_line_buttons()
 
     def _on_auto_region_clicked(self):
@@ -1933,6 +2011,7 @@ class MainWindow(QMainWindow):
                 "ابتدا محدوده‌ی در انتظار/در حال ویرایشِ فعلی را با «✅ تایید» یا «❌ لغو» تمام کنید."
             )
             return
+        self._last_region_mode = "full"
         self._refresh_line_buttons()
 
     def _on_ai_floor_region_clicked(self):
@@ -2000,6 +2079,7 @@ class MainWindow(QMainWindow):
             return
         if not slot.start_ai_floor_region(points):
             return
+        self._last_region_mode = "ai"
         if self._selected_slot() is slot:
             self._refresh_line_buttons()
 
@@ -2063,6 +2143,34 @@ class MainWindow(QMainWindow):
         self.draw_line_btn.blockSignals(False)
         self._refresh_line_buttons()
 
+    def _on_restart_line_clicked(self):
+        """رفع درخواست دکمه‌ی «🔄 رسم مجدد»: محدوده‌ی در انتظار فعلی را
+        لغو می‌کند و بلافاصله همان روشی را که آخرین‌بار استفاده شده (رسم
+        دستی/کل کادر/تشخیص AI) از نو شروع می‌کند - تا کاربر برای رسم
+        دوباره مجبور نباشد دوباره از ردیف گزینه‌ها انتخاب کند."""
+        slot = self._selected_slot()
+        if slot is None or not slot.has_pending_region():
+            return
+        if slot.is_editing_region():
+            # ویرایشِ شکل یک محدوده‌ی قبلاً تایید‌شده را نمی‌شود «رسم مجدد»
+            # کرد (روش اولیه‌اش دیگر معلوم نیست) - فقط ویرایش لغو می‌شود.
+            slot.cancel_region_edit()
+            self.draw_line_btn.blockSignals(True)
+            self.draw_line_btn.setChecked(False)
+            self.draw_line_btn.blockSignals(False)
+            self._refresh_line_buttons()
+            return
+        slot.cancel_pending_region()
+        mode = self._last_region_mode
+        if mode == "manual":
+            self.draw_line_btn.setChecked(True)
+        elif mode == "full":
+            self._on_auto_region_clicked()
+        elif mode == "ai":
+            self._on_ai_floor_region_clicked()
+        else:
+            self._refresh_line_buttons()
+
     def _on_manage_regions_clicked(self):
         slot = self._selected_slot()
         if slot is None:
@@ -2107,6 +2215,7 @@ class MainWindow(QMainWindow):
         is_editing = slot.is_editing_region() if slot is not None else False
         self.confirm_line_btn.setEnabled(bool(has_pending))
         self.redraw_line_btn.setEnabled(bool(has_pending))
+        self.restart_line_btn.setEnabled(bool(has_pending) and not is_editing)
         self.manage_regions_btn.setEnabled(bool(has_confirmed))
         # رفع درخواست «قابلیت ادیت‌کردن»: وقتی یک محدوده‌ی «در انتظار» (چه
         # تازه رسم‌شده، چه محدوده‌ی خودکارِ کل تصویر، چه در حال ویرایش شکلِ
@@ -2128,10 +2237,25 @@ class MainWindow(QMainWindow):
             self.redraw_line_btn.setText("↩ لغو ویرایش")
         else:
             self.confirm_line_btn.setText("✅ تایید و نام‌گذاری")
-            self.redraw_line_btn.setText("❌ لغو رسم")
+            self.redraw_line_btn.setText("❌ لغو")
         self.draw_line_btn.blockSignals(True)
         self.draw_line_btn.setChecked(bool(slot.is_draw_mode()) if slot is not None else False)
         self.draw_line_btn.blockSignals(False)
+
+        # رفع درخواست: نمایش/پنهان‌کردن ردیف‌های زیرِ دکمه‌ی اصلی. تا وقتی
+        # محدوده‌ای در انتظار/در حال ویرایش نیست، با تیک‌خوردنِ دکمه‌ی
+        # اصلی «🖊 رسم محدوده» ردیف گزینه‌ها (رسم دستی/کل کادر/AI) نمایان
+        # می‌شود؛ به محض شروع رسم دستی یا آماده‌شدن یک محدوده‌ی در انتظار
+        # (has_pending)، آن ردیف پنهان و ردیف دکمه‌های «لغو/رسم مجدد/تایید»
+        # جایش را می‌گیرد. اگر دکمه‌ی اصلی خاموش باشد و محدوده‌ای هم در
+        # انتظار نباشد، هر دو ردیف پنهان می‌مانند.
+        in_manual_draw = bool(slot.is_draw_mode()) if slot is not None else False
+        master_checked = self.draw_region_master_btn.isChecked()
+        self.region_actions_row.setVisible(bool(has_pending))
+        self.region_options_row.setVisible(master_checked and not has_pending and not in_manual_draw)
+        self.draw_region_master_btn.blockSignals(True)
+        self.draw_region_master_btn.setChecked(master_checked or has_pending or in_manual_draw)
+        self.draw_region_master_btn.blockSignals(False)
 
     # ------------------------------------------------------- camera list ---
 
