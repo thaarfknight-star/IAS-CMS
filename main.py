@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QListWidget, QListWidgetItem, QMessageBox,
     QGroupBox, QMenu, QTreeWidget, QTreeWidgetItem, QInputDialog, QDialog,
-    QGridLayout, QComboBox, QScrollArea, QSizePolicy, QSplitter
+    QGridLayout, QComboBox, QScrollArea, QSizePolicy, QSplitter, QTabWidget
 )
 from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon, QDrag, QFontMetrics, QPainter, QPen, QColor, QPolygonF
 from PyQt6.QtCore import Qt, QSize, QMimeData, QPointF, QRectF, QTimer, pyqtSignal
@@ -1599,14 +1599,20 @@ class MainWindow(QMainWindow):
         cam_group.setLayout(cam_layout)
         left_panel.addWidget(cam_group)
 
-        # بخش پنل‌ها/سنسورهای فیزیکی اعلام حریق (رفع درخواست «سیستم تشخیص
-        # دود و اعلام حریق») - جدا از تشخیص تصویری که همیشه روی هر دوربین
-        # فعال است (نیازی به افزودن جداگانه ندارد)؛ اینجا فقط برای اتصال به
-        # سخت‌افزار *فیزیکی* موجود (پنل/دتکتور دود، از طریق ورودی آلارم یک
-        # NVR/دوربین یا یک ماژول رله Modbus) استفاده می‌شود - رجوع کنید به
-        # fire_alarm_io.py.
-        fire_alarm_group = QGroupBox("🔥 پنل‌های اعلام حریق (سنسور فیزیکی)")
+        # رفع درخواست: سه بخش «پنل‌های اعلام حریق»، «مدیریت چهره» و
+        # «گزارش‌ها» به‌جای اینکه هرکدام یک QGroupBox جدا و زیر هم (که فضای
+        # زیادی از پنل چپ را اشغال می‌کرد) باشند، هرکدام یک تبِ جداگانه در
+        # همین QTabWidget مشترک می‌گیرند - محتوای هرکدام دقیقاً همان قبلی
+        # است، فقط ظرف نمایششان عوض شده.
+        left_tabs = QTabWidget()
+
+        fire_alarm_page = QWidget()
         fire_alarm_layout = QVBoxLayout()
+        # رفع درخواست «سیستم تشخیص دود و اعلام حریق» - جدا از تشخیص تصویری
+        # که همیشه روی هر دوربین فعال است (نیازی به افزودن جداگانه ندارد)؛
+        # این تب فقط برای اتصال به سخت‌افزار *فیزیکی* موجود (پنل/دتکتور دود،
+        # از طریق ورودی آلارم یک NVR/دوربین یا یک ماژول رله Modbus) است -
+        # رجوع کنید به fire_alarm_io.py.
         self.add_fire_alarm_btn = QPushButton("+ افزودن پنل/سنسور اعلام حریق")
         self.add_fire_alarm_btn.clicked.connect(self.open_add_fire_alarm_dialog)
         self.fire_alarm_list = QListWidget()
@@ -1617,29 +1623,31 @@ class MainWindow(QMainWindow):
         fire_alarm_layout.addWidget(self.add_fire_alarm_btn)
         fire_alarm_layout.addWidget(self.fire_alarm_list)
         fire_alarm_layout.addWidget(fire_alarm_hint)
-        fire_alarm_group.setLayout(fire_alarm_layout)
-        left_panel.addWidget(fire_alarm_group)
+        fire_alarm_page.setLayout(fire_alarm_layout)
+        left_tabs.addTab(fire_alarm_page, "🔥 اعلام حریق")
 
-        # بخش Face Library
-        face_group = QGroupBox("مدیریت چهره (Face Library)")
+        face_page = QWidget()
         face_layout = QVBoxLayout()
         self.face_library_btn = QPushButton("باز کردن Face Library")
         self.face_library_btn.clicked.connect(self.open_face_library)
         face_layout.addWidget(self.face_library_btn)
-        face_group.setLayout(face_layout)
-        left_panel.addWidget(face_group)
+        face_layout.addStretch()
+        face_page.setLayout(face_layout)
+        left_tabs.addTab(face_page, "👤 چهره")
 
-        # بخش گزارش‌ها: تاریخچه‌ی دائمیِ ثبت‌شده (شمارش نفرات، ورود به
-        # محدوده، چهره‌ی شناخته‌شده/تعریف‌نشده) - رجوع کنید به
+        # گزارش‌ها: تاریخچه‌ی دائمیِ ثبت‌شده (شمارش نفرات، ورود به محدوده،
+        # چهره‌ی شناخته‌شده/تعریف‌نشده، آتش/دود) - رجوع کنید به
         # report_store.py و reports_dialog.py.
-        reports_group = QGroupBox("گزارش‌ها")
+        reports_page = QWidget()
         reports_layout = QVBoxLayout()
         self.reports_btn = QPushButton("📊 مشاهده و خروجی گزارش‌ها")
         self.reports_btn.clicked.connect(self.open_reports)
         reports_layout.addWidget(self.reports_btn)
-        reports_group.setLayout(reports_layout)
-        left_panel.addWidget(reports_group)
-        left_panel.addStretch()
+        reports_layout.addStretch()
+        reports_page.setLayout(reports_layout)
+        left_tabs.addTab(reports_page, "📊 گزارش‌ها")
+
+        left_panel.addWidget(left_tabs)
 
         # ------------------------------------------------ ستون میانی: شبکه‌ی
         # نمایش هم‌زمان دوربین‌ها با تعداد خانه‌ی قابل انتخاب.
@@ -1681,6 +1689,27 @@ class MainWindow(QMainWindow):
         self.people_toggle_btn.toggled.connect(self._on_people_toggle_all)
         grid_toolbar.addWidget(self.people_toggle_btn)
 
+        # رفع درخواست: دکمه‌های انتخاب نوع رسم محدوده (رسم دستی/کل کادر/
+        # تشخیص با AI) فقط بعد از زدن این دکمه‌ی اصلی ظاهر می‌شوند - قبلاً
+        # همیشه هر سه کنار هم روی نوار ابزار دیده می‌شدند و شلوغ بود.
+        self.region_menu_btn = QPushButton("🖊 رسم محدوده")
+        self.region_menu_btn.setCheckable(True)
+        self.region_menu_btn.setToolTip("نمایش/مخفی‌کردن گزینه‌های رسم محدوده‌ی هشدار (رسم دستی، کل کادر، تشخیص با AI)")
+        self.region_menu_btn.setStyleSheet(
+            "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
+            "QPushButton:checked{background:#9b59b6; color:#fff;}"
+        )
+        self.region_menu_btn.toggled.connect(self._on_region_menu_toggled)
+        grid_toolbar.addWidget(self.region_menu_btn)
+
+        # ------ کانتینر سه دکمه‌ی «نوع رسم» - فقط با زدن دکمه‌ی بالا نمایان می‌شود ------
+        self.region_type_row = QWidget()
+        region_type_layout = QHBoxLayout()
+        region_type_layout.setContentsMargins(0, 0, 0, 0)
+        self.region_type_row.setLayout(region_type_layout)
+        self.region_type_row.setVisible(False)
+        grid_toolbar.addWidget(self.region_type_row)
+
         # رفع درخواست: محدوده‌ی هشدار (Zone) - جایگزین خط فرضی عبور قبلی.
         # کاربر ابتدا یک دوربین را از شبکه انتخاب می‌کند (کلیک روی خانه‌اش)،
         # سپس این دکمه را می‌زند تا بتواند با کلیک‌های متوالی روی نقاط دلخواه
@@ -1691,7 +1720,7 @@ class MainWindow(QMainWindow):
         # رسم» فقط نقاط در انتظار نام‌گذاری را پاک می‌کند و «مدیریت
         # محدوده‌ها» امکان مشاهده/حذف محدوده‌های از قبل تایید‌شده را می‌دهد.
         # هر دوربین می‌تواند هم‌زمان چند محدوده‌ی نام‌دار داشته باشد.
-        self.draw_line_btn = QPushButton("🖊 رسم محدوده هشدار")
+        self.draw_line_btn = QPushButton("✏ رسم دستی")
         self.draw_line_btn.setCheckable(True)
         self.draw_line_btn.setToolTip(
             "۱) یک دوربین را از شبکه انتخاب کنید (کلیک روی خانه‌اش)\n"
@@ -1707,7 +1736,7 @@ class MainWindow(QMainWindow):
             "QPushButton:checked{background:#9b59b6; color:#fff;}"
         )
         self.draw_line_btn.toggled.connect(self._on_draw_line_toggled)
-        grid_toolbar.addWidget(self.draw_line_btn)
+        region_type_layout.addWidget(self.draw_line_btn)
 
         # رفع درخواست «یک حالت جدید که خودش سطح زمین رو تشخیص بده و کلش رو
         # محدوده محسوب کنه»: به‌جای کلیک‌های متوالی دستی، این دکمه بلافاصله
@@ -1716,7 +1745,7 @@ class MainWindow(QMainWindow):
         # می‌گذارد (دقیقاً مثل رسم دستی، با همان دکمه‌های تایید/لغوِ پایین).
         # این محدوده هم مثل هر محدوده‌ی دیگری کاملاً قابل ویرایش است - قبل
         # از تایید (با کشیدن گوشه‌ها) یا بعداً از «مدیریت محدوده‌ها».
-        self.auto_region_btn = QPushButton("🌐 تشخیص خودکار محدوده (کل تصویر)")
+        self.auto_region_btn = QPushButton("🌐 کل کادر")
         self.auto_region_btn.setToolTip(
             "۱) یک دوربین را از شبکه انتخاب کنید (کلیک روی خانه‌اش)\n"
             "۲) این دکمه را بزنید - کل تصویر دوربین به‌عنوان محدوده در نظر گرفته می‌شود\n"
@@ -1730,7 +1759,7 @@ class MainWindow(QMainWindow):
             "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
         )
         self.auto_region_btn.clicked.connect(self._on_auto_region_clicked)
-        grid_toolbar.addWidget(self.auto_region_btn)
+        region_type_layout.addWidget(self.auto_region_btn)
 
         # رفع درخواست «یک حالت جدید که خودش سطح زمین رو تشخیص بده و کلش رو
         # محدوده محسوب کنه، ولی بازم قابل ادیت باشه، دقیق‌تر با مدل هوش
@@ -1743,7 +1772,7 @@ class MainWindow(QMainWindow):
         # کاملاً با ماوس قابل ویرایش است. چون بارگذاری/اجرای مدل چند ثانیه
         # طول می‌کشد، در یک ترد جدا (FloorDetectThread) اجرا می‌شود تا UI
         # فریز نشود - رجوع کنید به _on_ai_floor_region_clicked.
-        self.ai_floor_btn = QPushButton("🧭 تشخیص هوشمند زمین (AI)")
+        self.ai_floor_btn = QPushButton("🧭 تشخیص با AI")
         self.ai_floor_btn.setToolTip(
             "۱) یک دوربین را از شبکه انتخاب کنید (کلیک روی خانه‌اش)\n"
             "۲) این دکمه را بزنید - با مدل هوش مصنوعی (Segmentation)، فقط "
@@ -1761,12 +1790,23 @@ class MainWindow(QMainWindow):
             "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
         )
         self.ai_floor_btn.clicked.connect(self._on_ai_floor_region_clicked)
-        grid_toolbar.addWidget(self.ai_floor_btn)
+        region_type_layout.addWidget(self.ai_floor_btn)
         # نگه‌داشتن ارجاع به تردِ در حال اجرا (اگر باشد) - هم برای جلوگیری
         # از garbage-collect شدنِ زودهنگام QThread در حال اجرا، هم برای
         # اینکه بدانیم همین الان یک تشخیص در جریان است (رجوع کنید به
         # _on_ai_floor_region_clicked).
         self._floor_detect_thread = None
+
+        # رفع درخواست: دکمه‌های «تایید»/«لغو رسم» فقط بعد از انتخاب یکی از
+        # سه نوع رسم بالا (و تا وقتی یک محدوده‌ی در-انتظار/در-حال-ویرایش
+        # وجود دارد) نمایان می‌شوند - رجوع کنید به _refresh_line_buttons که
+        # visibility این کانتینر را هم به‌روز می‌کند.
+        self.region_action_row = QWidget()
+        region_action_layout = QHBoxLayout()
+        region_action_layout.setContentsMargins(0, 0, 0, 0)
+        self.region_action_row.setLayout(region_action_layout)
+        self.region_action_row.setVisible(False)
+        grid_toolbar.addWidget(self.region_action_row)
 
         self.confirm_line_btn = QPushButton("✅ تایید و نام‌گذاری")
         self.confirm_line_btn.setEnabled(False)
@@ -1778,7 +1818,7 @@ class MainWindow(QMainWindow):
             "QPushButton:enabled{background:#27ae60; color:#fff;}"
         )
         self.confirm_line_btn.clicked.connect(self._on_confirm_line_clicked)
-        grid_toolbar.addWidget(self.confirm_line_btn)
+        region_action_layout.addWidget(self.confirm_line_btn)
 
         self.redraw_line_btn = QPushButton("❌ لغو رسم")
         self.redraw_line_btn.setEnabled(False)
@@ -1787,7 +1827,7 @@ class MainWindow(QMainWindow):
             "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
         )
         self.redraw_line_btn.clicked.connect(self._on_redraw_line_clicked)
-        grid_toolbar.addWidget(self.redraw_line_btn)
+        region_action_layout.addWidget(self.redraw_line_btn)
 
         self.manage_regions_btn = QPushButton("📋 مدیریت محدوده‌ها")
         self.manage_regions_btn.setEnabled(False)
@@ -1843,15 +1883,20 @@ class MainWindow(QMainWindow):
         fire_panel_layout.addWidget(self.fire_panel_list)
         fire_panel_group.setLayout(fire_panel_layout)
 
-        # هر دو پنل (تشخیص چهره + هشدار حریق/دود) داخل یک ستون راست مشترک
-        # قرار می‌گیرند تا فقط یک آیتم به splitter اضافه شود و عرض یکسان
-        # (right_w پایین‌تر) برای هر دو رعایت شود.
-        right_column_widget = QWidget()
-        right_column_layout = QVBoxLayout()
-        right_column_layout.setContentsMargins(0, 0, 0, 0)
-        right_column_layout.addWidget(face_panel_group, 3)
-        right_column_layout.addWidget(fire_panel_group, 2)
-        right_column_widget.setLayout(right_column_layout)
+        # رفع درخواست «تنظیم اندازه پنل‌های سمت راست»: به‌جای QVBoxLayout با
+        # ضریب کشش ثابت (که با توجه به حداقل‌اندازه‌ی متفاوت دو QGroupBox
+        # همیشه دقیقاً به همان نسبت ۳:۲ در نمی‌آمد و کاربر هم راهی برای
+        # تغییرش نداشت)، از یک QSplitter عمودی استفاده می‌شود: هم نسبت
+        # اولیه‌ی مشخص (۶۰٪/۴۰٪) دارد، هم کاربر می‌تواند با کشیدن لبه‌ی بین
+        # دو پنل، اندازه‌ی هرکدام را دستی تنظیم کند، و هم حداقل ارتفاعی
+        # (setMinimumHeight) دارند که هیچ‌کدام کاملاً جمع نشوند.
+        face_panel_group.setMinimumHeight(120)
+        fire_panel_group.setMinimumHeight(120)
+        self.right_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.right_splitter.addWidget(face_panel_group)
+        self.right_splitter.addWidget(fire_panel_group)
+        self.right_splitter.setStretchFactor(0, 3)
+        self.right_splitter.setStretchFactor(1, 2)
 
         # رفع درخواست: عرض پنل سمت راست (پنل تشخیص چهره) باید دقیقاً هم‌اندازه‌ی
         # پنل سمت چپ باشد تا فضای بیشتری به تصویر دوربین‌ها در وسط برسد. قبلاً
@@ -1873,7 +1918,7 @@ class MainWindow(QMainWindow):
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.addWidget(self.left_widget)
         self.splitter.addWidget(grid_widget)
-        self.splitter.addWidget(right_column_widget)
+        self.splitter.addWidget(self.right_splitter)
         # پنل چپ اکنون کوچکتر و با عرض محدود (ثابت‌تر) است، پنل وسط (شبکه‌ی
         # دوربین‌ها) بیشترین سهم را می‌گیرد و پنل راست (تشخیص چهره) بدون تغییر
         # باقی می‌ماند.
@@ -1884,6 +1929,11 @@ class MainWindow(QMainWindow):
         right_w = total_w * 2 // 9        # عرض قبلی/بدون‌تغییرِ پنل راست
         left_w = 200                       # عرض کوچک و ثابت پنل چپ
         self.splitter.setSizes([left_w, total_w - left_w - right_w, right_w])
+        # اندازه‌ی اولیه‌ی صریح برای دو پنل داخل ستون راست (۶۰٪ تشخیص چهره،
+        # ۴۰٪ هشدار حریق/دود) - کاربر همچنان می‌تواند با کشیدن لبه‌ی بینشان
+        # این نسبت را تغییر دهد.
+        right_h = max(self.height(), 780)
+        self.right_splitter.setSizes([right_h * 6 // 10, right_h * 4 // 10])
         # عرضی که پنل چپ قبل از مخفی‌شدن داشت، برای بازگرداندن آن هنگام کلیک
         # مجدد روی دکمه‌ی sidebar نگه‌داشته می‌شود.
         self._left_panel_width = left_w
@@ -1920,6 +1970,11 @@ class MainWindow(QMainWindow):
         self.camera_grid.set_people_counting_all(checked)
 
     # ----------------------------------------------------- محدوده‌ی هشدار --
+
+    def _on_region_menu_toggled(self, checked):
+        """رفع درخواست: دکمه‌های «رسم دستی»/«کل کادر»/«تشخیص با AI» فقط با
+        زدن دکمه‌ی اصلیِ «🖊 رسم محدوده» نمایان/مخفی می‌شوند."""
+        self.region_type_row.setVisible(checked)
 
     def _selected_slot(self):
         idx = self.camera_grid.selected_index
@@ -2225,6 +2280,9 @@ class MainWindow(QMainWindow):
         self.confirm_line_btn.setEnabled(bool(has_pending))
         self.redraw_line_btn.setEnabled(bool(has_pending))
         self.manage_regions_btn.setEnabled(bool(has_confirmed))
+        # رفع درخواست: دکمه‌های «تایید»/«لغو رسم» فقط وقتی یک محدوده‌ی
+        # در-انتظار یا در-حال-ویرایش وجود دارد نمایان می‌شوند (نه همیشه).
+        self.region_action_row.setVisible(bool(has_pending or is_editing))
         # رفع درخواست «قابلیت ادیت‌کردن»: وقتی یک محدوده‌ی «در انتظار» (چه
         # تازه رسم‌شده، چه محدوده‌ی خودکارِ کل تصویر، چه در حال ویرایش شکلِ
         # یک محدوده‌ی قبلی) روی تصویر هست، رسم/تشخیص خودکارِ تازه غیرفعال
