@@ -43,17 +43,19 @@ _HF_MODEL_ID = "prithivMLmods/Fire-Detection-Siglip2"
 _LOCAL_MODEL_DIRNAME = "fire_smoke_ai_model"
 # آستانه‌ی اطمینانِ پیش‌فرض برای این‌که خروجی «fire»/«smoke» مدل به‌عنوان
 # یک رویداد واقعی در نظر گرفته شود (نه صرفاً کمی بالاتر از «normal»).
-_AI_CONF_THRESHOLD = 0.65
+_AI_CONF_THRESHOLD = 0.35
 
 # --- تنظیمات تشخیص کلاسیکِ رنگ‌محور (فقط وقتی مدل AI در دسترس نباشد) ---
 _FIRE_HSV_RANGES = [
     # (H_min, H_max, S_min, V_min) - قرمز تا نارنجی/زرد پرنور
     (0, 35, 80, 180),
+    # شعله‌ی آبی/سفیدِ کم‌حجم (مثل فندک) - اشباع کمتر، روشنایی خیلی بالا
+    (15, 40, 40, 220),
 ]
-_MIN_FIRE_PIXEL_RATIO = 0.0015
-_MIN_CONTOUR_AREA = 180
-_WORK_SIZE = (320, 240)
-_MAX_CLASSICAL_BOXES = 5
+_MIN_FIRE_PIXEL_RATIO = 0.00015
+_MIN_CONTOUR_AREA = 20
+_WORK_SIZE = (640, 480)
+_MAX_CLASSICAL_BOXES = 8
 
 
 def _resolve_model_dir(dirname):
@@ -214,7 +216,7 @@ class FireSmokeDetector:
             if fire_pixel_ratio < _MIN_FIRE_PIXEL_RATIO:
                 return []
 
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
             mask = cv2.morphologyEx(mask, cv2.MORPH_DILATE, kernel)
 
