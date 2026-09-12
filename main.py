@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QListWidget, QListWidgetItem, QMessageBox,
     QGroupBox, QMenu, QTreeWidget, QTreeWidgetItem, QInputDialog, QDialog,
-    QGridLayout, QComboBox, QScrollArea, QSizePolicy, QSplitter, QTabWidget
+    QGridLayout, QComboBox, QScrollArea, QSizePolicy, QSplitter
 )
 from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon, QDrag, QFontMetrics, QPainter, QPen, QColor, QPolygonF
 from PyQt6.QtCore import Qt, QSize, QMimeData, QPointF, QRectF, QTimer, pyqtSignal
@@ -33,8 +33,8 @@ from reports_dialog import ReportsDialog
 from nvr_storage_dialog import NVRStorageDialog
 from device_detect import DeviceDetectThread
 from fire_alarm_store import FireAlarmStore
-from fire_alarm_io import FireAlarmMonitorThread, PANEL_TYPE_LABELS_FA
-from add_fire_alarm_dialog import AddFireAlarmDialog
+from fire_alarm_io import FireAlarmMonitorThread
+from fire_alarm_dialog import FireAlarmDialog
 
 # بهینه‌سازی برای سیستم‌های ضعیف (رم کم / بدون کارت گرافیک):
 # OpenCV به‌صورت پیش‌فرض برای عملیات داخلی (resize، cvtColor و ...) روی *تمام*
@@ -1501,9 +1501,9 @@ class MainWindow(QMainWindow):
         self.init_ui()
         self.reload_camera_list()
         # رفع درخواست «سیستم تشخیص دود و اعلام حریق»: پنل‌های ذخیره‌شده از
-        # اجراهای قبلی، همین لحظه در لیست نمایش داده و مانیتور پس‌زمینه‌ی
-        # هرکدام شروع می‌شود - دقیقاً مثل بارگذاری خودکار دوربین‌ها/NVRها.
-        self.reload_fire_alarm_list()
+        # اجراهای قبلی، مانیتور پس‌زمینه‌ی هرکدام همین لحظه شروع می‌شود -
+        # دقیقاً مثل بارگذاری خودکار دوربین‌ها/NVRها. نمایش خودِ لیست حالا در
+        # صفحه‌ی جداگانه‌ی FireAlarmDialog انجام می‌شود (هنگام باز شدن آن).
         for panel in self.fire_alarm_store.panels:
             self._start_fire_alarm_monitor(panel)
 
@@ -1599,55 +1599,46 @@ class MainWindow(QMainWindow):
         cam_group.setLayout(cam_layout)
         left_panel.addWidget(cam_group)
 
-        # رفع درخواست: سه بخش «پنل‌های اعلام حریق»، «مدیریت چهره» و
-        # «گزارش‌ها» به‌جای اینکه هرکدام یک QGroupBox جدا و زیر هم (که فضای
-        # زیادی از پنل چپ را اشغال می‌کرد) باشند، هرکدام یک تبِ جداگانه در
-        # همین QTabWidget مشترک می‌گیرند - محتوای هرکدام دقیقاً همان قبلی
-        # است، فقط ظرف نمایششان عوض شده.
-        left_tabs = QTabWidget()
+        # رفع درخواست: «🔥 اعلام حریق»، «👤 چهره» و «📊 گزارش‌ها» باید سه صفحه‌ی
+        # کاملاً جدا داشته باشند - نه سه تب کنار هم در یک QTabWidget مشترک.
+        # به همین دلیل هرکدام حالا یک QGroupBox مستقل با یک دکمه‌ی «باز کردن»
+        # است که صفحه‌ی خودش را به‌صورت یک دیالوگ جداگانه (پنجره‌ی مستقل) باز
+        # می‌کند - دقیقاً مثل الگوی موجود «چهره»/«گزارش‌ها» که قبلاً هم از
+        # طریق دیالوگ (FaceLibraryDialog/ReportsDialog) باز می‌شدند؛ حالا
+        # «اعلام حریق» هم همین الگو را می‌گیرد (رجوع کنید به
+        # fire_alarm_dialog.py).
 
-        fire_alarm_page = QWidget()
+        fire_alarm_group = QGroupBox("🔥 اعلام حریق")
         fire_alarm_layout = QVBoxLayout()
         # رفع درخواست «سیستم تشخیص دود و اعلام حریق» - جدا از تشخیص تصویری
         # که همیشه روی هر دوربین فعال است (نیازی به افزودن جداگانه ندارد)؛
-        # این تب فقط برای اتصال به سخت‌افزار *فیزیکی* موجود (پنل/دتکتور دود،
-        # از طریق ورودی آلارم یک NVR/دوربین یا یک ماژول رله Modbus) است -
-        # رجوع کنید به fire_alarm_io.py.
-        self.add_fire_alarm_btn = QPushButton("+ افزودن پنل/سنسور اعلام حریق")
-        self.add_fire_alarm_btn.clicked.connect(self.open_add_fire_alarm_dialog)
-        self.fire_alarm_list = QListWidget()
-        self.fire_alarm_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.fire_alarm_list.customContextMenuRequested.connect(self.show_fire_alarm_context_menu)
-        fire_alarm_hint = QLabel("کلیک راست روی هر پنل: حذف")
-        fire_alarm_hint.setStyleSheet("color: #888; font-size: 10px;")
-        fire_alarm_layout.addWidget(self.add_fire_alarm_btn)
-        fire_alarm_layout.addWidget(self.fire_alarm_list)
-        fire_alarm_layout.addWidget(fire_alarm_hint)
-        fire_alarm_page.setLayout(fire_alarm_layout)
-        left_tabs.addTab(fire_alarm_page, "🔥 اعلام حریق")
+        # این صفحه فقط برای اتصال به سخت‌افزار *فیزیکی* موجود (پنل/دتکتور
+        # دود، از طریق ورودی آلارم یک NVR/دوربین یا یک ماژول رله Modbus) است
+        # - رجوع کنید به fire_alarm_io.py.
+        self.fire_alarm_btn = QPushButton("🔥 مدیریت پنل‌های اعلام حریق")
+        self.fire_alarm_btn.clicked.connect(self.open_fire_alarm_panels)
+        fire_alarm_layout.addWidget(self.fire_alarm_btn)
+        fire_alarm_group.setLayout(fire_alarm_layout)
+        left_panel.addWidget(fire_alarm_group)
 
-        face_page = QWidget()
+        face_group = QGroupBox("👤 چهره")
         face_layout = QVBoxLayout()
         self.face_library_btn = QPushButton("باز کردن Face Library")
         self.face_library_btn.clicked.connect(self.open_face_library)
         face_layout.addWidget(self.face_library_btn)
-        face_layout.addStretch()
-        face_page.setLayout(face_layout)
-        left_tabs.addTab(face_page, "👤 چهره")
+        face_group.setLayout(face_layout)
+        left_panel.addWidget(face_group)
 
         # گزارش‌ها: تاریخچه‌ی دائمیِ ثبت‌شده (شمارش نفرات، ورود به محدوده،
         # چهره‌ی شناخته‌شده/تعریف‌نشده، آتش/دود) - رجوع کنید به
         # report_store.py و reports_dialog.py.
-        reports_page = QWidget()
+        reports_group = QGroupBox("📊 گزارش‌ها")
         reports_layout = QVBoxLayout()
         self.reports_btn = QPushButton("📊 مشاهده و خروجی گزارش‌ها")
         self.reports_btn.clicked.connect(self.open_reports)
         reports_layout.addWidget(self.reports_btn)
-        reports_layout.addStretch()
-        reports_page.setLayout(reports_layout)
-        left_tabs.addTab(reports_page, "📊 گزارش‌ها")
-
-        left_panel.addWidget(left_tabs)
+        reports_group.setLayout(reports_layout)
+        left_panel.addWidget(reports_group)
 
         # ------------------------------------------------ ستون میانی: شبکه‌ی
         # نمایش هم‌زمان دوربین‌ها با تعداد خانه‌ی قابل انتخاب.
@@ -2199,34 +2190,16 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------- پنل‌های فیزیکی اعلام حریق -
 
-    def open_add_fire_alarm_dialog(self):
-        dialog = AddFireAlarmDialog(self)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        panel = self.fire_alarm_store.add_panel(dialog.get_panel_data())
-        self.reload_fire_alarm_list()
-        self._start_fire_alarm_monitor(panel)
-
-    def reload_fire_alarm_list(self):
-        self.fire_alarm_list.clear()
-        for panel in self.fire_alarm_store.panels:
-            type_label = PANEL_TYPE_LABELS_FA.get(panel.get("type"), panel.get("type"))
-            item = QListWidgetItem(f"🔥 {panel['name']}  ({panel['ip']}) — {type_label}")
-            item.setData(Qt.ItemDataRole.UserRole, panel["id"])
-            self.fire_alarm_list.addItem(item)
-
-    def show_fire_alarm_context_menu(self, pos):
-        item = self.fire_alarm_list.itemAt(pos)
-        if item is None:
-            return
-        panel_id = item.data(Qt.ItemDataRole.UserRole)
-        menu = QMenu(self)
-        remove_action = menu.addAction("🗑 حذف این پنل")
-        action = menu.exec(self.fire_alarm_list.viewport().mapToGlobal(pos))
-        if action == remove_action:
-            self._stop_fire_alarm_monitor(panel_id)
-            self.fire_alarm_store.remove_panel(panel_id)
-            self.reload_fire_alarm_list()
+    def open_fire_alarm_panels(self):
+        """صفحه‌ی جداگانه‌ی مدیریت پنل‌های اعلام حریق (افزودن/حذف) - دقیقاً
+        هم‌الگو با open_face_library/open_reports پایین‌تر. شروع/توقف ترد
+        مانیتور پس‌زمینه‌ی هر پنل همچنان اینجا (سطح MainWindow) مدیریت
+        می‌شود و به دیالوگ به‌صورت callback پاس داده می‌شود."""
+        dialog = FireAlarmDialog(
+            self.fire_alarm_store, self._start_fire_alarm_monitor,
+            self._stop_fire_alarm_monitor, self
+        )
+        dialog.exec()
 
     def _start_fire_alarm_monitor(self, panel):
         """رفع درخواست «سیستم تشخیص دود و اعلام حریق»: برای این پنل یک ترد
