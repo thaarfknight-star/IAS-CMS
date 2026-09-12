@@ -33,7 +33,7 @@ from reports_dialog import ReportsDialog
 from nvr_storage_dialog import NVRStorageDialog
 from device_detect import DeviceDetectThread
 from fire_alarm_store import FireAlarmStore
-from fire_alarm_io import FireAlarmMonitorThread
+from fire_alarm_io import FireAlarmMonitorThread, PANEL_TYPE_LABELS_FA
 from add_fire_alarm_dialog import AddFireAlarmDialog
 
 # بهینه‌سازی برای سیستم‌های ضعیف (رم کم / بدون کارت گرافیک):
@@ -469,7 +469,8 @@ class CameraSlotWidget(QWidget):
     tripwire_changed = pyqtSignal()
 
     def __init__(self, on_clicked, on_close_requested, on_double_clicked=None,
-                 on_slot_drag_swap=None, on_camera_drag_drop=None, on_region_alert=None, parent=None):
+                 on_slot_drag_swap=None, on_camera_drag_drop=None, on_region_alert=None,
+                 on_fire_event=None, parent=None):
         super().__init__(parent)
         self.cam = None
         self.stream_thread = None
@@ -481,6 +482,13 @@ class CameraSlotWidget(QWidget):
         # callback (در MainWindow) صدا زده می‌شود تا رویداد در پنل تشخیص
         # چهره هم به‌صورت متنی ثبت شود.
         self._on_region_alert = on_region_alert
+        # رفع درخواست «سیستم تشخیص دود و اعلام حریق»: با هر تشخیص تصویری
+        # آتش/دود روی این خانه، این callback (در MainWindow) صدا زده می‌شود
+        # تا رویداد در پنل «هشدارهای حریق و دود» ثبت و گزارش شود. نکته: نام
+        # این ویژگی عمداً با متد واکنشیِ سیگنال (_on_fire_event پایین‌تر)
+        # متفاوت است تا با آن تداخل (override) نکند - دقیقاً مثل تمایز
+        # self._on_region_alert (callback) از _on_region_entered (متد).
+        self._fire_event_cb = on_fire_event
         # رفع درخواست: وضعیت روشن/خاموش بودن «شمارش افراد Real Time» برای این
         # خانه؛ چون خانه‌ها هنگام عوض شدن تعداد شبکه (set_grid_size) از نو
         # ساخته می‌شوند، این وضعیت فقط تا وقتی همین خانه/دوربین برقرار است
@@ -833,6 +841,21 @@ class CameraSlotWidget(QWidget):
             # تا nvr_id/channel هم در on_region_alert در دسترس باشد.
             self._on_region_alert(self.cam, number, name)
 
+    def _on_fire_event(self, kind: str, crop_frame, confidence: float):
+        """رفع درخواست «سیستم تشخیص دود و اعلام حریق»: دقیقاً همان الگوی
+        _on_region_entered بالا - کادر خانه قرمز و ضخیم می‌شود، آلارم صوتی
+        پخش می‌شود و پیام روی همین خانه نمایش داده می‌شود؛ به‌علاوه رویداد به
+        MainWindow (پنل «هشدارهای حریق و دود» + ثبت دائمی در گزارش‌ها) هم
+        اطلاع داده می‌شود."""
+        label = "🔥 آتش" if kind == "fire" else "💨 دود"
+        self._alarm_active = True
+        self._apply_frame_style()
+        self.status_label.setText(f"⚠ تشخیص {label} ({confidence * 100:.0f}%)")
+        _play_alarm_beep()
+        self._alarm_timer.start(4000)
+        if self._fire_event_cb is not None and self.cam is not None:
+            self._fire_event_cb(self.cam, kind, crop_frame, confidence)
+
     def _on_detector_status(self, available: bool, error_msg: str):
         """رفع درخواست: بعد از اولین تلاش (موفق یا ناموفق) برای بارگذاری
         مدل تشخیص شخص، این متد صدا زده می‌شود (رجوع کنید به
@@ -996,7 +1019,7 @@ class CameraSlotWidget(QWidget):
 
     # --------------------------------------------------------------- start -
 
-    def start(self, cam: dict, rtsp_url: str, face_engine: FaceEngine, face_event_cb, fire_event_cb=None):
+    def start(self, cam: dict, rtsp_url: str, face_engine: FaceEngine, face_event_cb):
         self.cam = cam
         # نمایش اسم دوربین همراه با IP (کنار هم، جلوی شمارش افراد در همین
         # هدر). اگر کاربر برای دوربین اسمی وارد نکرده باشد، cam["name"] از
@@ -1019,6 +1042,8 @@ class CameraSlotWidget(QWidget):
         self.stream_thread.people_count_signal.connect(self.on_people_count)
         self.stream_thread.region_entered.connect(self._on_region_entered)
         self.stream_thread.person_detector_status_signal.connect(self._on_detector_status)
+        # رفع درخواست «سیستم تشخیص دود و اعلام حریق»
+        self.stream_thread.fire_event_signal.connect(self._on_fire_event)
         self._last_logged_count = None
         # با هر بازِ جدید (دوربین تازه در همین خانه)، وضعیت تشخیص شخص قبلی
         # (اگر مربوط به دوربین قبلی این خانه بوده) پاک می‌شود تا وضعیت
@@ -1033,13 +1058,6 @@ class CameraSlotWidget(QWidget):
         self.stream_thread.face_event_signal.connect(
             lambda person, crop: face_event_cb(cam, person, crop)
         )
-        # رفع درخواست: رویداد آتش/دود این خانه هم (در صورت وجود callback) به
-        # همان الگوی face_event_signal بالا، همراه با کل دیکشنری دوربین (cam)
-        # به MainWindow.on_fire_event پاس داده می‌شود.
-        if fire_event_cb is not None:
-            self.stream_thread.fire_event_signal.connect(
-                lambda label, frame, confidence: fire_event_cb(cam, label, frame, confidence)
-            )
         self.stream_thread.start()
         # رفع درخواست: اگر برای این دوربین قبلاً محدوده‌های هشدار رسم و
         # ذخیره شده باشند (cameras.json)، همان لحظه‌ی اتصال دوباره روی ترد
@@ -1062,28 +1080,16 @@ class CameraSlotWidget(QWidget):
         self.status_label.setText(f"خطا: {msg}")
 
     def on_frame_ready(self, display_frame, raw_frame):
-        try:
-            self.latest_raw_frame = raw_frame
-            pixmap = _bgr_to_pixmap(display_frame)
-            if pixmap is None:
-                return
-            # رفع درخواست «تصویر بلور/پیکسلیه»: FastTransformation (نزدیک‌ترین‌
-            # همسایه) باعث می‌شد فریم هنگام scale-up به سایز پنل، بلوکی/پیکسلی
-            # دیده شود. SmoothTransformation (درون‌یابی دوخطی) کمی سنگین‌تر است
-            # ولی کیفیت تصویر را به حالت قبل برمی‌گرداند؛ روی سخت‌افزار معمولی و
-            # با تعداد محدود دوربین هم‌زمان باز، این تفاوت سرعت در عمل محسوس نیست.
-            self.video_label.setPixmap(
-                pixmap.scaled(
-                    self.video_label.width(), self.video_label.height(),
-                    Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
-                )
+        self.latest_raw_frame = raw_frame
+        pixmap = _bgr_to_pixmap(display_frame)
+        if pixmap is None:
+            return
+        self.video_label.setPixmap(
+            pixmap.scaled(
+                self.video_label.width(), self.video_label.height(),
+                Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
             )
-        finally:
-            # مهم: در finally تا حتی اگر رسم به هر دلیلی استثنا بدهد، ترد
-            # پخط برای همیشه منتظر «تمام‌شدنِ GUI» نماند و پخش زنده کاملاً
-            # متوقف نشود.
-            if self.stream_thread is not None:
-                self.stream_thread.mark_display_done()
+        )
 
     def stop(self):
         if self.stream_thread and self.stream_thread.isRunning():
@@ -1220,15 +1226,13 @@ class CameraGridWidget(QWidget):
         super().__init__(parent)
         self.face_engine = face_engine
         self.on_face_event = on_face_event
-        # رفع درخواست: تشخیص تصویری آتش/دود هر خانه (camera_stream.py:
-        # fire_event_signal)، مثل on_face_event، به این callback در
-        # MainWindow پاس داده می‌شود تا هم در پنل رویدادهای حریق نمایش داده
-        # شود و هم در report_store ثبت شود.
-        self.on_fire_event = on_fire_event
         # رفع درخواست: با ورود شخصی به یکی از محدوده‌های هشدار هر خانه، این
         # callback (در MainWindow) به هر خانه‌ی تازه‌ساخته‌شده هم پاس داده
         # می‌شود تا رویداد در پنل تشخیص چهره هم ثبت شود.
         self.on_region_alert = on_region_alert
+        # رفع درخواست «سیستم تشخیص دود و اعلام حریق»: مشابه on_region_alert،
+        # به هر خانه‌ی تازه‌ساخته‌شده پاس داده می‌شود.
+        self.on_fire_event = on_fire_event
         # رفع درخواست: وقتی موردی از لیست دوربین‌ها (خارج از شبکه‌ی نمایش) روی
         # یک خانه رها (drop) شود، این callback (در MainWindow) صدا زده می‌شود
         # تا رمز عبور را در صورت نیاز بپرسد و آدرس RTSP را بسازد.
@@ -1285,6 +1289,7 @@ class CameraGridWidget(QWidget):
                     on_slot_drag_swap=self._on_slot_drag_swap,
                     on_camera_drag_drop=self._on_camera_drag_drop,
                     on_region_alert=self.on_region_alert,
+                    on_fire_event=self.on_fire_event,
                 )
                 slot.slot_index = len(self.slots)
                 slot.tripwire_changed.connect(self.tripwire_changed.emit)
@@ -1321,7 +1326,7 @@ class CameraGridWidget(QWidget):
 
         for i, slot in enumerate(self.slots):
             if slot.cam is None:
-                slot.start(cam, rtsp_url, self.face_engine, self.on_face_event, self.on_fire_event)
+                slot.start(cam, rtsp_url, self.face_engine, self.on_face_event)
                 # اعمال وضعیت فعلیِ دکمه‌ی سراسریِ شمارش افراد روی دوربین
                 # تازه‌باز.
                 slot.set_people_counting(self._people_counting_enabled)
@@ -1348,7 +1353,7 @@ class CameraGridWidget(QWidget):
                 return
         target = self.slots[slot_index]
         target.stop()
-        target.start(cam, rtsp_url, self.face_engine, self.on_face_event, self.on_fire_event)
+        target.start(cam, rtsp_url, self.face_engine, self.on_face_event)
         target.set_people_counting(self._people_counting_enabled)
         self._select_index(slot_index)
 
@@ -1372,10 +1377,10 @@ class CameraGridWidget(QWidget):
         slot_a.stop()
         slot_b.stop()
         if cam_b is not None:
-            slot_a.start(cam_b, url_b, self.face_engine, self.on_face_event, self.on_fire_event)
+            slot_a.start(cam_b, url_b, self.face_engine, self.on_face_event)
             slot_a.set_people_counting(self._people_counting_enabled)
         if cam_a is not None:
-            slot_b.start(cam_a, url_a, self.face_engine, self.on_face_event, self.on_fire_event)
+            slot_b.start(cam_a, url_a, self.face_engine, self.on_face_event)
             slot_b.set_people_counting(self._people_counting_enabled)
 
         if self.selected_index == idx_a:
@@ -1482,22 +1487,25 @@ class MainWindow(QMainWindow):
 
         self.face_engine = FaceEngine()
         self.camera_store = CameraStore()
+        # رفع درخواست «سیستم تشخیص دود و اعلام حریق»: لیست پنل‌ها/سنسورهای
+        # فیزیکی اعلام حریق کاربر + تردهای پس‌زمینه‌ی مانیتور هرکدام
+        # (panel_id -> FireAlarmMonitorThread) - رجوع کنید به
+        # fire_alarm_io.py/fire_alarm_store.py.
+        self.fire_alarm_store = FireAlarmStore()
+        self._fire_alarm_threads = {}
         self.network_scan_thread = None
         self.detect_thread = None
         self._scan_ports_by_ip = {}  # ip -> [ports...] از آخرین اسکن شبکه
         self._detect_queue = []  # صف IPهایی که با انتخاب چندتایی باید پشت‌سرهم تشخیص داده شوند
 
-        # --- پنل‌های اعلام حریق فیزیکی (fire_alarm_store.py/fire_alarm_io.py) ---
-        self.fire_alarm_store = FireAlarmStore()
-        self.fire_alarm_threads: dict[str, FireAlarmMonitorThread] = {}
-        # بافرِ درون‌حافظه‌ی رویدادهای حریق/دود اخیر برای پنل ستون راست
-        # (تشخیص تصویری + پنل فیزیکی)؛ سقف تعداد برای جلوگیری از رشد بی‌رویه.
-        self._fire_events: list[dict] = []
-
         self.init_ui()
         self.reload_camera_list()
+        # رفع درخواست «سیستم تشخیص دود و اعلام حریق»: پنل‌های ذخیره‌شده از
+        # اجراهای قبلی، همین لحظه در لیست نمایش داده و مانیتور پس‌زمینه‌ی
+        # هرکدام شروع می‌شود - دقیقاً مثل بارگذاری خودکار دوربین‌ها/NVRها.
         self.reload_fire_alarm_list()
-        self.start_all_fire_alarm_monitors()
+        for panel in self.fire_alarm_store.panels:
+            self._start_fire_alarm_monitor(panel)
 
     # ---------------------------------------------------------------- UI ---
 
@@ -1591,6 +1599,27 @@ class MainWindow(QMainWindow):
         cam_group.setLayout(cam_layout)
         left_panel.addWidget(cam_group)
 
+        # بخش پنل‌ها/سنسورهای فیزیکی اعلام حریق (رفع درخواست «سیستم تشخیص
+        # دود و اعلام حریق») - جدا از تشخیص تصویری که همیشه روی هر دوربین
+        # فعال است (نیازی به افزودن جداگانه ندارد)؛ اینجا فقط برای اتصال به
+        # سخت‌افزار *فیزیکی* موجود (پنل/دتکتور دود، از طریق ورودی آلارم یک
+        # NVR/دوربین یا یک ماژول رله Modbus) استفاده می‌شود - رجوع کنید به
+        # fire_alarm_io.py.
+        fire_alarm_group = QGroupBox("🔥 پنل‌های اعلام حریق (سنسور فیزیکی)")
+        fire_alarm_layout = QVBoxLayout()
+        self.add_fire_alarm_btn = QPushButton("+ افزودن پنل/سنسور اعلام حریق")
+        self.add_fire_alarm_btn.clicked.connect(self.open_add_fire_alarm_dialog)
+        self.fire_alarm_list = QListWidget()
+        self.fire_alarm_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.fire_alarm_list.customContextMenuRequested.connect(self.show_fire_alarm_context_menu)
+        fire_alarm_hint = QLabel("کلیک راست روی هر پنل: حذف")
+        fire_alarm_hint.setStyleSheet("color: #888; font-size: 10px;")
+        fire_alarm_layout.addWidget(self.add_fire_alarm_btn)
+        fire_alarm_layout.addWidget(self.fire_alarm_list)
+        fire_alarm_layout.addWidget(fire_alarm_hint)
+        fire_alarm_group.setLayout(fire_alarm_layout)
+        left_panel.addWidget(fire_alarm_group)
+
         # بخش Face Library
         face_group = QGroupBox("مدیریت چهره (Face Library)")
         face_layout = QVBoxLayout()
@@ -1610,31 +1639,6 @@ class MainWindow(QMainWindow):
         reports_layout.addWidget(self.reports_btn)
         reports_group.setLayout(reports_layout)
         left_panel.addWidget(reports_group)
-
-        # بخش پنل‌های اعلام حریق فیزیکی: افزودن/لیست/حذف پنل‌های ISAPI/CGI/
-        # Modbus TCP - رجوع کنید به fire_alarm_store.py و fire_alarm_io.py.
-        fire_panel_group = QGroupBox("پنل‌های اعلام حریق")
-        fire_panel_layout = QVBoxLayout()
-
-        fire_btn_row = QHBoxLayout()
-        self.add_fire_panel_btn = QPushButton("+ افزودن پنل")
-        self.add_fire_panel_btn.clicked.connect(lambda: self.open_add_fire_alarm_dialog())
-        self.remove_fire_panel_btn = QPushButton("حذف پنل انتخاب‌شده")
-        self.remove_fire_panel_btn.clicked.connect(self.remove_selected_fire_panel)
-        fire_btn_row.addWidget(self.add_fire_panel_btn)
-        fire_btn_row.addWidget(self.remove_fire_panel_btn)
-
-        self.fire_panel_list = QListWidget()
-        self.fire_panel_list.itemDoubleClicked.connect(self.edit_fire_panel_item)
-        fire_panel_hint = QLabel("دابل‌کلیک: ویرایش پنل. 🟢 = مانیتورینگ فعال، ⚪ = متوقف")
-        fire_panel_hint.setStyleSheet("color: #888; font-size: 10px;")
-
-        fire_panel_layout.addLayout(fire_btn_row)
-        fire_panel_layout.addWidget(self.fire_panel_list)
-        fire_panel_layout.addWidget(fire_panel_hint)
-        fire_panel_group.setLayout(fire_panel_layout)
-        left_panel.addWidget(fire_panel_group)
-
         left_panel.addStretch()
 
         # ------------------------------------------------ ستون میانی: شبکه‌ی
@@ -1687,43 +1691,14 @@ class MainWindow(QMainWindow):
         # رسم» فقط نقاط در انتظار نام‌گذاری را پاک می‌کند و «مدیریت
         # محدوده‌ها» امکان مشاهده/حذف محدوده‌های از قبل تایید‌شده را می‌دهد.
         # هر دوربین می‌تواند هم‌زمان چند محدوده‌ی نام‌دار داشته باشد.
-        # رفع درخواست: به‌جای نمایش هم‌زمان هر سه دکمه‌ی روش رسم محدوده
-        # (رسم دستی/کل کادر/تشخیص AI) در نوار اصلی، فقط یک دکمه‌ی والدِ
-        # «🖊 رسم محدوده» در نوار اصلی دیده می‌شود. با زدنِ همین دکمه، یک
-        # ردیفِ زیرینِ جدید (self.region_options_row) با آن سه گزینه ظاهر
-        # می‌شود؛ به محض انتخاب هرکدام (یا در طول انجامش)، آن ردیف پنهان و
-        # ردیفِ دیگری (self.region_actions_row) با سه دکمه‌ی «لغو / رسم
-        # مجدد / تایید» جای آن را می‌گیرد - رجوع کنید به
-        # _on_draw_region_master_toggled و _refresh_line_buttons.
-        self.draw_region_master_btn = QPushButton("🖊 رسم محدوده")
-        self.draw_region_master_btn.setCheckable(True)
-        self.draw_region_master_btn.setToolTip(
-            "۱) یک دوربین را از شبکه انتخاب کنید (کلیک روی خانه‌اش)\n"
-            "۲) این دکمه را بزنید تا گزینه‌های رسم محدوده (رسم دستی، کل کادر، تشخیص با AI) زیرش ظاهر شود\n"
-            "۳) یکی از آن گزینه‌ها را انتخاب کنید"
-        )
-        self.draw_region_master_btn.setStyleSheet(
-            "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
-            "QPushButton:checked{background:#9b59b6; color:#fff;}"
-        )
-        self.draw_region_master_btn.toggled.connect(self._on_draw_region_master_toggled)
-        grid_toolbar.addWidget(self.draw_region_master_btn)
-
-        # ردیف گزینه‌های رسم محدوده (رسم دستی/کل کادر/تشخیص AI) - فقط وقتی
-        # self.draw_region_master_btn تیک‌خورده باشد نمایان می‌شود (رجوع
-        # کنید به _refresh_line_buttons).
-        self.region_options_row = QWidget()
-        region_options_layout = QHBoxLayout(self.region_options_row)
-        region_options_layout.setContentsMargins(24, 0, 0, 0)
-        region_options_layout.setSpacing(6)
-
-        self.draw_line_btn = QPushButton("✏️ رسم دستی")
+        self.draw_line_btn = QPushButton("🖊 رسم محدوده هشدار")
         self.draw_line_btn.setCheckable(True)
         self.draw_line_btn.setToolTip(
-            "۱) این گزینه را بزنید\n"
-            "۲) روی تصویر همان دوربین، به‌ترتیب روی نقاط زمین/اتاق کلیک کنید "
+            "۱) یک دوربین را از شبکه انتخاب کنید (کلیک روی خانه‌اش)\n"
+            "۲) این دکمه را بزنید\n"
+            "۳) روی تصویر همان دوربین، به‌ترتیب روی نقاط زمین/اتاق کلیک کنید "
             "(برنامه نقاط را به هم وصل می‌کند)\n"
-            "۳) برای بستن محدوده: روی نقطه‌ی اول (دایره‌ی بزرگ‌تر) کلیک کنید، "
+            "۴) برای بستن محدوده: روی نقطه‌ی اول (دایره‌ی بزرگ‌تر) کلیک کنید، "
             "یا دابل‌کلیک کنید (حداقل ۳ نقطه لازم است)\n"
             "کلیک راست: لغو رسمِ در حال انجام"
         )
@@ -1732,7 +1707,7 @@ class MainWindow(QMainWindow):
             "QPushButton:checked{background:#9b59b6; color:#fff;}"
         )
         self.draw_line_btn.toggled.connect(self._on_draw_line_toggled)
-        region_options_layout.addWidget(self.draw_line_btn)
+        grid_toolbar.addWidget(self.draw_line_btn)
 
         # رفع درخواست «یک حالت جدید که خودش سطح زمین رو تشخیص بده و کلش رو
         # محدوده محسوب کنه»: به‌جای کلیک‌های متوالی دستی، این دکمه بلافاصله
@@ -1741,7 +1716,7 @@ class MainWindow(QMainWindow):
         # می‌گذارد (دقیقاً مثل رسم دستی، با همان دکمه‌های تایید/لغوِ پایین).
         # این محدوده هم مثل هر محدوده‌ی دیگری کاملاً قابل ویرایش است - قبل
         # از تایید (با کشیدن گوشه‌ها) یا بعداً از «مدیریت محدوده‌ها».
-        self.auto_region_btn = QPushButton("🌐 کل کادر")
+        self.auto_region_btn = QPushButton("🌐 تشخیص خودکار محدوده (کل تصویر)")
         self.auto_region_btn.setToolTip(
             "۱) یک دوربین را از شبکه انتخاب کنید (کلیک روی خانه‌اش)\n"
             "۲) این دکمه را بزنید - کل تصویر دوربین به‌عنوان محدوده در نظر گرفته می‌شود\n"
@@ -1755,7 +1730,7 @@ class MainWindow(QMainWindow):
             "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
         )
         self.auto_region_btn.clicked.connect(self._on_auto_region_clicked)
-        region_options_layout.addWidget(self.auto_region_btn)
+        grid_toolbar.addWidget(self.auto_region_btn)
 
         # رفع درخواست «یک حالت جدید که خودش سطح زمین رو تشخیص بده و کلش رو
         # محدوده محسوب کنه، ولی بازم قابل ادیت باشه، دقیق‌تر با مدل هوش
@@ -1768,7 +1743,7 @@ class MainWindow(QMainWindow):
         # کاملاً با ماوس قابل ویرایش است. چون بارگذاری/اجرای مدل چند ثانیه
         # طول می‌کشد، در یک ترد جدا (FloorDetectThread) اجرا می‌شود تا UI
         # فریز نشود - رجوع کنید به _on_ai_floor_region_clicked.
-        self.ai_floor_btn = QPushButton("🧭 تشخیص با AI")
+        self.ai_floor_btn = QPushButton("🧭 تشخیص هوشمند زمین (AI)")
         self.ai_floor_btn.setToolTip(
             "۱) یک دوربین را از شبکه انتخاب کنید (کلیک روی خانه‌اش)\n"
             "۲) این دکمه را بزنید - با مدل هوش مصنوعی (Segmentation)، فقط "
@@ -1786,45 +1761,12 @@ class MainWindow(QMainWindow):
             "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
         )
         self.ai_floor_btn.clicked.connect(self._on_ai_floor_region_clicked)
-        region_options_layout.addWidget(self.ai_floor_btn)
-        region_options_layout.addStretch()
-        self.region_options_row.setVisible(False)
+        grid_toolbar.addWidget(self.ai_floor_btn)
         # نگه‌داشتن ارجاع به تردِ در حال اجرا (اگر باشد) - هم برای جلوگیری
         # از garbage-collect شدنِ زودهنگام QThread در حال اجرا، هم برای
         # اینکه بدانیم همین الان یک تشخیص در جریان است (رجوع کنید به
         # _on_ai_floor_region_clicked).
         self._floor_detect_thread = None
-        # رفع درخواست: کدام گزینه (رسم دستی/کل کادر/تشخیص AI) آخرین‌بار
-        # استفاده شده - تا دکمه‌ی «🔄 رسم مجدد» بتواند همان روش را دوباره
-        # از نو شروع کند بدون این‌که کاربر مجبور شود دوباره از ردیف
-        # گزینه‌ها انتخاب کند (رجوع کنید به _on_restart_line_clicked).
-        self._last_region_mode = None
-
-        # ردیف دکمه‌های عملیاتِ محدوده‌ی در انتظار: لغو / رسم مجدد / تایید.
-        # فقط وقتی یک محدوده‌ی در انتظار (چه تازه رسم‌شده، چه کل کادر، چه
-        # AI، چه در حال ویرایش) روی تصویر باشد نمایان می‌شود.
-        self.region_actions_row = QWidget()
-        region_actions_layout = QHBoxLayout(self.region_actions_row)
-        region_actions_layout.setContentsMargins(24, 0, 0, 0)
-        region_actions_layout.setSpacing(6)
-
-        self.redraw_line_btn = QPushButton("❌ لغو")
-        self.redraw_line_btn.setEnabled(False)
-        self.redraw_line_btn.setToolTip("نقاط در حال رسم/در انتظار نام‌گذاری را لغو می‌کند؛ محدوده‌های قبلاً تایید‌شده حذف نمی‌شوند.")
-        self.redraw_line_btn.setStyleSheet(
-            "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
-        )
-        self.redraw_line_btn.clicked.connect(self._on_redraw_line_clicked)
-        region_actions_layout.addWidget(self.redraw_line_btn)
-
-        self.restart_line_btn = QPushButton("🔄 رسم مجدد")
-        self.restart_line_btn.setEnabled(False)
-        self.restart_line_btn.setToolTip("محدوده‌ی در انتظار فعلی را لغو و همان روش (رسم دستی/کل کادر/تشخیص AI) را دوباره از نو شروع می‌کند.")
-        self.restart_line_btn.setStyleSheet(
-            "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
-        )
-        self.restart_line_btn.clicked.connect(self._on_restart_line_clicked)
-        region_actions_layout.addWidget(self.restart_line_btn)
 
         self.confirm_line_btn = QPushButton("✅ تایید و نام‌گذاری")
         self.confirm_line_btn.setEnabled(False)
@@ -1836,9 +1778,16 @@ class MainWindow(QMainWindow):
             "QPushButton:enabled{background:#27ae60; color:#fff;}"
         )
         self.confirm_line_btn.clicked.connect(self._on_confirm_line_clicked)
-        region_actions_layout.addWidget(self.confirm_line_btn)
-        region_actions_layout.addStretch()
-        self.region_actions_row.setVisible(False)
+        grid_toolbar.addWidget(self.confirm_line_btn)
+
+        self.redraw_line_btn = QPushButton("❌ لغو رسم")
+        self.redraw_line_btn.setEnabled(False)
+        self.redraw_line_btn.setToolTip("نقاط در حال رسم/در انتظار نام‌گذاری را لغو می‌کند؛ محدوده‌های قبلاً تایید‌شده حذف نمی‌شوند.")
+        self.redraw_line_btn.setStyleSheet(
+            "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
+        )
+        self.redraw_line_btn.clicked.connect(self._on_redraw_line_clicked)
+        grid_toolbar.addWidget(self.redraw_line_btn)
 
         self.manage_regions_btn = QPushButton("📋 مدیریت محدوده‌ها")
         self.manage_regions_btn.setEnabled(False)
@@ -1854,7 +1803,8 @@ class MainWindow(QMainWindow):
 
         self.camera_grid = CameraGridWidget(
             self.face_engine, self.on_face_event, on_external_camera_drop=self.on_camera_dropped_on_grid,
-            on_region_alert=self.on_region_alert, on_fire_event=self.on_fire_event,
+            on_region_alert=self.on_region_alert,
+            on_fire_event=self.on_fire_event,
         )
         self.camera_grid.selection_changed.connect(lambda _idx: self._refresh_line_buttons())
         self.camera_grid.tripwire_changed.connect(self._refresh_line_buttons)
@@ -1863,8 +1813,6 @@ class MainWindow(QMainWindow):
         grid_scroll.setWidget(self.camera_grid)
 
         grid_column.addLayout(grid_toolbar)
-        grid_column.addWidget(self.region_options_row)
-        grid_column.addWidget(self.region_actions_row)
         grid_column.addWidget(grid_scroll, 1)
 
         # ------------------------------------------------ ستون راست: پنل
@@ -1880,22 +1828,30 @@ class MainWindow(QMainWindow):
         self.face_panel_list.setIconSize(QSize(64, 64))
         self.face_panel_list.setWordWrap(True)
         face_panel_layout.addWidget(self.face_panel_list)
-
-        # رفع درخواست: پنل رویدادهای حریق/دود زنده (تشخیص تصویری + پنل
-        # فیزیکی) - در همان ستون راست، زیر پنل تشخیص چهره، همراه با یک
-        # کادر جست‌وجو/فیلتر ساده (substring، بدون وابستگی جدید).
-        fire_events_group = QGroupBox("رویدادهای حریق/دود (زنده)")
-        fire_events_layout = QVBoxLayout()
-        self.fire_event_filter_input = QLineEdit()
-        self.fire_event_filter_input.setPlaceholderText("جست‌وجو (دوربین، نوع رویداد، پنل)...")
-        self.fire_event_filter_input.textChanged.connect(self._refresh_fire_event_list)
-        self.fire_event_list = QListWidget()
-        fire_events_layout.addWidget(self.fire_event_filter_input)
-        fire_events_layout.addWidget(self.fire_event_list)
-        fire_events_group.setLayout(fire_events_layout)
-        face_panel_layout.addWidget(fire_events_group)
-
         face_panel_group.setLayout(face_panel_layout)
+
+        # پنل «هشدارهای حریق و دود» - رفع درخواست «سیستم تشخیص دود و اعلام
+        # حریق»: هم رویدادهای تشخیص تصویری (fire_smoke_detector.py روی هر
+        # دوربین) و هم هشدارهای دریافتی از پنل‌های فیزیکی (fire_alarm_io.py)
+        # در همین‌جا (و هم‌زمان در «گزارش‌ها») ثبت می‌شوند - جدا از پنل
+        # تشخیص چهره‌ی بالا تا با آن قاطی نشود.
+        fire_panel_group = QGroupBox("🔥 هشدارهای حریق و دود")
+        fire_panel_layout = QVBoxLayout()
+        self.fire_panel_list = QListWidget()
+        self.fire_panel_list.setIconSize(QSize(64, 64))
+        self.fire_panel_list.setWordWrap(True)
+        fire_panel_layout.addWidget(self.fire_panel_list)
+        fire_panel_group.setLayout(fire_panel_layout)
+
+        # هر دو پنل (تشخیص چهره + هشدار حریق/دود) داخل یک ستون راست مشترک
+        # قرار می‌گیرند تا فقط یک آیتم به splitter اضافه شود و عرض یکسان
+        # (right_w پایین‌تر) برای هر دو رعایت شود.
+        right_column_widget = QWidget()
+        right_column_layout = QVBoxLayout()
+        right_column_layout.setContentsMargins(0, 0, 0, 0)
+        right_column_layout.addWidget(face_panel_group, 3)
+        right_column_layout.addWidget(fire_panel_group, 2)
+        right_column_widget.setLayout(right_column_layout)
 
         # رفع درخواست: عرض پنل سمت راست (پنل تشخیص چهره) باید دقیقاً هم‌اندازه‌ی
         # پنل سمت چپ باشد تا فضای بیشتری به تصویر دوربین‌ها در وسط برسد. قبلاً
@@ -1917,7 +1873,7 @@ class MainWindow(QMainWindow):
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.addWidget(self.left_widget)
         self.splitter.addWidget(grid_widget)
-        self.splitter.addWidget(face_panel_group)
+        self.splitter.addWidget(right_column_widget)
         # پنل چپ اکنون کوچکتر و با عرض محدود (ثابت‌تر) است، پنل وسط (شبکه‌ی
         # دوربین‌ها) بیشترین سهم را می‌گیرد و پنل راست (تشخیص چهره) بدون تغییر
         # باقی می‌ماند.
@@ -1971,25 +1927,6 @@ class MainWindow(QMainWindow):
             return None
         return self.camera_grid.slots[idx]
 
-    def _on_draw_region_master_toggled(self, checked):
-        """رفع درخواست: با زدنِ دکمه‌ی اصلیِ «🖊 رسم محدوده»، ردیف گزینه‌های
-        رسم (رسم دستی/کل کادر/تشخیص AI) زیرش ظاهر می‌شود. اگر هنوز
-        دوربینی انتخاب نشده باشد، دکمه به‌جای باز شدن دوباره خاموش می‌شود و
-        پیام راهنما نشان داده می‌شود - دقیقاً مثل رفتار قبلیِ خودِ دکمه‌ی
-        رسم دستی."""
-        if checked:
-            slot = self._selected_slot()
-            if slot is None or slot.cam is None:
-                self.draw_region_master_btn.blockSignals(True)
-                self.draw_region_master_btn.setChecked(False)
-                self.draw_region_master_btn.blockSignals(False)
-                QMessageBox.information(
-                    self, "رسم محدوده هشدار",
-                    "ابتدا یک دوربین را از شبکه‌ی نمایش انتخاب کنید (روی خانه‌اش کلیک کنید)، سپس دوباره این دکمه را بزنید."
-                )
-                return
-        self._refresh_line_buttons()
-
     def _on_draw_line_toggled(self, checked):
         slot = self._selected_slot()
         if slot is None or slot.cam is None:
@@ -2003,8 +1940,6 @@ class MainWindow(QMainWindow):
                 )
             return
         slot.set_draw_mode(checked)
-        if checked:
-            self._last_region_mode = "manual"
         self._refresh_line_buttons()
 
     def _on_auto_region_clicked(self):
@@ -2023,7 +1958,6 @@ class MainWindow(QMainWindow):
                 "ابتدا محدوده‌ی در انتظار/در حال ویرایشِ فعلی را با «✅ تایید» یا «❌ لغو» تمام کنید."
             )
             return
-        self._last_region_mode = "full"
         self._refresh_line_buttons()
 
     def _on_ai_floor_region_clicked(self):
@@ -2091,7 +2025,6 @@ class MainWindow(QMainWindow):
             return
         if not slot.start_ai_floor_region(points):
             return
-        self._last_region_mode = "ai"
         if self._selected_slot() is slot:
             self._refresh_line_buttons()
 
@@ -2155,34 +2088,6 @@ class MainWindow(QMainWindow):
         self.draw_line_btn.blockSignals(False)
         self._refresh_line_buttons()
 
-    def _on_restart_line_clicked(self):
-        """رفع درخواست دکمه‌ی «🔄 رسم مجدد»: محدوده‌ی در انتظار فعلی را
-        لغو می‌کند و بلافاصله همان روشی را که آخرین‌بار استفاده شده (رسم
-        دستی/کل کادر/تشخیص AI) از نو شروع می‌کند - تا کاربر برای رسم
-        دوباره مجبور نباشد دوباره از ردیف گزینه‌ها انتخاب کند."""
-        slot = self._selected_slot()
-        if slot is None or not slot.has_pending_region():
-            return
-        if slot.is_editing_region():
-            # ویرایشِ شکل یک محدوده‌ی قبلاً تایید‌شده را نمی‌شود «رسم مجدد»
-            # کرد (روش اولیه‌اش دیگر معلوم نیست) - فقط ویرایش لغو می‌شود.
-            slot.cancel_region_edit()
-            self.draw_line_btn.blockSignals(True)
-            self.draw_line_btn.setChecked(False)
-            self.draw_line_btn.blockSignals(False)
-            self._refresh_line_buttons()
-            return
-        slot.cancel_pending_region()
-        mode = self._last_region_mode
-        if mode == "manual":
-            self.draw_line_btn.setChecked(True)
-        elif mode == "full":
-            self._on_auto_region_clicked()
-        elif mode == "ai":
-            self._on_ai_floor_region_clicked()
-        else:
-            self._refresh_line_buttons()
-
     def _on_manage_regions_clicked(self):
         slot = self._selected_slot()
         if slot is None:
@@ -2216,7 +2121,99 @@ class MainWindow(QMainWindow):
         while self.face_panel_list.count() > 300:
             self.face_panel_list.takeItem(self.face_panel_list.count() - 1)
 
-    def _refresh_line_buttons(self):
+    def on_fire_event(self, cam, kind: str, crop_frame, confidence: float):
+        """رفع درخواست «سیستم تشخیص دود و اعلام حریق»: با هر تشخیص تصویری
+        آتش/دود روی یکی از دوربین‌ها (از CameraSlotWidget._on_fire_event)،
+        یک ردیف با تصویر برش‌خورده در پنل «هشدارهای حریق و دود» ثبت و در
+        گزارش‌ها ذخیره می‌شود - دقیقاً همان الگوی on_region_alert بالا."""
+        camera_name = cam.get("name", "")
+        timestamp = time.strftime("%H:%M:%S")
+        label = "🔥 آتش" if kind == "fire" else "💨 دود"
+        text = f"[{timestamp}] {camera_name}\n⚠ {label} شناسایی شد ({confidence * 100:.0f}%)"
+        item = QListWidgetItem(text)
+        item.setForeground(QColor("#e74c3c"))
+        pixmap = _bgr_to_pixmap(crop_frame) if crop_frame is not None else None
+        if pixmap is not None:
+            item.setIcon(QIcon(pixmap))
+        self.fire_panel_list.insertItem(0, item)
+        report_store.log_fire_smoke_visual(camera_name, kind, crop_frame=crop_frame,
+                                            confidence=confidence,
+                                            nvr_id=cam.get("nvr_id"), channel=cam.get("channel"))
+        while self.fire_panel_list.count() > 300:
+            self.fire_panel_list.takeItem(self.fire_panel_list.count() - 1)
+
+    # ---------------------------------------------- پنل‌های فیزیکی اعلام حریق -
+
+    def open_add_fire_alarm_dialog(self):
+        dialog = AddFireAlarmDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        panel = self.fire_alarm_store.add_panel(dialog.get_panel_data())
+        self.reload_fire_alarm_list()
+        self._start_fire_alarm_monitor(panel)
+
+    def reload_fire_alarm_list(self):
+        self.fire_alarm_list.clear()
+        for panel in self.fire_alarm_store.panels:
+            type_label = PANEL_TYPE_LABELS_FA.get(panel.get("type"), panel.get("type"))
+            item = QListWidgetItem(f"🔥 {panel['name']}  ({panel['ip']}) — {type_label}")
+            item.setData(Qt.ItemDataRole.UserRole, panel["id"])
+            self.fire_alarm_list.addItem(item)
+
+    def show_fire_alarm_context_menu(self, pos):
+        item = self.fire_alarm_list.itemAt(pos)
+        if item is None:
+            return
+        panel_id = item.data(Qt.ItemDataRole.UserRole)
+        menu = QMenu(self)
+        remove_action = menu.addAction("🗑 حذف این پنل")
+        action = menu.exec(self.fire_alarm_list.viewport().mapToGlobal(pos))
+        if action == remove_action:
+            self._stop_fire_alarm_monitor(panel_id)
+            self.fire_alarm_store.remove_panel(panel_id)
+            self.reload_fire_alarm_list()
+
+    def _start_fire_alarm_monitor(self, panel):
+        """رفع درخواست «سیستم تشخیص دود و اعلام حریق»: برای این پنل یک ترد
+        مانیتور پس‌زمینه (رجوع کنید به fire_alarm_io.FireAlarmMonitorThread)
+        شروع می‌کند که با تغییر واقعی وضعیت، سیگنال می‌فرستد."""
+        self._stop_fire_alarm_monitor(panel["id"])  # جلوگیری از دو ترد هم‌زمان روی یک پنل
+        thread = FireAlarmMonitorThread(panel, self)
+        thread.alarm_triggered.connect(lambda p=panel: self.on_fire_alarm_panel_triggered(p))
+        thread.alarm_cleared.connect(lambda p=panel: self.on_fire_alarm_panel_cleared(p))
+        thread.start()
+        self._fire_alarm_threads[panel["id"]] = thread
+
+    def _stop_fire_alarm_monitor(self, panel_id):
+        thread = self._fire_alarm_threads.pop(panel_id, None)
+        if thread is not None:
+            thread.stop()
+
+    def on_fire_alarm_panel_triggered(self, panel):
+        """آلارم یک پنل/سنسور فیزیکی اعلام حریق همین الان فعال شده - رفع
+        درخواست «سیستم تشخیص دود و اعلام حریق»: بوق هشدار + ردیف قرمز در
+        پنل + ثبت دائمی در گزارش‌ها، دقیقاً مثل تشخیص تصویری."""
+        timestamp = time.strftime("%H:%M:%S")
+        text = f"[{timestamp}] {panel['name']}\n🔥 آلارم پنل اعلام حریق فعال شد!"
+        item = QListWidgetItem(text)
+        item.setForeground(QColor("#e74c3c"))
+        self.fire_panel_list.insertItem(0, item)
+        _play_alarm_beep()
+        report_store.log_fire_alarm_panel(panel["name"], active=True)
+        while self.fire_panel_list.count() > 300:
+            self.fire_panel_list.takeItem(self.fire_panel_list.count() - 1)
+
+    def on_fire_alarm_panel_cleared(self, panel):
+        timestamp = time.strftime("%H:%M:%S")
+        text = f"[{timestamp}] {panel['name']}\n✅ وضعیت پنل اعلام حریق به حالت عادی برگشت"
+        item = QListWidgetItem(text)
+        item.setForeground(QColor("#2ecc71"))
+        self.fire_panel_list.insertItem(0, item)
+        report_store.log_fire_alarm_panel(panel["name"], active=False)
+        while self.fire_panel_list.count() > 300:
+            self.fire_panel_list.takeItem(self.fire_panel_list.count() - 1)
+
+
         """دکمه‌های «تایید و نام‌گذاری»/«لغو رسم»/«مدیریت محدوده‌ها» و
         وضعیت تیک‌خورده‌ی «رسم محدوده هشدار» را بر اساس خانه‌ی فعلاً
         انتخاب‌شده به‌روز می‌کند - چون هر خانه محدوده‌های مستقل خودش را
@@ -2227,7 +2224,6 @@ class MainWindow(QMainWindow):
         is_editing = slot.is_editing_region() if slot is not None else False
         self.confirm_line_btn.setEnabled(bool(has_pending))
         self.redraw_line_btn.setEnabled(bool(has_pending))
-        self.restart_line_btn.setEnabled(bool(has_pending) and not is_editing)
         self.manage_regions_btn.setEnabled(bool(has_confirmed))
         # رفع درخواست «قابلیت ادیت‌کردن»: وقتی یک محدوده‌ی «در انتظار» (چه
         # تازه رسم‌شده، چه محدوده‌ی خودکارِ کل تصویر، چه در حال ویرایش شکلِ
@@ -2249,25 +2245,10 @@ class MainWindow(QMainWindow):
             self.redraw_line_btn.setText("↩ لغو ویرایش")
         else:
             self.confirm_line_btn.setText("✅ تایید و نام‌گذاری")
-            self.redraw_line_btn.setText("❌ لغو")
+            self.redraw_line_btn.setText("❌ لغو رسم")
         self.draw_line_btn.blockSignals(True)
         self.draw_line_btn.setChecked(bool(slot.is_draw_mode()) if slot is not None else False)
         self.draw_line_btn.blockSignals(False)
-
-        # رفع درخواست: نمایش/پنهان‌کردن ردیف‌های زیرِ دکمه‌ی اصلی. تا وقتی
-        # محدوده‌ای در انتظار/در حال ویرایش نیست، با تیک‌خوردنِ دکمه‌ی
-        # اصلی «🖊 رسم محدوده» ردیف گزینه‌ها (رسم دستی/کل کادر/AI) نمایان
-        # می‌شود؛ به محض شروع رسم دستی یا آماده‌شدن یک محدوده‌ی در انتظار
-        # (has_pending)، آن ردیف پنهان و ردیف دکمه‌های «لغو/رسم مجدد/تایید»
-        # جایش را می‌گیرد. اگر دکمه‌ی اصلی خاموش باشد و محدوده‌ای هم در
-        # انتظار نباشد، هر دو ردیف پنهان می‌مانند.
-        in_manual_draw = bool(slot.is_draw_mode()) if slot is not None else False
-        master_checked = self.draw_region_master_btn.isChecked()
-        self.region_actions_row.setVisible(bool(has_pending))
-        self.region_options_row.setVisible(master_checked and not has_pending and not in_manual_draw)
-        self.draw_region_master_btn.blockSignals(True)
-        self.draw_region_master_btn.setChecked(master_checked or has_pending or in_manual_draw)
-        self.draw_region_master_btn.blockSignals(False)
 
     # ------------------------------------------------------- camera list ---
 
@@ -2878,152 +2859,6 @@ class MainWindow(QMainWindow):
         while self.face_panel_list.count() > 300:
             self.face_panel_list.takeItem(self.face_panel_list.count() - 1)
 
-    # -------------------------------------------------------- fire/smoke --
-
-    def reload_fire_alarm_list(self):
-        """لیست پنل‌های اعلام حریق ذخیره‌شده (fire_alarm_store.py) را در
-        fire_panel_list سمت چپ بازسازی می‌کند؛ 🟢/⚪ وضعیت فعلیِ ترد
-        مانیتورینگ هر پنل را نشان می‌دهد."""
-        self.fire_panel_list.clear()
-        for panel in self.fire_alarm_store.panels:
-            status = "🟢" if panel.get("id") in self.fire_alarm_threads else "⚪"
-            item = QListWidgetItem(f"{status} {panel['name']} ({panel.get('protocol', '?')})")
-            item.setData(Qt.ItemDataRole.UserRole, panel["id"])
-            self.fire_panel_list.addItem(item)
-
-    def open_add_fire_alarm_dialog(self, existing_panel: dict | None = None):
-        dialog = AddFireAlarmDialog(self, existing_panel=existing_panel)
-        if dialog.exec():
-            data = dialog.get_data()
-            if existing_panel:
-                self.fire_alarm_store.update_panel(existing_panel["id"], **data)
-                self.restart_fire_alarm_monitor(existing_panel["id"])
-            else:
-                panel = self.fire_alarm_store.add_panel(**data)
-                self.start_fire_alarm_monitor(panel)
-            self.reload_fire_alarm_list()
-
-    def edit_fire_panel_item(self, item: QListWidgetItem):
-        panel_id = item.data(Qt.ItemDataRole.UserRole)
-        panel = self.fire_alarm_store.get_panel(panel_id)
-        if panel:
-            self.open_add_fire_alarm_dialog(existing_panel=panel)
-
-    def remove_selected_fire_panel(self):
-        item = self.fire_panel_list.currentItem()
-        if not item:
-            QMessageBox.information(self, "توجه", "ابتدا یک پنل از لیست انتخاب کنید.")
-            return
-        panel_id = item.data(Qt.ItemDataRole.UserRole)
-        self.stop_fire_alarm_monitor(panel_id)
-        self.fire_alarm_store.remove_panel(panel_id)
-        self.reload_fire_alarm_list()
-
-    # --------------------------------------------------- fire event panel -
-
-    def _push_fire_event(self, text: str):
-        """رویداد جدید را به بافر درون‌حافظه اضافه و پنل فیلترشده را
-        بازسازی می‌کند."""
-        self._fire_events.insert(0, text)
-        self._fire_events = self._fire_events[:200]  # سقف بافر برای جلوگیری از رشد بی‌رویه
-        self._refresh_fire_event_list()
-
-    def _refresh_fire_event_list(self):
-        query = self.fire_event_filter_input.text().strip().lower()
-        self.fire_event_list.clear()
-        for text in self._fire_events:
-            if query and query not in text.lower():
-                continue
-            self.fire_event_list.addItem(text)
-
-    # -------------------------------------------------------------- خطاها -
-
-    def on_fire_event(self, cam: dict, label: str, frame, confidence: float):
-        """تشخیص تصویری آتش/دود روی یک دوربین (camera_stream.py:
-        fire_event_signal، به‌صورت cooldown-limited ارسال می‌شود). این
-        اسلات روی ترد اصلی UI اجرا می‌شود (Qt سیگنال بین‌تردی را خودکار به
-        صف ترد گیرنده می‌فرستد)، پس دستکاری ویجت‌ها اینجا امن است."""
-        camera_name = cam.get("name", "")
-        label_fa = "آتش" if label == "fire" else ("دود" if label == "smoke" else label)
-        ts = time.strftime("%H:%M:%S")
-        self._push_fire_event(f"[{ts}] 🔥 {camera_name} — {label_fa} ({confidence:.0%})")
-        report_store.log_fire_smoke_visual(
-            camera_name, label, frame, confidence,
-            nvr_id=cam.get("nvr_id"), channel=cam.get("channel"),
-        )
-
-    def on_fire_alarm_panel_triggered(self, panel_id: str, zone: str):
-        """با فعال شدن یک منطقه/ورودی پنل فیزیکی اعلام حریق فراخوانی
-        می‌شود (FireAlarmMonitorThread.panel_triggered - فقط روی تغییر
-        وضعیت، نه هر poll)."""
-        panel = self.fire_alarm_store.get_panel(panel_id)
-        name = panel["name"] if panel else panel_id
-        ts = time.strftime("%H:%M:%S")
-        self._push_fire_event(f"[{ts}] 🚨 پنل «{name}» — منطقه {zone} فعال شد")
-        report_store.log_fire_alarm_panel(name, zone, state="triggered")
-
-    def on_fire_alarm_panel_cleared(self, panel_id: str, zone: str):
-        panel = self.fire_alarm_store.get_panel(panel_id)
-        name = panel["name"] if panel else panel_id
-        ts = time.strftime("%H:%M:%S")
-        self._push_fire_event(f"[{ts}] ✅ پنل «{name}» — منطقه {zone} رفع شد")
-        report_store.log_fire_alarm_panel(name, zone, state="cleared")
-
-    def on_fire_alarm_panel_error(self, panel_id: str, message: str):
-        """خطای اتصال/وابستگی (مثلاً pymodbus نصب نیست) - فقط در پنل
-        رویدادها نمایش داده می‌شود، برنامه هرگز کرش نمی‌کند."""
-        panel = self.fire_alarm_store.get_panel(panel_id)
-        name = panel["name"] if panel else panel_id
-        ts = time.strftime("%H:%M:%S")
-        self._push_fire_event(f"[{ts}] ⚠️ پنل «{name}»: {message}")
-
-    # ----------------------------------------------- fire alarm lifecycle -
-
-    def start_fire_alarm_monitor(self, panel: dict):
-        """یک FireAlarmMonitorThread جدید برای این پنل می‌سازد و
-        سیگنال‌هایش را به هندلرهای بالا وصل می‌کند. اگر از قبل ترد فعالی
-        برای همین پنل وجود داشته باشد، کاری نمی‌کند (idempotent)."""
-        panel_id = panel["id"]
-        if panel_id in self.fire_alarm_threads:
-            return
-        thread = FireAlarmMonitorThread(panel, parent=self)
-        thread.panel_triggered.connect(
-            lambda zone, pid=panel_id: self.on_fire_alarm_panel_triggered(pid, zone)
-        )
-        thread.panel_cleared.connect(
-            lambda zone, pid=panel_id: self.on_fire_alarm_panel_cleared(pid, zone)
-        )
-        thread.connection_error.connect(
-            lambda msg, pid=panel_id: self.on_fire_alarm_panel_error(pid, msg)
-        )
-        thread.start()
-        self.fire_alarm_threads[panel_id] = thread
-
-    def stop_fire_alarm_monitor(self, panel_id: str):
-        """توقف تمیز ترد مانیتورینگ یک پنل: پرچم اجرای آن خاموش می‌شود و
-        حداکثر ۳ ثانیه برای پایان واقعی run() صبر می‌کنیم تا Qt هنگام
-        تخریب یک QThread در حال اجرا کرش نکند."""
-        thread = self.fire_alarm_threads.pop(panel_id, None)
-        if thread is not None:
-            thread.stop()
-            thread.wait(3000)
-
-    def restart_fire_alarm_monitor(self, panel_id: str):
-        self.stop_fire_alarm_monitor(panel_id)
-        panel = self.fire_alarm_store.get_panel(panel_id)
-        if panel:
-            self.start_fire_alarm_monitor(panel)
-
-    def start_all_fire_alarm_monitors(self):
-        """با هر بار بالا آمدن برنامه، مانیتورینگ تمام پنل‌های ذخیره‌شده
-        (fire_alarms.json) خودکار شروع می‌شود."""
-        for panel in self.fire_alarm_store.panels:
-            self.start_fire_alarm_monitor(panel)
-
-    def stop_all_fire_alarm_monitors(self):
-        for panel_id in list(self.fire_alarm_threads.keys()):
-            self.stop_fire_alarm_monitor(panel_id)
-
     # ------------------------------------------------------------- scan ---
 
     def run_network_scan(self):
@@ -3065,12 +2900,6 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.camera_grid.stop_all()
-        # رفع درخواست: تمام تردهای مانیتورینگ پنل‌های اعلام حریق فیزیکی هم
-        # باید قبل از بسته شدن پنجره متوقف شوند - وگرنه دقیقاً همان کرش
-        # «QThread destroyed while running» که چند خط پایین‌تر برای اسکن
-        # شبکه/تشخیص نوع دستگاه توضیح داده شده، برای این تردها هم رخ می‌دهد.
-        self.stop_all_fire_alarm_monitors()
-        self.fire_alarm_store.clear_all_passwords()
         # جلوگیری از کرش هنگام بستن برنامه در حین اسکن شبکه/تشخیص نوع دستگاه:
         # Qt هنگام تخریب یک QThread که هنوز در حال اجراست، کرش می‌کند.
         if self.network_scan_thread is not None and self.network_scan_thread.isRunning():
@@ -3078,12 +2907,19 @@ class MainWindow(QMainWindow):
         if self.detect_thread is not None and self.detect_thread.isRunning():
             self.detect_thread.cancel()
             self.detect_thread.wait(3000)
+        # رفع درخواست «سیستم تشخیص دود و اعلام حریق»: همان دلیل بالا - همه‌ی
+        # تردهای مانیتور پنل‌های فیزیکی اعلام حریق باید قبل از بسته‌شدن
+        # برنامه صریحاً متوقف شوند.
+        for panel_id in list(self._fire_alarm_threads.keys()):
+            self._stop_fire_alarm_monitor(panel_id)
 
         # رفع درخواست: هنگام خروج از برنامه، تمام رمزهای عبوری که فقط در
         # حافظه نگه‌داشته شده بودند (هیچ‌وقت روی دیسک ذخیره نمی‌شوند - رجوع
         # کنید به camera_store.py) پاک می‌شوند؛ در اجرای بعدی دوباره پرسیده
         # خواهند شد.
         self.camera_store.clear_all_passwords()
+        # همان نکته برای پنل‌های اعلام حریق فیزیکی (fire_alarm_store.py).
+        self.fire_alarm_store.clear_all_passwords()
         # رفع درخواست: کادر یوزرنیم/پسوورد بالای پنل اسکن شبکه هم هرگز روی
         # دیسک ذخیره نشده (فقط QLineEdit در حافظه بود) و هنگام خروج از
         # برنامه صراحتاً پاک می‌شود.

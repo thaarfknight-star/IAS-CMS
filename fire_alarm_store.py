@@ -1,16 +1,16 @@
-# -*- coding: utf-8 -*-
-"""ذخیره‌ی دائمی لیست پنل‌های اعلام حریق فیزیکی که کاربر اضافه کرده،
-به همان الگوی camera_store.py (JSON روی دیسک، رمز عبور فقط در حافظه)."""
-
 import json
 import os
 import uuid
 
+# ذخیره‌ی دائمی لیست پنل‌ها/سنسورهای فیزیکی اعلام حریق - دقیقاً همان الگوی
+# camera_store.py برای NVRها (فایل JSON کنار cameras.json/nvrs.json)، ساده‌شده
+# چون هر پنل فقط یک «ورودی» دارد (نه چند کانال مثل NVR).
+
 
 class FireAlarmStore:
-    def __init__(self, path: str = "fire_alarms.json"):
+    def __init__(self, path="fire_alarms.json"):
         self.path = path
-        self.panels: list[dict] = []
+        self.panels = []
         self.load()
 
     def load(self):
@@ -21,8 +21,9 @@ class FireAlarmStore:
             except Exception as e:
                 print(f"خطا در بارگذاری لیست پنل‌های اعلام حریق: {e}")
                 self.panels = []
-        # رفع درخواست امنیتی (مشابه camera_store.py): رمز عبور روی دیسک
-        # ذخیره نمی‌شود؛ اگر فایل قدیمی رمزی داشته باشد، همین‌جا پاک می‌شود.
+
+        # رفع درخواست امنیتی: مثل camera_store.py، رمز عبور هرگز روی دیسک
+        # نگه‌داشته نمی‌شود.
         if any(p.get("pass") for p in self.panels):
             for p in self.panels:
                 p["pass"] = ""
@@ -30,54 +31,41 @@ class FireAlarmStore:
 
     def save(self):
         try:
+            cleaned = []
+            for p in self.panels:
+                c = dict(p)
+                c["pass"] = ""
+                cleaned.append(c)
             with open(self.path, "w", encoding="utf-8") as f:
-                json.dump(self._without_passwords(self.panels), f, ensure_ascii=False, indent=2)
+                json.dump(cleaned, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"خطا در ذخیره‌ی لیست پنل‌های اعلام حریق: {e}")
 
-    @staticmethod
-    def _without_passwords(items):
-        cleaned = []
-        for item in items:
-            item_copy = dict(item)
-            item_copy["pass"] = ""
-            cleaned.append(item_copy)
-        return cleaned
-
     def clear_all_passwords(self):
-        for panel in self.panels:
-            panel["pass"] = ""
+        for p in self.panels:
+            p["pass"] = ""
 
-    def add_panel(self, name: str, protocol: str, ip: str, port: int,
-                  user: str = "", pwd: str = "", **extra) -> dict:
-        panel = {
-            "id": str(uuid.uuid4()),
-            "name": name or ip,
-            "protocol": protocol,  # "isapi" | "cgi" | "modbus"
-            "ip": ip,
-            "port": port,
-            "user": user,
-            "pass": pwd,
-            **extra,  # مثلاً input_count برای Modbus
-        }
+    def add_panel(self, panel_data: dict):
+        panel = dict(panel_data)
+        panel["id"] = str(uuid.uuid4())
         self.panels.append(panel)
         self.save()
         return panel
 
-    def update_panel(self, panel_id: str, **fields):
-        for panel in self.panels:
-            if panel["id"] == panel_id:
-                panel.update(fields)
+    def update_panel(self, panel_id, **fields):
+        for p in self.panels:
+            if p["id"] == panel_id:
+                p.update(fields)
                 self.save()
-                return panel
+                return p
         return None
 
-    def remove_panel(self, panel_id: str):
+    def remove_panel(self, panel_id):
         self.panels = [p for p in self.panels if p["id"] != panel_id]
         self.save()
 
-    def get_panel(self, panel_id: str):
-        for panel in self.panels:
-            if panel["id"] == panel_id:
-                return panel
+    def get_panel(self, panel_id):
+        for p in self.panels:
+            if p["id"] == panel_id:
+                return p
         return None

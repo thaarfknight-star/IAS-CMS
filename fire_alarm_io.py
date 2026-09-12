@@ -1,165 +1,195 @@
-# -*- coding: utf-8 -*-
-"""اتصال به پنل‌های فیزیکی اعلام حریق و پایش وضعیت آن‌ها در یک QThread
-جداگانه، به همان الگوی nvr_scanner.py/network_scan (ترد پس‌زمینه + سیگنال
-به UI). سه پروتکل پشتیبانی می‌شود:
+"""اتصال به سنسور/پنل *فیزیکی* اعلام حریق - نه تشخیص تصویری از روی دوربین
+(برای آن، رجوع کنید به fire_smoke_detector.py).
 
-  - Hikvision ISAPI  (protocol="isapi")   - نیازمند requests (از قبل در
-    requirements.txt پروژه هست).
-  - Dahua CGI        (protocol="cgi")     - نیازمند requests.
-  - Modbus TCP        (protocol="modbus") - نیازمند pymodbus (اختیاری؛
-    اگر نصب نباشد، این پنل فقط یک رویداد خطای اتصال می‌دهد و برنامه کرش
-    نمی‌کند - رجوع کنید به README).
+چرا این ماژول جدا از fire_smoke_detector.py است:
+--------------------------------------------------
+تشخیص تصویری هیچ‌وقت جایگزین کامل یک دتکتور دود واقعی (یونیزاسیون/فوتوالکتریک)
+یا یک پنل اعلام حریق آدرس‌پذیر استاندارد نمی‌شود - دوربین فقط چیزی را می‌بیند
+که در کادرش باشد و نور/زاویه کافی داشته باشد. اکثر ساختمان‌ها از قبل سنسور/پنل
+فیزیکی اعلام حریق نصب‌شده دارند؛ این ماژول به آن سخت‌افزار *موجود* وصل می‌شود
+تا وقتی آلارم واقعی فعال شد، همین نرم‌افزار CMS هم بلافاصله مطلع و اعلام کند -
+مکمل تشخیص تصویری، نه رقیب آن.
 
-FireAlarmMonitorThread فقط وقتی وضعیت یک منطقه/ورودی *تغییر* می‌کند سیگنال
-می‌دهد (نه هر بار poll)، تا لیست رویدادهای UI و پایگاه‌داده‌ی گزارش‌ها با
-رویدادهای تکراری پر نشوند.
+سه روش اتصال پشتیبانی می‌شود (رایج‌ترین‌ها در عمل):
+
+  ۱. Hikvision ISAPI (``hikvision_isapi``): بسیاری از NVR/دوربین‌های Hikvision
+     چند «ورودی آلارم» (Alarm Input) فیزیکی دارند - دقیقاً برای همین منظور که
+     کنتاکت خشک (dry contact) خروجی رله‌ی یک پنل/دتکتور دود به آن‌ها وصل شود.
+     وضعیت لحظه‌ای هر ورودی از ``/ISAPI/System/IO/inputs/<id>/status`` خوانده
+     می‌شود.
+
+  ۲. Dahua CGI (``dahua_cgi``): معادل همان قابلیت روی NVR/دوربین‌های Dahua،
+     از طریق ``/cgi-bin/alarm.cgi``.
+
+  ۳. Modbus TCP عمومی (``modbus_tcp``): برای اتصال مستقیم (بدون واسطه‌ی NVR)
+     به هر ماژول رله/ورودی دیجیتال شبکه‌ای عمومی (I/O module) که کنتاکت خشک
+     پنل اعلام حریق به آن وصل شده - پروتکل استاندارد صنعتی، مستقل از برند.
+
+هر سه روش با همان الگوی «آماده در پس‌زمینه چک شود، فقط با *تغییر واقعی*
+وضعیت سیگنال بفرست» که در بقیه‌ی برنامه استفاده شده (مثلاً
+people_count_signal در camera_stream.py) پیاده‌سازی شده‌اند.
 """
 
-import time
-
+import requests
+from requests.auth import HTTPBasicAuth, HTTPDigestAuth
 from PyQt6.QtCore import QThread, pyqtSignal
 
-POLL_INTERVAL_SECONDS = 3.0
+DEFAULT_TIMEOUT = 4
+DEFAULT_POLL_INTERVAL = 3  # ثانیه
 
+PANEL_TYPE_LABELS_FA = {
+    "hikvision_isapi": "NVR/دوربین Hikvision - ورودی آلارم (ISAPI)",
+    "dahua_cgi": "NVR/دوربین Dahua - ورودی آلارم (CGI)",
+    "modbus_tcp": "ماژول رله/IO عمومی - Modbus TCP",
+}
+
+DEFAULT_PORTS = {"hikvision_isapi": 80, "dahua_cgi": 80, "modbus_tcp": 502}
+
+
+# --------------------------------------------------------------- HTTP -----
+
+def _auth_variants(user, pwd):
+    # همان اولویت nvr_http_api.py: اول Digest (رایج‌تر در فریمورهای جدید)،
+    # بعد Basic به‌عنوان جایگزین.
+    return [HTTPDigestAuth(user, pwd), HTTPBasicAuth(user, pwd)]
+
+
+def _get(url, user, pwd, timeout):
+    for auth in _auth_variants(user, pwd):
+        try:
+            resp = requests.get(url, auth=auth, timeout=timeout)
+        except requests.RequestException:
+            continue
+        if resp.status_code == 200 and resp.text:
+            return resp
+    return None
+
+
+def check_hikvision_alarm_input(ip, port, user, pwd, input_id=1, timeout=DEFAULT_TIMEOUT):
+    """وضعیت لحظه‌ای یک ورودی آلارم Hikvision را می‌خواند.
+    خروجی: True (تریگر/فعال)، False (عادی) یا None (نامشخص/بدون پاسخ معتبر)."""
+    url = f"http://{ip}:{port}/ISAPI/System/IO/inputs/{input_id}/status"
+    resp = _get(url, user, pwd, timeout)
+    if resp is None:
+        return None
+    text = resp.text.lower()
+    # نمونه‌ی پاسخ واقعی: <IOInputPortStatus><ioState>active</ioState></...>
+    if "<iostate>active</iostate>" in text or ">active<" in text:
+        return True
+    if "<iostate>inactive</iostate>" in text or ">inactive<" in text:
+        return False
+    return None
+
+
+def check_dahua_alarm_input(ip, port, user, pwd, input_id=1, timeout=DEFAULT_TIMEOUT):
+    """معادل Dahua - چند مسیر شناخته‌شده امتحان می‌شود چون فرمت پاسخ بین
+    فریمورهای مختلف کمی فرق دارد."""
+    candidates = [
+        f"http://{ip}:{port}/cgi-bin/alarm.cgi?action=getInState&Input={input_id}",
+        f"http://{ip}:{port}/cgi-bin/alarm.cgi?action=getState&Channel={input_id}",
+    ]
+    for url in candidates:
+        resp = _get(url, user, pwd, timeout)
+        if resp is None:
+            continue
+        text = resp.text.strip().lower()
+        if "true" in text or "=open" in text or text.endswith("=1"):
+            return True
+        if "false" in text or "=close" in text or text.endswith("=0"):
+            return False
+    return None
+
+
+# ------------------------------------------------------------- Modbus -----
+
+def check_modbus_discrete_input(ip, port, address, timeout=DEFAULT_TIMEOUT):
+    """خواندن یک ورودی دیجیتال (Discrete Input) از یک ماژول رله/IO عمومی
+    شبکه‌ای، از طریق پروتکل استاندارد صنعتی Modbus TCP.
+
+    وابستگی اختیاری: نیازمند کتابخانه‌ی ``pymodbus`` (رجوع کنید به
+    requirements.txt). اگر نصب نباشد، خطای روشنی پرتاب می‌شود تا کاربر بداند
+    دقیقاً چه چیزی نصب کند - نه یک AttributeError مبهم."""
+    try:
+        from pymodbus.client import ModbusTcpClient
+    except Exception as e:
+        raise RuntimeError(
+            "برای اتصال به ماژول Modbus TCM، کتابخانه‌ی pymodbus لازم است "
+            f"(pip install pymodbus). خطا: {e}"
+        )
+
+    client = ModbusTcpClient(ip, port=port, timeout=timeout)
+    try:
+        if not client.connect():
+            return None
+        result = client.read_discrete_inputs(address, 1)
+        if result is None or result.isError():
+            return None
+        return bool(result.bits[0])
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------- مانیتور ترد ---
 
 class FireAlarmMonitorThread(QThread):
-    # (zone/point) - عنوان منطقه یا شماره‌ی ورودی دیجیتال که فعال شده
-    panel_triggered = pyqtSignal(str)
-    # (zone/point) - همان منطقه که به حالت عادی برگشته
-    panel_cleared = pyqtSignal(str)
-    # پیام خطا برای مشکلات اتصال/وابستگی نصب‌نشده (پنل غیرفعال می‌ماند، برنامه کرش نمی‌کند)
-    connection_error = pyqtSignal(str)
+    """یک پنل/سنسور فیزیکی اعلام حریق را در پس‌زمینه، با فاصله‌ی زمانی
+    مشخص (poll_interval) چک می‌کند. فقط با *تغییر واقعی* وضعیت (نه هر بار
+    چک) سیگنال می‌فرستد تا در main.py هر بار یک هشدار تازه ثبت/اعلام نشود."""
+
+    alarm_triggered = pyqtSignal()
+    alarm_cleared = pyqtSignal()
+    status_error = pyqtSignal(str)  # فقط برای لاگ/اطلاع - آلارم صادر نمی‌کند
 
     def __init__(self, panel: dict, parent=None):
         super().__init__(parent)
-        self.panel = panel
-        self._running = False
-        # {zone_id: bool} - آخرین وضعیت شناخته‌شده‌ی هر منطقه/ورودی، برای
-        # تشخیص «تغییر وضعیت» بین دو poll متوالی.
-        self._last_state: dict[str, bool] = {}
+        self.panel = dict(panel)
+        self._run_flag = True
 
-    def stop(self):
-        """توقف مشارکتی: run() این پرچم را در حلقه‌ی خودش چک می‌کند."""
-        self._running = False
+    def _check_once(self):
+        p = self.panel
+        ptype = p.get("type")
+        try:
+            if ptype == "hikvision_isapi":
+                return check_hikvision_alarm_input(
+                    p["ip"], p.get("port", 80), p.get("user", ""), p.get("pass", ""),
+                    input_id=p.get("input_id", 1),
+                )
+            if ptype == "dahua_cgi":
+                return check_dahua_alarm_input(
+                    p["ip"], p.get("port", 80), p.get("user", ""), p.get("pass", ""),
+                    input_id=p.get("input_id", 1),
+                )
+            if ptype == "modbus_tcp":
+                return check_modbus_discrete_input(
+                    p["ip"], p.get("port", 502), p.get("input_id", 0),
+                )
+        except Exception as e:
+            self.status_error.emit(str(e))
+            return None
+        return None
 
     def run(self):
-        self._running = True
-        protocol = (self.panel.get("protocol") or "").lower()
-        poller = {
-            "isapi": self._poll_isapi,
-            "cgi": self._poll_cgi,
-            "modbus": self._poll_modbus,
-        }.get(protocol)
+        was_active = False
+        poll_interval = max(1, int(self.panel.get("poll_interval", DEFAULT_POLL_INTERVAL)))
+        while self._run_flag:
+            state = self._check_once()
+            if state is not None:
+                if state and not was_active:
+                    self.alarm_triggered.emit()
+                elif not state and was_active:
+                    self.alarm_cleared.emit()
+                was_active = state
+            # خواب پلکانی (به‌جای یک msleep طولانی) تا stop() با تاخیر
+            # زیاد مواجه نشود - دقیقاً همان الگوی لغو سریع در سایر تردهای
+            # پروژه (مثلاً NVRScanThread.cancel).
+            for _ in range(poll_interval * 10):
+                if not self._run_flag:
+                    break
+                self.msleep(100)
 
-        if poller is None:
-            self.connection_error.emit(f"پروتکل ناشناخته: {protocol}")
-            return
-
-        while self._running:
-            try:
-                current_state = poller()
-                self._emit_state_changes(current_state)
-            except Exception as e:
-                self.connection_error.emit(str(e))
-                # در صورت خطا هم حلقه ادامه پیدا می‌کند (شاید موقتی باشد -
-                # مثلاً قطعی لحظه‌ای شبکه) اما با فاصله‌ی بیشتر تلاش می‌شود
-                # تا لاگ خطا/رویدادهای UI را پر نکند.
-                self.msleep(int(POLL_INTERVAL_SECONDS * 1000 * 3))
-                continue
-            self.msleep(int(POLL_INTERVAL_SECONDS * 1000))
-
-    def _emit_state_changes(self, current_state: dict[str, bool]):
-        for zone, is_active in current_state.items():
-            was_active = self._last_state.get(zone, False)
-            if is_active and not was_active:
-                self.panel_triggered.emit(zone)
-            elif was_active and not is_active:
-                self.panel_cleared.emit(zone)
-        self._last_state.update(current_state)
-
-    # ------------------------------------------------------------ ISAPI --
-
-    def _poll_isapi(self) -> dict:
-        """Hikvision ISAPI: GET /ISAPI/Event/notification/alertStream یا
-        endpoint وضعیت لحظه‌ای (بسته به مدل پنل). این تابع یک پیاده‌سازی
-        حداقلی/نمونه است - برای پنل واقعی endpoint دقیق را طبق مستندات
-        دستگاه جایگزین کنید."""
-        import requests
-        from requests.auth import HTTPDigestAuth
-
-        url = f"http://{self.panel['ip']}:{self.panel.get('port', 80)}/ISAPI/System/IO/inputs/status"
-        auth = HTTPDigestAuth(self.panel.get("user", ""), self.panel.get("pass", ""))
-        resp = requests.get(url, auth=auth, timeout=5)
-        resp.raise_for_status()
-        return self._parse_isapi_status(resp.text)
-
-    @staticmethod
-    def _parse_isapi_status(xml_text: str) -> dict:
-        """پارس حداقلی پاسخ XML؛ در نبود کتابخانه‌ی XML اضافه، با استخراج
-        ساده‌ی رشته‌ای انجام می‌شود. برای پنل واقعی طبق ساختار دقیق پاسخ
-        دستگاه تنظیم شود."""
-        import re
-        state = {}
-        for match in re.finditer(
-            r"<id>(\d+)</id>\s*<ioState>(active|inactive)</ioState>", xml_text
-        ):
-            zone_id, io_state = match.groups()
-            state[f"zone-{zone_id}"] = (io_state == "active")
-        return state
-
-    # -------------------------------------------------------------- CGI --
-
-    def _poll_cgi(self) -> dict:
-        """Dahua CGI: GET /cgi-bin/alarm.cgi?action=getConfig یا
-        alarm status CGI (بسته به مدل). نمونه‌ی حداقلی."""
-        import requests
-
-        url = (f"http://{self.panel['ip']}:{self.panel.get('port', 80)}"
-               f"/cgi-bin/alarm.cgi?action=getInStatus")
-        resp = requests.get(
-            url,
-            auth=(self.panel.get("user", ""), self.panel.get("pass", "")),
-            timeout=5,
-        )
-        resp.raise_for_status()
-        return self._parse_cgi_status(resp.text)
-
-    @staticmethod
-    def _parse_cgi_status(text: str) -> dict:
-        """پاسخ Dahua CGI معمولاً به شکل خطوطِ ``status.status[0]=Open``
-        است. برای پنل واقعی طبق خروجی دقیق دستگاه تنظیم شود."""
-        state = {}
-        for line in text.splitlines():
-            line = line.strip()
-            if "=" not in line or "status[" not in line:
-                continue
-            key, _, value = line.partition("=")
-            idx = key.split("[")[-1].rstrip("]")
-            state[f"zone-{idx}"] = (value.strip().lower() in ("open", "active", "1", "true"))
-        return state
-
-    # ----------------------------------------------------------- Modbus --
-
-    def _poll_modbus(self) -> dict:
-        """Modbus TCP discrete inputs. اختیاری: نیازمند pymodbus. اگر نصب
-        نباشد، ImportError بالا می‌رود که در run() به connection_error
-        تبدیل می‌شود (رجوع کنید به README برای نصب اختیاری)."""
-        try:
-            from pymodbus.client import ModbusTcpClient
-        except ImportError as e:
-            raise ImportError(
-                "pymodbus نصب نیست؛ برای پایش پنل‌های Modbus TCP دستور "
-                "'pip install pymodbus' را اجرا کنید."
-            ) from e
-
-        client = ModbusTcpClient(self.panel["ip"], port=int(self.panel.get("port", 502)))
-        try:
-            if not client.connect():
-                raise ConnectionError(f"اتصال Modbus به {self.panel['ip']} ناموفق بود.")
-            input_count = int(self.panel.get("input_count", 8))
-            result = client.read_discrete_inputs(0, input_count)
-            if result.isError():
-                raise ConnectionError("خواندن ورودی‌های دیجیتال Modbus ناموفق بود.")
-            return {f"zone-{i}": bool(bit) for i, bit in enumerate(result.bits[:input_count])}
-        finally:
-            client.close()
+    def stop(self):
+        self._run_flag = False
+        self.wait(3000)

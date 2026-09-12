@@ -10,11 +10,6 @@ from rtsp_utils import open_capture, STREAM_FFMPEG_OPTS
 from person_detector import person_detector
 from fire_smoke_detector import fire_smoke_detector
 
-# فاصله‌ی حداقل بین دو رویداد fire_event_signal متوالی برای *همان* دوربین،
-# فارغ از برچسب (fire/smoke) - تا هر فریمی که آتش/دود در آن تشخیص داده
-# می‌شود یک رویداد UI/گزارش جداگانه ثبت نکند.
-FIRE_EVENT_COOLDOWN_SECONDS = 30.0
-
 # نکته کلیدی برای رفع مشکل «Live نبودن»:
 #   nobuffer / low_delay / max_delay کوچک از تجمع فریم در بافر داخلی FFmpeg جلوگیری می‌کنند.
 #   بدون این تنظیمات، اگر پردازش (تشخیص چهره) کندتر از رسیدن فریم‌های شبکه باشد،
@@ -296,11 +291,21 @@ class CameraStreamThread(QThread):
     # مدل) وضعیت را به‌صورت صریح به main.py اطلاع می‌دهد تا به‌جای سکوت،
     # پیامی روی خودِ خانه‌ی دوربین نمایش داده شود.
     person_detector_status_signal = pyqtSignal(bool, str)  # (available, error_message)
-    # رفع درخواست: تشخیص تصویری آتش/دود (fire_smoke_detector.py) اضافه به
-    # تشخیص چهره/شخص، در همان ترد پس‌زمینه‌ی تشخیص اجرا می‌شود. سیگنال
-    # فقط با فاصله‌ی FIRE_EVENT_COOLDOWN_SECONDS ارسال می‌شود تا لیست
-    # رویدادهای UI/گزارش‌ها با تشخیص‌های پیاپی روی همان صحنه پر نشود.
-    fire_event_signal = pyqtSignal(str, object, float)  # (label, frame, confidence)
+    # رفع درخواست «سیستم تشخیص دود و اعلام حریق»: برای هر ناحیه‌ی آتش/دود
+    # تازه‌شناسایی‌شده (بعد از اعمال کول‌داون - رجوع کنید به
+    # _FIRE_ALERT_COOLDOWN پایین‌تر) این سیگنال با نوع ('fire'/'smoke')،
+    # تصویر برش‌خورده‌ی همان ناحیه و درصد اطمینان ارسال می‌شود.
+    fire_event_signal = pyqtSignal(str, object, float)  # (kind, crop_frame, confidence)
+    # دقیقاً معادل person_detector_status_signal برای تشخیص‌دهنده‌ی آتش/دود:
+    # فقط یک‌بار (بعد از اولین تلاش واقعی بارگذاری مدل) ارسال می‌شود تا در
+    # نبود وزن مدل، کاربر پیام روشنی ببیند نه سکوت.
+    fire_detector_status_signal = pyqtSignal(bool, str)  # (available, error_message)
+
+    # حداقل فاصله (ثانیه) بین دو رویداد پیاپی از یک نوع (آتش یا دود) برای
+    # همان دوربین - جلوگیری از سیل رویداد/بنر/بیپ در هر دور تشخیص وقتی آتش/
+    # دود همچنان در تصویر باقی است؛ دقیقاً همان نیاز کول‌دانی که برای ذخیره‌ی
+    # «چهره‌ی تعریف‌نشده» در face_engine.py وجود دارد.
+    _FIRE_ALERT_COOLDOWN = 15.0
 
     def __init__(self, rtsp_url, face_engine, process_every_n=5, parent=None):
         super().__init__(parent)
@@ -357,40 +362,11 @@ class CameraStreamThread(QThread):
         # اسپم نشود.
         self._detector_status_emitted = False
 
-        # --- تشخیص آتش/دود (اختیاری، مستقل از بارگذاری موفق person_detector) ---
-        self._last_fire_detections = []  # برای رسم باکس روی display_frame در run()
-        self._last_fire_event_ts = 0.0  # زمان آخرین fire_event_signal ارسال‌شده (برای cooldown)
-
-        # --- رفع درخواست «تصویر با تاخیر خیلی زیادی می‌آید» ---
-        # علت واقعی این تاخیر، برخلاف تصور اول، در همین ترد (خواندن RTSP)
-        # نبود - اینجا هر فریم بلافاصله بعد از رسیدن با frame_ready.emit
-        # ارسال می‌شد. مشکل در سمت GUI (main.py: CameraSlotWidget.on_frame_ready)
-        # بود: تبدیل BGR->RGB، ساخت QImage و Scale با کیفیت بالا (Smooth)
-        # روی *هر* فریم انجام می‌شد؛ چون این کار روی ترد UI کندتر از نرخ
-        # واقعی فریم‌های شبکه (مخصوصاً با چند دوربین هم‌زمان باز) بود،
-        # سیگنال‌های صف‌شده‌ی Qt (چون فرستنده/گیرنده تردهای متفاوتی دارند)
-        # پشت سر هم انباشته می‌شدند و فاصله‌ی «تصویر نمایش‌داده‌شده» تا
-        # «تصویر واقعی» به‌مرور بیشتر و بیشتر می‌شد - دقیقاً حسِ «تاخیر خیلی
-        # زیاد»، حتی با اینکه خودِ اتصال RTSP همیشه کم‌تاخیر بود.
-        # راه‌حل: یک الگوی «آخرین‌مقدار» (backpressure) بین این ترد و GUI:
-        # قبل از emit، بررسی می‌شود که آیا GUI فریمِ قبلی را تمام‌کرده (Event
-        # ست‌شده) یا نه؛ اگر GUI هنوز مشغول است، این فریم فقط برای *نمایش*
-        # دور انداخته می‌شود (نه برای تشخیص - آن مسیر کاملاً جدا و از قبل
-        # async است). به این ترتیب هیچ‌وقت بیش از یک فریم در صفِ GUI منتظر
-        # نمی‌ماند و تاخیر نمایش هرگز به‌صورت تصاعدی بالا نمی‌رود - همیشه
-        # تقریباً برابر «زمان رسم یک فریم» است، فارغ از تعداد دوربین‌های
-        # هم‌زمان باز. رجوع کنید به mark_display_done (صدا زده‌شده از
-        # main.py بعد از پایان setPixmap هر فریم).
-        self._gui_ready = threading.Event()
-        self._gui_ready.set()
-
-    def mark_display_done(self):
-        """باید بعد از پایانِ واقعیِ رسمِ هر فریم روی GUI (setPixmap) صدا
-        زده شود - رجوع کنید به توضیح بالا. اجازه می‌دهد فریمِ بعدی برای
-        نمایش ارسال شود؛ بدون این فراخوانی، این ترد فرض می‌کند GUI هنوز
-        مشغول فریم قبلی است و فریم‌های تازه‌تر را فقط برای نمایش (نه
-        تشخیص) رد می‌کند."""
-        self._gui_ready.set()
+        # --- تشخیص تصویری آتش/دود (اختیاری، رجوع کنید به fire_smoke_detector.py) ---
+        self._last_fire_detections = []  # [(box, kind, conf), ...]
+        self._fire_detector_available = False
+        self._fire_detector_status_emitted = False
+        self._last_fire_alert_ts = {"fire": 0.0, "smoke": 0.0}
 
     def set_people_counting(self, enabled: bool):
         """روشن/خاموش کردن شمارش افراد Real Time برای این دوربین."""
@@ -452,6 +428,24 @@ class CameraStreamThread(QThread):
                 for number, name in self._region_tracker.update(self._last_person_boxes, regions, w, h):
                     self.region_entered.emit(number, name)
 
+            # --- تشخیص تصویری آتش/دود ---
+            # دقیقاً همان الگوی تشخیص شخص بالا: در همین ترد پس‌زمینه‌ی
+            # تشخیص (نه ترد اصلی خواندن فریم) اجرا می‌شود تا پخش زنده هرگز
+            # منتظرش نماند.
+            self._last_fire_detections = fire_smoke_detector.detect(frame)
+            self._fire_detector_available = fire_smoke_detector.available
+            if not self._fire_detector_status_emitted:
+                self._fire_detector_status_emitted = True
+                self.fire_detector_status_signal.emit(
+                    self._fire_detector_available, fire_smoke_detector.load_error or ""
+                )
+            now = time.time()
+            for box, kind, conf in self._last_fire_detections:
+                if now - self._last_fire_alert_ts.get(kind, 0.0) < self._FIRE_ALERT_COOLDOWN:
+                    continue  # هنوز داخل بازه‌ی کول‌داون همان نوع رویداد برای این دوربین
+                self._last_fire_alert_ts[kind] = now
+                self.fire_event_signal.emit(kind, _crop_face(frame, box), conf)
+
             if unknown_event is not None:
                 unknown_crop = _crop_face(frame, unknown_event)
                 # رفع درخواست: چهره‌ی تعریف‌نشده علاوه بر نمایش در پنل، بر اساس
@@ -463,19 +457,6 @@ class CameraStreamThread(QThread):
                 self.face_event_signal.emit(None, unknown_crop)
             for person, box in known_events:
                 self.face_event_signal.emit(person, _crop_face(frame, box))
-
-            # --- تشخیص آتش/دود ---
-            # مثل تشخیص شخص، در همین ترد پس‌زمینه‌ی تک‌کارگر پشت‌سرِ تشخیص
-            # چهره اجرا می‌شود؛ اگر مدل بارگذاری نشده باشد (فایل وزن نیست/
-            # ultralytics نصب نیست)، fire_smoke_detector.detect() فوراً []
-            # برمی‌گرداند - بدون هیچ هزینه‌ی اضافه یا خطا.
-            self._last_fire_detections = fire_smoke_detector.detect(frame)
-            if self._last_fire_detections:
-                now = time.monotonic()
-                if now - self._last_fire_event_ts >= FIRE_EVENT_COOLDOWN_SECONDS:
-                    self._last_fire_event_ts = now
-                    label, confidence, _box = max(self._last_fire_detections, key=lambda d: d[1])
-                    self.fire_event_signal.emit(label, frame.copy(), confidence)
         except Exception as e:
             # خطای تشخیص چهره نباید باعث توقف پخش زنده شود.
             print(f"خطا در تشخیص چهره: {e}")
@@ -538,21 +519,14 @@ class CameraStreamThread(QThread):
             # کار است، دقیقاً مثل تشخیص چهره که همیشه فعال است.
             if self._person_detector_available:
                 person_detector.draw_boxes(display_frame, self._last_person_boxes)
-            # کادر رنگی آتش (قرمز)/دود (خاکستری) - همیشه رسم می‌شود (نه فقط
-            # هنگام ارسال fire_event_signal که به‌خاطر cooldown محدود است)
-            # تا کاربر بلافاصله تشخیص لحظه‌ای را روی تصویر ببیند.
-            if self._last_fire_detections:
+            # کادر نارنجی/قرمز (آتش) یا خاکستری (دود) - همیشه رسم می‌شود (نه
+            # فقط وقتی رویدادی تازه صادر شده) تا کاربر تا وقتی ناحیه در کادر
+            # دوربین باقی است، کادر را ببیند - دقیقاً مثل کادر شخص/چهره.
+            if self._fire_detector_available:
                 fire_smoke_detector.draw_boxes(display_frame, self._last_fire_detections)
 
             # frame خام (بدون باکس) هم ارسال می‌شود تا برای «ثبت چهره از تصویر زنده» استفاده شود.
-            # رفع تاخیر تصاعدی نمایش: فقط وقتی GUI فریمِ قبلی را تمام کرده
-            # باشد (mark_display_done صدا زده شده) فریمِ تازه برای *نمایش*
-            # ارسال می‌شود؛ در غیر این صورت همین فریم فقط دور انداخته
-            # می‌شود (نه این‌که در صفِ Qt منتظر بماند) - رجوع کنید به توضیح
-            # self._gui_ready در __init__.
-            if self._gui_ready.is_set():
-                self._gui_ready.clear()
-                self.frame_ready.emit(display_frame, frame)
+            self.frame_ready.emit(display_frame, frame)
 
         cap.release()
         self._executor.shutdown(wait=False)

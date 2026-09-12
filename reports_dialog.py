@@ -118,39 +118,23 @@ class ReportsDialog(QDialog):
         for row_data in rows:
             (ts, ev_type, camera, person_name, phone, employee_id,
              region_number, region_name, person_count, image_path,
-             nvr_id, channel, hazard_label, hazard_confidence,
-             panel_name, panel_zone, panel_state) = row_data
+             nvr_id, channel, detail) = row_data
 
             r = self.table.rowCount()
             self.table.insertRow(r)
             self.table.setItem(r, 0, QTableWidgetItem(ts or ""))
             self.table.setItem(r, 1, QTableWidgetItem(EVENT_TYPE_LABELS_FA.get(ev_type, ev_type)))
-
-            # رفع درخواست «بدون شکستن جدول»: به‌جای اضافه‌کردن ستون جدید که
-            # چیدمان جدول را برای رویدادهای قدیمی (چهره/محدوده/شمارش) به هم
-            # می‌زند، جزئیات دو نوع رویداد جدید در همان ستون‌های موجودِ
-            # «نام فرد» و «محدوده» نمایش داده می‌شود.
-            if ev_type == "fire_smoke_visual":
-                camera_label = camera or ""
-                person_label = hazard_label or ""
-                if hazard_confidence is not None:
-                    person_label += f" ({hazard_confidence:.0%})"
-                region_label = ""
-            elif ev_type == "fire_alarm_panel":
-                camera_label = panel_name or ""
-                person_label = "🚨 فعال" if panel_state == "triggered" else "✅ رفع شد"
-                region_label = panel_zone or ""
-            else:
-                camera_label = camera or ""
-                person_label = person_name or ""
-                region_label = ""
-                if region_number:
-                    region_label = f"شماره {region_number}" + (f" / {region_name}" if region_name else "")
-
-            self.table.setItem(r, 2, QTableWidgetItem(camera_label))
-            self.table.setItem(r, 3, QTableWidgetItem(person_label))
+            self.table.setItem(r, 2, QTableWidgetItem(camera or ""))
+            # رفع درخواست «سیستم تشخیص دود و اعلام حریق»: رویدادهای آتش/دود
+            # شخصی ندارند، پس همان ستون «نام فرد» برای نمایش جزئیات
+            # (نوع/درصد اطمینان تشخیص تصویری، یا وضعیت پنل فیزیکی) استفاده
+            # می‌شود - بدون نیاز به اضافه‌کردن ستون تازه به جدول.
+            self.table.setItem(r, 3, QTableWidgetItem(person_name or detail or ""))
             self.table.setItem(r, 4, QTableWidgetItem(phone or ""))
             self.table.setItem(r, 5, QTableWidgetItem(employee_id or ""))
+            region_label = ""
+            if region_number:
+                region_label = f"شماره {region_number}" + (f" / {region_name}" if region_name else "")
             self.table.setItem(r, 6, QTableWidgetItem(region_label))
             self.table.setItem(r, 7, QTableWidgetItem("" if person_count is None else str(person_count)))
 

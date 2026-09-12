@@ -39,8 +39,11 @@ EVENT_TYPE_LABELS_FA = {
     "face_unknown": "چهره تعریف‌نشده",
     "zone_entry": "ورود به محدوده",
     "person_count": "شمارش نفرات",
+    # رفع درخواست «سیستم تشخیص دود و اعلام حریق»: دو نوع رویداد جدید -
+    # یکی برای تشخیص تصویری روی خودِ دوربین (fire_smoke_detector.py) و
+    # دیگری برای هشدار دریافتی از یک پنل/سنسور فیزیکی (fire_alarm_io.py).
     "fire_smoke_visual": "تشخیص تصویری آتش/دود",
-    "fire_alarm_panel": "پنل اعلام حریق",
+    "fire_alarm_panel": "هشدار پنل اعلام حریق",
 }
 
 
@@ -83,11 +86,7 @@ class ReportStore:
                         image_path TEXT,
                         nvr_id TEXT,
                         channel TEXT,
-                        hazard_label TEXT,
-                        hazard_confidence REAL,
-                        panel_name TEXT,
-                        panel_zone TEXT,
-                        panel_state TEXT
+                        detail TEXT
                     )
                     """
                 )
@@ -95,7 +94,7 @@ class ReportStore:
                 conn.execute("CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)")
                 conn.commit()
                 self._migrate_add_nvr_columns(conn)
-                self._migrate_add_fire_columns(conn)
+                self._migrate_add_detail_column(conn)
         except Exception as e:
             print(f"خطا در ساخت پایگاه‌داده‌ی گزارش‌ها: {e}")
 
@@ -115,26 +114,17 @@ class ReportStore:
         except Exception as e:
             print(f"خطا در به‌روزرسانی ساختار پایگاه‌داده‌ی گزارش‌ها: {e}")
 
-    def _migrate_add_fire_columns(self, conn):
-        """رفع مهاجرت: ستون‌های مربوط به رویدادهای حریق/دود (تشخیص تصویری و
-        پنل اعلام حریق فیزیکی) برای پایگاه‌داده‌های ساخته‌شده با نسخه‌های
-        قبلی این ماژول وجود ندارند؛ در صورت نبود، با ALTER TABLE اضافه
-        می‌شوند (بدون از دست رفتن هیچ رویداد قبلاً ثبت‌شده‌ای)."""
+    def _migrate_add_detail_column(self, conn):
+        """رفع مهاجرت: پایگاه‌داده‌های ساخته‌شده قبل از اضافه‌شدن رویدادهای
+        آتش/دود ستون ``detail`` (برای نگه‌داشتن نوع 'fire'/'smoke' یا نام
+        پنل فیزیکی) را ندارند."""
         try:
             existing = {row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()}
-            fire_columns = {
-                "hazard_label": "TEXT",
-                "hazard_confidence": "REAL",
-                "panel_name": "TEXT",
-                "panel_zone": "TEXT",
-                "panel_state": "TEXT",
-            }
-            for col, col_type in fire_columns.items():
-                if col not in existing:
-                    conn.execute(f"ALTER TABLE events ADD COLUMN {col} {col_type}")
-            conn.commit()
+            if "detail" not in existing:
+                conn.execute("ALTER TABLE events ADD COLUMN detail TEXT")
+                conn.commit()
         except Exception as e:
-            print(f"خطا در به‌روزرسانی ستون‌های حریق/دود پایگاه‌داده‌ی گزارش‌ها: {e}")
+            print(f"خطا در به‌روزرسانی ساختار پایگاه‌داده‌ی گزارش‌ها (detail): {e}")
 
     # ------------------------------------------------------------- ذخیره -
 
@@ -156,23 +146,20 @@ class ReportStore:
 
     def _insert(self, ts, event_type, camera_name=None, person_name=None, phone=None,
                 employee_id=None, region_number=None, region_name=None,
-                person_count=None, image_path=None, nvr_id=None, channel=None,
-                hazard_label=None, hazard_confidence=None, panel_name=None,
-                panel_zone=None, panel_state=None):
+                person_count=None, image_path=None, nvr_id=None, channel=None, detail=None):
         try:
             with closing(self._connect()) as conn:
                 conn.execute(
                     """
                     INSERT INTO events
                         (ts, event_type, camera_name, person_name, phone, employee_id,
-                         region_number, region_name, person_count, image_path, nvr_id, channel,
-                         hazard_label, hazard_confidence, panel_name, panel_zone, panel_state)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         region_number, region_name, person_count, image_path, nvr_id, channel, detail)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (ts, event_type, camera_name, person_name, phone, employee_id,
                      region_number, region_name, person_count, image_path,
                      str(nvr_id) if nvr_id else None, str(channel) if channel not in (None, "") else None,
-                     hazard_label, hazard_confidence, panel_name, panel_zone, panel_state),
+                     detail),
                 )
                 conn.commit()
         except Exception as e:
@@ -212,35 +199,31 @@ class ReportStore:
         self._insert(now, "person_count", camera_name=camera_name, person_count=count,
                      nvr_id=nvr_id, channel=channel)
 
-    def log_fire_smoke_visual(self, camera_name, label, frame=None, confidence=None,
+    def log_fire_smoke_visual(self, camera_name, kind, crop_frame=None, confidence=None,
                                nvr_id=None, channel=None):
-        """هر تشخیص تصویریِ آتش/دود از روی تصویر دوربین (fire_smoke_detector.py
-        روی camera_stream.py) را با ساعت/تاریخ کامل و تصویر (در صورت وجود)
-        ثبت می‌کند. ``label``: مثلاً 'fire' یا 'smoke'. فراخوان مسئول
-        اعمال cooldown است (رجوع کنید به CameraStreamThread.fire_event_signal)
-        تا هر فریم یک ردیف جدید ثبت نشود."""
+        """رفع درخواست «سیستم تشخیص دود و اعلام حریق»: هر تشخیص تصویری آتش
+        یا دود (kind: 'fire'/'smoke') را با ساعت/تاریخ کامل و تصویر
+        برش‌خورده‌ی همان ناحیه ثبت می‌کند."""
         now = time.strftime("%Y-%m-%d %H:%M:%S")
-        image_path = self._save_image(frame, f"fire_{label}") if frame is not None else None
-        self._insert(now, "fire_smoke_visual", camera_name=camera_name,
-                     image_path=image_path, nvr_id=nvr_id, channel=channel,
-                     hazard_label=label, hazard_confidence=confidence)
+        image_path = self._save_image(crop_frame, f"fire_{kind}")
+        detail = kind if confidence is None else f"{kind} ({confidence * 100:.0f}%)"
+        self._insert(now, "fire_smoke_visual", camera_name=camera_name, image_path=image_path,
+                     nvr_id=nvr_id, channel=channel, detail=detail)
 
-    def log_fire_alarm_panel(self, panel_name, zone, state):
-        """رویدادهای پنل فیزیکی اعلام حریق (ISAPI/CGI/Modbus) را ثبت
-        می‌کند. ``state``: 'triggered' یا 'cleared'. فقط باید هنگام
-        *تغییر* وضعیت صدا زده شود (رجوع کنید به FireAlarmMonitorThread
-        که فقط روی state change سیگنال می‌دهد)."""
+    def log_fire_alarm_panel(self, panel_name, active=True):
+        """رفع درخواست «سیستم تشخیص دود و اعلام حریق»: فعال/غیرفعال‌شدن یک
+        پنل/سنسور فیزیکی اعلام حریق را ثبت می‌کند (رجوع کنید به
+        fire_alarm_io.FireAlarmMonitorThread)."""
         now = time.strftime("%Y-%m-%d %H:%M:%S")
-        self._insert(now, "fire_alarm_panel", panel_name=panel_name,
-                     panel_zone=zone, panel_state=state)
+        detail = "فعال" if active else "برطرف شد"
+        self._insert(now, "fire_alarm_panel", camera_name=panel_name, detail=detail)
 
     # -------------------------------------------------------------- خواندن -
 
     def query(self, start=None, end=None, event_type=None, camera_name=None, limit=5000):
         """start/end: رشته‌ی 'YYYY-MM-DD HH:MM:SS' یا 'YYYY-MM-DD'."""
         q = ("SELECT ts, event_type, camera_name, person_name, phone, employee_id, "
-             "region_number, region_name, person_count, image_path, nvr_id, channel, "
-             "hazard_label, hazard_confidence, panel_name, panel_zone, panel_state "
+             "region_number, region_name, person_count, image_path, nvr_id, channel, detail "
              "FROM events WHERE 1=1")
         params = []
         if start:
