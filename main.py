@@ -35,6 +35,9 @@ from device_detect import DeviceDetectThread
 from fire_alarm_store import FireAlarmStore
 from fire_alarm_io import FireAlarmMonitorThread
 from fire_alarm_dialog import FireAlarmPage
+from theme import (
+    apply_theme, LOGO_SHIELD, APP_NAME_FA, APP_NAME_EN, LOGO_BLUE, TEXT_MUTED,
+)
 
 # بهینه‌سازی برای سیستم‌های ضعیف (رم کم / بدون کارت گرافیک):
 # OpenCV به‌صورت پیش‌فرض برای عملیات داخلی (resize، cvtColor و ...) روی *تمام*
@@ -1482,7 +1485,11 @@ class CameraTreeWidget(QTreeWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("CCTV Management System (CMS) & Face Recognition")
+        self.setWindowTitle(f"{APP_NAME_FA} | {APP_NAME_EN}")
+        # آیکون پنجره: سپر لوگوی شرکت (هم در اجرای عادی، هم داخل exe).
+        _logo_icon = QIcon(LOGO_SHIELD)
+        if not _logo_icon.isNull():
+            self.setWindowIcon(_logo_icon)
         self.setGeometry(100, 100, 1500, 780)
 
         self.face_engine = FaceEngine()
@@ -2840,9 +2847,29 @@ class MainWindow(QMainWindow):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(8, 4, 8, 4)
 
-        title = QLabel("🎥 IAS-CMS")
-        title.setStyleSheet("font-size: 15px; font-weight: bold;")
-        header_layout.addWidget(title)
+        # لوگوی شرکت در هدر: سپر + نام فارسی/انگلیسی «ایمن آرا سورنا».
+        brand_row = QHBoxLayout()
+        brand_row.setSpacing(10)
+        logo_label = QLabel()
+        _logo_pix = QPixmap(LOGO_SHIELD)
+        if not _logo_pix.isNull():
+            logo_label.setPixmap(
+                _logo_pix.scaledToHeight(42, Qt.TransformationMode.SmoothTransformation)
+            )
+        brand_row.addWidget(logo_label)
+        name_col = QVBoxLayout()
+        name_col.setSpacing(0)
+        name_col.setContentsMargins(0, 0, 0, 0)
+        fa_name = QLabel(APP_NAME_FA)
+        fa_name.setStyleSheet("font-size: 16px; font-weight: bold;")
+        en_name = QLabel(APP_NAME_EN)
+        en_name.setStyleSheet(
+            f"font-size: 10px; color: {TEXT_MUTED}; letter-spacing: 3px;"
+        )
+        name_col.addWidget(fa_name)
+        name_col.addWidget(en_name)
+        brand_row.addLayout(name_col)
+        header_layout.addLayout(brand_row)
         header_layout.addStretch()
 
         self.nav_buttons = {}
@@ -2857,7 +2884,7 @@ class MainWindow(QMainWindow):
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setStyleSheet(
                 "QPushButton{padding: 6px 14px; border-radius: 6px; font-size: 12px;}"
-                "QPushButton:checked{background: #2f81f7; color: white; font-weight: bold;}"
+                f"QPushButton:checked{{background: {LOGO_BLUE}; color: white; font-weight: bold;}}"
             )
             btn.clicked.connect(lambda _checked=False, _key=key: self.show_page(_key))
             header_layout.addWidget(btn)
@@ -2976,6 +3003,7 @@ class MainWindow(QMainWindow):
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
+    apply_theme(app)  # تم تیره‌ی سازگار با لوگوی ایمن آرا سورنا
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
