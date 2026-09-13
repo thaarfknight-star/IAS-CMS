@@ -1,3 +1,4 @@
+import os
 import threading
 import concurrent.futures
 
@@ -7,13 +8,17 @@ from PyQt6.QtCore import QThread, pyqtSignal
 import time
 
 from rtsp_utils import open_capture, STREAM_FFMPEG_OPTS
-from person_detector import person_detector
-from fire_smoke_detector import fire_smoke_detector
 from fire_config import get_params as get_fire_params
 from image_profile import apply_profile as _apply_image_profile, is_neutral as _is_image_profile_neutral
 from small_flame_detector import (
     SmallFlameDetector, DetectionConfirmer, merge_detections, cascade_yolo_confirm,
 )
+
+# نکته: person_detector و fire_smoke_detector عمداً در بالای فایل import
+# نمی‌شوند. این دو ماژول ultralytics/torch را بالا می‌آورند (چند صد مگابایت
+# رم + چند ثانیه زمان)؛ پس فقط در اولین تیک تشخیص (در ترد پس‌زمینه، نه ترد
+# اصلی) بارگذاری می‌شوند - رجوع کنید به _get_person_detector و
+# _get_fire_detector پایین‌تر. تا قبل از آن، برنامه با حداقل رم بالا می‌آید.
 
 # نکته کلیدی برای رفع مشکل «Live نبودن»:
 #   nobuffer / low_delay / max_delay کوچک از تجمع فریم در بافر داخلی FFmpeg جلوگیری می‌کنند.
@@ -23,6 +28,143 @@ from small_flame_detector import (
 # می‌شود تا با تردهای دیگر (اسکن NVR، تشخیص خودکار دوربین تکی) روی متغیر محیطی
 # مشترک FFmpeg دچار race condition نشود؛ رجوع کنید به توضیحات rtsp_utils.py.
 FFMPEG_LOW_LATENCY_OPTS = STREAM_FFMPEG_OPTS
+
+
+# ---------------------------------------------------------------------------
+# حالت سبک (سیستم‌های ضعیف: ۴ گیگ رم / بدون کارت گرافیک)
+# ---------------------------------------------------------------------------
+# با IAS_LITE_MODE=1 اجباری، با IAS_LITE_MODE=0 غیرفعال؛ در غیر این صورت
+# خودکار: اگر رم کل سیستم کمتر از ۶ گیگابایت باشد، حالت سبک روشن می‌شود
+# (فاصله‌ی تشخیص بیشتر، حداکثر یک تشخیص هم‌زمان، بدون محدودیت نخ torch تا
+# همان یک زنجیره با حداکثر سرعت کار کند).
+def _total_ram_gb():
+    try:
+        import psutil
+        return psutil.virtual_memory().total / (1024 ** 3)
+    except Exception:
+        pass
+    try:  # Windows
+        import ctypes
+
+        class _MS(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        _st = _MS()
+        _st.dwLength = ctypes.sizeof(_MS)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(_st)):
+            return _st.ullTotalPhys / (1024 ** 3)
+    except Exception:
+        pass
+    try:  # Linux
+        with open("/proc/meminfo", "r", encoding="utf-8") as _f:
+            for _line in _f:
+                if _line.startswith("MemTotal:"):
+                    return int(_line.split()[1]) / (1024 ** 2)
+    except Exception:
+        pass
+    return None
+
+
+def is_low_spec_mode():
+    _env = os.environ.get("IAS_LITE_MODE", "").strip().lower()
+    if _env in ("1", "true", "yes"):
+        return True
+    if _env in ("0", "false", "no"):
+        return False
+    _ram = _total_ram_gb()
+    return _ram is not None and _ram < 6.0
+
+
+_LOW_SPEC = is_low_spec_mode()
+
+# ---------------------------------------------------------------------------
+# بهینه‌سازی سرعت: محدودیت سراسری هم‌زمانی تشخیص‌های سنگین
+# ---------------------------------------------------------------------------
+# هر دوربین یک worker پس‌زمینه دارد که در هر تیک، چهره (dlib) + شخص (YOLO) +
+# حریق (YOLO تمام‌فریم + YOLO آبشاری روی کراپ‌ها) را پشت‌سرهم اجرا می‌کند.
+# بدون این محدودیت، با چند دوربین هم‌زمان، چند پایپ‌لاین سنگین روی CPU با هم
+# رقابت می‌کنند (thrashing: تعویض مداوم کانتکست + خرابی کش) و همه‌چیز - از
+# جمله خودِ پخش زنده - کندتر می‌شود. با این سمافور، حداکثر
+# _MAX_CONCURRENT_DETECTIONS دوربین هم‌زمان تشخیص می‌دهند؛ بقیه آن تیک را
+# بی‌صدا رد می‌کنند (acquire غیرمسدودکننده) تا تیک بعدی - یعنی با زیاد شدن
+# دوربین‌ها، نرخ تشخیص هر دوربین به‌آرامی کم می‌شود به‌جای اینکه کل سیستم
+# قفل کند. در حالت سبک (۴ گیگ رم) فقط یک تشخیص هم‌زمان مجاز است تا رم/CPU
+# برای پخش زنده بماند.
+_CPU_COUNT = os.cpu_count() or 4
+if _LOW_SPEC:
+    _MAX_CONCURRENT_DETECTIONS = 1
+else:
+    _MAX_CONCURRENT_DETECTIONS = 2 if _CPU_COUNT >= 4 else 1
+_DETECTION_SEMAPHORE = threading.BoundedSemaphore(_MAX_CONCURRENT_DETECTIONS)
+
+# بارگذاری تنبل تشخیص‌دهنده‌های سنگین (ultralytics/torch):
+_person_detector = None
+_person_detector_failed = False
+_fire_detector = None
+_fire_detector_failed = False
+_torch_configured = False
+
+
+def _configure_torch_threads():
+    """محدود کردن نخ‌های داخلی torch (فقط روی سیستم‌های قوی و فقط یک‌بار).
+
+    هر استنتاج torch به‌صورت پیش‌فرض از همه‌ی هسته‌ها نخ می‌سازد؛ وقتی دو
+    زنجیره‌ی تشخیص هم‌زمان اجرا می‌شوند، این نخ‌های داخلی با هم رقابت
+    می‌کنند. در حالت سبک عمداً دست نمی‌زنیم تا همان یک زنجیره‌ی فعال با
+    حداکثر سرعت کار کند."""
+    global _torch_configured
+    if _torch_configured or _LOW_SPEC:
+        return
+    _torch_configured = True
+    try:
+        import torch
+        if _CPU_COUNT >= 4:
+            torch.set_num_threads(max(1, _CPU_COUNT // 4))
+            torch.set_num_interop_threads(1)
+    except Exception:
+        pass
+
+
+def _get_person_detector():
+    """دسترسی تنبل به PersonDetector؛ اولین فراخوانی مدل را بارگذاری می‌کند."""
+    global _person_detector, _person_detector_failed
+    if _person_detector is None and not _person_detector_failed:
+        try:
+            from person_detector import person_detector as _pd
+            _person_detector = _pd
+            _configure_torch_threads()
+        except Exception as e:
+            _person_detector_failed = True
+            print(f"بارگذاری تشخیص شخص ممکن نشد: {e}")
+    if _person_detector_failed or _person_detector is None:
+        raise ImportError("person_detector در دسترس نیست")
+    return _person_detector
+
+
+def _get_fire_detector():
+    """دسترسی تنبل به FireSmokeDetector؛ اولین فراخوانی مدل را بارگذاری می‌کند."""
+    global _fire_detector, _fire_detector_failed
+    if _fire_detector is None and not _fire_detector_failed:
+        try:
+            from fire_smoke_detector import fire_smoke_detector as _fd
+            _fire_detector = _fd
+            _configure_torch_threads()
+        except Exception as e:
+            _fire_detector_failed = True
+            print(f"بارگذاری تشخیص حریق ممکن نشد: {e}")
+    if _fire_detector_failed or _fire_detector is None:
+        raise ImportError("fire_smoke_detector در دسترس نیست")
+    return _fire_detector
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +554,9 @@ class CameraStreamThread(QThread):
     def _submit_recognition(self, frame):
         if self._recognize_busy.is_set():
             return  # پردازش قبلی هنوز در حال اجراست؛ این فریم را برای تشخیص رد می‌کنیم
+        if not _DETECTION_SEMAPHORE.acquire(blocking=False):
+            return  # ظرفیت سراسری تشخیص پر است (دوربین‌های دیگر مشغول‌اند)؛
+                    # این تیک رد می‌شود تا تیک بعدی - به‌جای رقابت همه با هم.
         self._recognize_busy.set()
         # یک کپی سبک برای پردازش پس‌زمینه؛ حلقه‌ی اصلی نباید منتظرش بماند.
         frame_copy = frame.copy()
@@ -419,8 +564,20 @@ class CameraStreamThread(QThread):
 
     def _run_recognition(self, frame):
         try:
-            results, unknown_event, known_events = self.face_engine.recognize(frame)
-            # رفع باگ «کادر چشمک می‌زنه» و «برچسب/رنگ ناپایدار (سبز/قرمز عوض
+            # بارگذاری تنبل مدل‌های سنگین (فقط در اولین تیک تشخیص، در همین
+            # ترد پس‌زمینه - نه در زمان بالا آمدن برنامه). اگر ماژولی نصب
+            # نباشد، _get_* خطا می‌دهد و همان رفتار قبلی (available=False)
+            # را شبیه‌سازی می‌کنیم تا برنامه کرش نکند.
+            try:
+                _pd = _get_person_detector()
+            except Exception:
+                _pd = None
+            try:
+                _fd = _get_fire_detector()
+            except Exception:
+                _fd = None
+
+            results, unknown_event, known_events = self.face_engine.recognize(frame)            # رفع باگ «کادر چشمک می‌زنه» و «برچسب/رنگ ناپایدار (سبز/قرمز عوض
             # می‌شه)»: نتیجه‌ی خام هر دور تشخیص مستقیماً نمایش داده نمی‌شود؛
             # از _FaceTracker (تعریف بالای فایل) عبور می‌کند که هم ظاهر/محو
             # ناگهانی کادر را (با نگه‌داشتن چند دور) میرا می‌کند، هم برچسب هر
@@ -435,12 +592,12 @@ class CameraStreamThread(QThread):
             # حلقه‌ی اصلی هرگز منتظر این پردازش نمی‌ماند، و چون هر دو در یک
             # ترد پس‌زمینه‌ی تک‌کارگر پشت‌سرهم اجرا می‌شوند، دو تشخیص با هم
             # روی CPU رقابت نمی‌کنند.
-            self._last_person_boxes = person_detector.detect(frame)
-            self._person_detector_available = person_detector.available
+            self._last_person_boxes = _pd.detect(frame) if _pd is not None else []
+            self._person_detector_available = bool(_pd is not None and _pd.available)
             if not self._detector_status_emitted:
                 self._detector_status_emitted = True
                 self.person_detector_status_signal.emit(
-                    self._person_detector_available, person_detector.load_error or ""
+                    self._person_detector_available, (_pd.load_error if _pd else "") or ""
                 )
 
             # --- محدوده‌ی هشدار: بعد از هر دور تشخیص شخص، بررسی می‌شود که
@@ -463,7 +620,7 @@ class CameraStreamThread(QThread):
             # همین ترد پس‌زمینه‌ی تشخیص (نه ترد اصلی خواندن فریم) اجرا می‌شود تا
             # پخش زنده هرگز منتظرش نماند.
             fparams = get_fire_params()
-            _yolo_dets = fire_smoke_detector.detect(frame, conf=fparams["yolo_conf"])
+            _yolo_dets = _fd.detect(frame, conf=fparams["yolo_conf"]) if _fd is not None else []
             _small_dets = self._small_flame_detector.detect(frame)
             _cascade_dets = cascade_yolo_confirm(frame, _small_dets, conf=fparams["yolo_conf"])
             _merged = merge_detections(_yolo_dets + _small_dets + _cascade_dets)
@@ -472,11 +629,11 @@ class CameraStreamThread(QThread):
                 _merged, k=fparams["confirm_k"], n=fparams["confirm_n"],
                 frame_diag=_diag,
             )
-            self._fire_detector_available = fire_smoke_detector.available
+            self._fire_detector_available = bool(_fd is not None and _fd.available)
             if not self._fire_detector_status_emitted:
                 self._fire_detector_status_emitted = True
                 self.fire_detector_status_signal.emit(
-                    self._fire_detector_available, fire_smoke_detector.load_error or ""
+                    self._fire_detector_available, (_fd.load_error if _fd else "") or ""
                 )
             now = time.time()
             for box, kind, conf in self._last_fire_detections:
@@ -501,6 +658,11 @@ class CameraStreamThread(QThread):
             print(f"خطا در تشخیص چهره: {e}")
         finally:
             self._recognize_busy.clear()
+            # آزاد کردن ظرفیت سراسری تشخیص (رجوع کنید به _submit_recognition).
+            try:
+                _DETECTION_SEMAPHORE.release()
+            except Exception:
+                pass
 
     def run(self):
         cap = open_capture(self.rtsp_url, FFMPEG_LOW_LATENCY_OPTS)
@@ -550,29 +712,49 @@ class CameraStreamThread(QThread):
                     self._last_people_count = current_count
                     self.people_count_signal.emit(current_count)
 
-            display_frame = frame.copy()
-            self.face_engine.draw_results(display_frame, self._last_results)
-            # کادر آبی‌روشن دور کل بدن هر فرد (فارغ از حالت/چهره) - جدا از
-            # کادر سبز/قرمز چهره که بالا رسم شد. همیشه رسم می‌شود (نه فقط
-            # وقتی شمارش روشن است) تا کاربر بلافاصله ببیند تشخیص شخص در حال
-            # کار است، دقیقاً مثل تشخیص چهره که همیشه فعال است.
-            if self._person_detector_available:
-                person_detector.draw_boxes(display_frame, self._last_person_boxes)
-            # کادر نارنجی/قرمز (آتش) یا خاکستری (دود) - همیشه رسم می‌شود (نه
-            # فقط وقتی رویدادی تازه صادر شده) تا کاربر تا وقتی ناحیه در کادر
-            # دوربین باقی است، کادر را ببیند - دقیقاً مثل کادر شخص/چهره.
-            if self._fire_detector_available:
-                fire_smoke_detector.draw_boxes(display_frame, self._last_fire_detections)
-
-            # تنظیمات تصویر این دوربین (روشنایی/WDR/ضد مه/...) فقط روی فریم
-            # نمایشی اعمال می‌شود؛ فریم خام (برای تشخیص) دست‌نخورده می‌ماند.
-            # خطا هرگز نباید حلقه‌ی پخش را متوقف کند.
+            # بهینه‌سازی سرعت: بیشتر فریم‌ها هیچ باکس/پروفایلی برای رسم ندارند؛
+            # کپی ۶ مگابایتیِ هر فریم ۱۰۸۰p فقط وقتی لازم است که واقعاً چیزی
+            # روی آن رسم یا پردازش شود. در حالت بیکار، همان فریم خام (فقط
+            # خواندنی - هیچ‌یک از مراحل بعدی آن را تغییر نمی‌دهند) ارسال
+            # می‌شود.
             _img_profile = self._image_profile
-            if _img_profile is not None:
-                try:
-                    display_frame = _apply_image_profile(display_frame, _img_profile)
-                except Exception:
-                    pass
+            _needs_overlay = (
+                len(self._last_results) > 0
+                or len(self._last_person_boxes) > 0
+                or len(self._last_fire_detections) > 0
+                or _img_profile is not None
+            )
+            if _needs_overlay:
+                display_frame = frame.copy()
+                self.face_engine.draw_results(display_frame, self._last_results)
+                # کادر آبی‌روشن دور کل بدن هر فرد (فارغ از حالت/چهره) - جدا از
+                # کادر سبز/قرمز چهره که بالا رسم شد. همیشه رسم می‌شود (نه فقط
+                # وقتی شمارش روشن است) تا کاربر بلافاصله ببیند تشخیص شخص در حال
+                # کار است، دقیقاً مثل تشخیص چهره که همیشه فعال است.
+                if self._person_detector_available:
+                    try:
+                        _get_person_detector().draw_boxes(display_frame, self._last_person_boxes)
+                    except Exception:
+                        pass
+                # کادر نارنجی/قرمز (آتش) یا خاکستری (دود) - همیشه رسم می‌شود (نه
+                # فقط وقتی رویدادی تازه صادر شده) تا کاربر تا وقتی ناحیه در کادر
+                # دوربین باقی است، کادر را ببیند - دقیقاً مثل کادر شخص/چهره.
+                if self._fire_detector_available:
+                    try:
+                        _get_fire_detector().draw_boxes(display_frame, self._last_fire_detections)
+                    except Exception:
+                        pass
+
+                # تنظیمات تصویر این دوربین (روشنایی/WDR/ضد مه/...) فقط روی فریم
+                # نمایشی اعمال می‌شود؛ فریم خام (برای تشخیص) دست‌نخورده می‌ماند.
+                # خطا هرگز نباید حلقه‌ی پخش را متوقف کند.
+                if _img_profile is not None:
+                    try:
+                        display_frame = _apply_image_profile(display_frame, _img_profile)
+                    except Exception:
+                        pass
+            else:
+                display_frame = frame
 
             # frame خام (بدون باکس) هم ارسال می‌شود تا برای «ثبت چهره از تصویر زنده» استفاده شود.
             self.frame_ready.emit(display_frame, frame)

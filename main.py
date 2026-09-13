@@ -18,8 +18,22 @@ from PyQt6.QtCore import Qt, QSize, QMimeData, QPointF, QRectF, QTimer, QEvent, 
 from face_engine import FaceEngine
 from scanner import NetworkScanThread
 from camera_store import CameraStore
-from camera_stream import CameraStreamThread, region_to_polygon
-from floor_detector import FloorDetectThread
+from camera_stream import CameraStreamThread, region_to_polygon, is_low_spec_mode
+# نکته: floor_detector عمداً در بالای فایل import نمی‌شود؛ transformers و
+# SegFormer چند صد مگابایت رم می‌گیرند. فقط وقتی کاربر واقعاً دکمه‌ی «تشخیص
+# هوشمند زمین» را بزند، در همان لحظه بارگذاری می‌شود - رجوع کنید به
+# _get_floor_detect_thread پایین‌تر.
+_FloorDetectThread = None
+
+
+def _get_floor_detect_thread():
+    """دسترسی تنبل به FloorDetectThread (بارگذاری سنگین transformers فقط
+    در لحظه‌ی استفاده، نه در زمان بالا آمدن برنامه)."""
+    global _FloorDetectThread
+    if _FloorDetectThread is None:
+        from floor_detector import FloorDetectThread as _FT
+        _FloorDetectThread = _FT
+    return _FloorDetectThread
 from add_camera_dialog import AddCameraDialog
 from add_nvr_dialog import AddNVRDialog
 from nvr_scanner import DirectCameraProbeThread
@@ -64,7 +78,14 @@ cv2.setNumThreads(max(1, (os.cpu_count() or 4) // 2))
 
 # روی سیستم‌های کم‌هسته، تشخیص چهره روی هر ۵ فریم هنوز نسبتاً سنگین است؛ فاصله
 # را کمی بیشتر می‌کنیم تا CPU بیشتری برای خود پخش زنده (decode ویدیو) بماند.
-_PROCESS_EVERY_N = 5 if (os.cpu_count() or 4) >= 6 else 8
+# حالت سبک (۴ گیگ رم / بدون GPU): خودکار از روی رم سیستم تشخیص داده می‌شود
+# (کمتر از ۶ گیگ = سبک)؛ با IAS_LITE_MODE=1 اجباری و با IAS_LITE_MODE=0
+# غیرفعال می‌شود. در حالت سبک فاصله‌ی تشخیص بیشتر می‌شود تا CPU و رم برای
+# پخش زنده بماند.
+_LOW_SPEC_MODE = is_low_spec_mode()
+if _LOW_SPEC_MODE:
+    print("حالت سبک فعال شد (رم کم / بدون GPU): تشخیص‌ها با فاصله‌ی بیشتر و حداکثر یک تشخیص هم‌زمان.")
+_PROCESS_EVERY_N = 12 if _LOW_SPEC_MODE else (5 if (os.cpu_count() or 4) >= 6 else 8)
 
 # نگاشت تعداد نمایش هم‌زمان دوربین‌ها به چیدمان (ردیف, ستون) شبکه‌ی نمایش.
 # اعداد دقیقاً همان مقادیر درخواستی هستند: 1، 4، 9، 16، 32، 64.
@@ -511,6 +532,10 @@ class CameraSlotWidget(QWidget):
         self._zoom_cx = 0.5
         self._zoom_cy = 0.5
         self._last_zoom_crop = None
+        # بهینه‌سازی سرعت: زمان آخرین به‌روزرسانی تصویر این تایل (برای
+        # محدود کردن نرخ نمایش به ~۱۵ فریم‌برثانیه - رجوع کنید به
+        # on_frame_ready).
+        self._last_display_ts = 0.0
         self._panning = False
         self._pan_button = None
         self._pan_start_label_pos = None
@@ -1178,18 +1203,36 @@ class CameraSlotWidget(QWidget):
 
     def on_frame_ready(self, display_frame, raw_frame):
         self.latest_raw_frame = raw_frame
+        # بهینه‌سازی سرعت (۱): هر تایل حداکثر ~۱۵ فریم‌برثانیه به‌روز می‌شود.
+        # چشم انسان در کاشی‌های کوچک نظارتی فرق ۱۵ با ۲۵ فریم را حس نمی‌کند،
+        # ولی تبدیل/مقیاس هر فریم در ترد UI پرهزینه است.
+        now = time.monotonic()
+        if now - self._last_display_ts < 1.0 / 15.0:
+            return
+        self._last_display_ts = now
         show_frame = display_frame
         if self._zoom > 1.0:
             show_frame = self._zoom_crop(display_frame)
+        # بهینه‌سازی سرعت (۲): به‌جای تبدیل BGR→RGB روی فریم کامل ۱۰۸۰p و
+        # بعد مقیاس نرم‌افزاری پرهزینه در Qt، اول با OpenCV (سریع) به اندازه‌ی
+        # خودِ لیبل کوچک می‌کنیم و بعد تبدیل می‌کنیم - حدود ۱۰ برابر ارزان‌تر.
+        try:
+            lw, lh = self.video_label.width(), self.video_label.height()
+        except Exception:
+            lw, lh = 0, 0
+        if lw > 0 and lh > 0:
+            h, w = show_frame.shape[:2]
+            _scale = min(lw / w, lh / h)
+            if _scale < 1.0:
+                _nw, _nh = max(1, int(w * _scale)), max(1, int(h * _scale))
+                show_frame = cv2.resize(show_frame, (_nw, _nh),
+                                        interpolation=cv2.INTER_LINEAR)
         pixmap = _bgr_to_pixmap(show_frame)
         if pixmap is None:
             return
-        self.video_label.setPixmap(
-            pixmap.scaled(
-                self.video_label.width(), self.video_label.height(),
-                Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation
-            )
-        )
+        # چون فریم از قبل به اندازه‌ی لیبل (با حفظ نسبت) کوچک شده، دیگر
+        # scaled() لازم نیست - مستقیم نمایش داده می‌شود.
+        self.video_label.setPixmap(pixmap)
 
     # ------------------------------------------------- zoom in/out (هر کادر) --
     _ZOOM_MIN = 1.0
@@ -2339,7 +2382,7 @@ class MainWindow(QMainWindow):
             self.draw_line_btn.setChecked(False)
         self.ai_floor_btn.setEnabled(False)
         self.ai_floor_btn.setText("⏳ در حال تحلیل تصویر...")
-        thread = FloorDetectThread(frame.copy(), parent=self)
+        thread = _get_floor_detect_thread()(frame.copy(), parent=self)
         thread.finished_signal.connect(
             lambda points, message, _slot=slot: self._on_ai_floor_detect_finished(_slot, points, message)
         )
