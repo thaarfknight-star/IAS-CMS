@@ -607,13 +607,13 @@ class CameraSlotWidget(QWidget):
         self.people_count_label.setStyleSheet("color:#f39c12; font-size:11px; font-weight:bold;")
         self.close_btn = QPushButton("✕")
         self.close_btn.setFixedSize(18, 18)
-        self.close_btn.setStyleSheet("QPushButton{color:#ccc; background:#333; border-radius:9px;}")
+        self.close_btn.setStyleSheet("QPushButton{color:#ccc; background:#333; border-radius:9px; padding:0px;}")
         self.close_btn.setVisible(False)
         self.close_btn.clicked.connect(lambda: self._on_close_requested(self))
         # رفع درخواست «هر کادر قابلیت Zoom in/out داشته باشه»: دکمه‌های
         # بزرگ‌نمایی/کوچک‌نمایی/بازنشانی هر خانه (علاوه بر زوم با اسکرول ماوس
         # روی تصویر و پن با Shift+درگ یا درگ با دکمه‌ی وسط ماوس).
-        _zoom_style = ("QPushButton{color:#ccc; background:#333; border-radius:9px; font-size:11px;}"
+        _zoom_style = ("QPushButton{color:#ccc; background:#333; border-radius:9px; font-size:11px; padding:0px;}"
                        "QPushButton:disabled{color:#666; background:#2a2a2a;}")
         self.zoom_in_btn = QPushButton("+")
         self.zoom_in_btn.setFixedSize(18, 18)
