@@ -9,6 +9,10 @@ import time
 from rtsp_utils import open_capture, STREAM_FFMPEG_OPTS
 from person_detector import person_detector
 from fire_smoke_detector import fire_smoke_detector
+from fire_config import get_params as get_fire_params
+from small_flame_detector import (
+    SmallFlameDetector, DetectionConfirmer, merge_detections, cascade_yolo_confirm,
+)
 
 # نکته کلیدی برای رفع مشکل «Live نبودن»:
 #   nobuffer / low_delay / max_delay کوچک از تجمع فریم در بافر داخلی FFmpeg جلوگیری می‌کنند.
@@ -363,10 +367,14 @@ class CameraStreamThread(QThread):
         self._detector_status_emitted = False
 
         # --- تشخیص تصویری آتش/دود (اختیاری، رجوع کنید به fire_smoke_detector.py) ---
-        self._last_fire_detections = []  # [(box, kind, conf), ...]
+        self._last_fire_detections = []  # [(box, kind, conf), ...] - فقط تأییدشده‌های چندفریمی
         self._fire_detector_available = False
         self._fire_detector_status_emitted = False
         self._last_fire_alert_ts = {"fire": 0.0, "smoke": 0.0}
+        # آشکارساز شعله‌ی کوچک (کلاسیک/سوسو - حالت زمانی دارد، پس نمونه‌ی جدا
+        # برای هر دوربین) + تأییدکننده‌ی چندفریمی خروجی نهایی.
+        self._small_flame_detector = SmallFlameDetector()
+        self._fire_confirmer = DetectionConfirmer()
 
     def set_people_counting(self, enabled: bool):
         """روشن/خاموش کردن شمارش افراد Real Time برای این دوربین."""
@@ -428,11 +436,25 @@ class CameraStreamThread(QThread):
                 for number, name in self._region_tracker.update(self._last_person_boxes, regions, w, h):
                     self.region_entered.emit(number, name)
 
-            # --- تشخیص تصویری آتش/دود ---
-            # دقیقاً همان الگوی تشخیص شخص بالا: در همین ترد پس‌زمینه‌ی
-            # تشخیص (نه ترد اصلی خواندن فریم) اجرا می‌شود تا پخش زنده هرگز
-            # منتظرش نماند.
-            self._last_fire_detections = fire_smoke_detector.detect(frame)
+            # --- تشخیص تصویری آتش/دود: خط لوله‌ی سه‌مرحله‌ای ---
+            # ۱) YOLO روی تمام فریم (آتش/دود بزرگ - رفتار قبلی، با آستانه‌ی حساسیت)
+            # ۲) آشکارساز کلاسیک شعله‌ی کوچک (روشنایی+سوسو - فندک/شمع/کبریت)
+            # ۳) آبشار: کراپ+بزرگ‌نمایی ناحیه‌های مشکوک و اجرای مجدد YOLO روی آن‌ها
+            # خروجی نهایی همه از «تأیید چندفریمی» می‌گذرد: شیء باید در k فریم از
+            # n فریم آخر دیده شده باشد تا آلارم/کادر بدهد (رجوع کنید به
+            # small_flame_detector.py). دقیقاً همان الگوی تشخیص شخص بالا: در
+            # همین ترد پس‌زمینه‌ی تشخیص (نه ترد اصلی خواندن فریم) اجرا می‌شود تا
+            # پخش زنده هرگز منتظرش نماند.
+            fparams = get_fire_params()
+            _yolo_dets = fire_smoke_detector.detect(frame, conf=fparams["yolo_conf"])
+            _small_dets = self._small_flame_detector.detect(frame)
+            _cascade_dets = cascade_yolo_confirm(frame, _small_dets, conf=fparams["yolo_conf"])
+            _merged = merge_detections(_yolo_dets + _small_dets + _cascade_dets)
+            _diag = (frame.shape[0] ** 2 + frame.shape[1] ** 2) ** 0.5
+            self._last_fire_detections = self._fire_confirmer.update(
+                _merged, k=fparams["confirm_k"], n=fparams["confirm_n"],
+                frame_diag=_diag,
+            )
             self._fire_detector_available = fire_smoke_detector.available
             if not self._fire_detector_status_emitted:
                 self._fire_detector_status_emitted = True

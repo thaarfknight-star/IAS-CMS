@@ -1,11 +1,14 @@
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QDialog, QWidget, QVBoxLayout, QPushButton, QListWidget,
-    QListWidgetItem, QLabel, QMenu
+    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget,
+    QListWidgetItem, QLabel, QMenu, QGroupBox, QComboBox,
 )
 
 from fire_alarm_io import PANEL_TYPE_LABELS_FA
 from add_fire_alarm_dialog import AddFireAlarmDialog
+from fire_config import (
+    SENSITIVITY_LEVELS, get_sensitivity, set_sensitivity, level_label,
+)
 
 
 class FireAlarmPage(QWidget):
@@ -35,8 +38,32 @@ class FireAlarmPage(QWidget):
         fire_alarm_hint = QLabel("کلیک راست روی هر پنل: حذف")
         fire_alarm_hint.setStyleSheet("color: #888; font-size: 10px;")
 
+        # --- تنظیمات تشخیص تصویری آتش/دود (آشکارساز شعله‌ی کوچک + تأیید چندفریمی) ---
+        vision_group = QGroupBox("🎥 تشخیص تصویری آتش/دود")
+        vision_layout = QVBoxLayout()
+        sens_row = QHBoxLayout()
+        sens_row.addWidget(QLabel("حساسیت تشخیص:"))
+        self.sensitivity_combo = QComboBox()
+        for key in ("low", "medium", "high"):
+            self.sensitivity_combo.addItem(f"حساسیت {level_label(key)}", key)
+        self.sensitivity_combo.setCurrentIndex(
+            self.sensitivity_combo.findData(get_sensitivity())
+        )
+        self.sensitivity_combo.currentIndexChanged.connect(self._on_sensitivity_changed)
+        sens_row.addWidget(self.sensitivity_combo, 1)
+        vision_layout.addLayout(sens_row)
+        vision_hint = QLabel(
+            "«زیاد»: حتی شعله‌ی فندک نزدیک دوربین را می‌گیرد (احتمال هشدار اشتباه بیشتر).\n"
+            "تغییر بلافاصله و بدون ری‌استارت روی همه‌ی دوربین‌ها اعمال می‌شود."
+        )
+        vision_hint.setStyleSheet("color: #888; font-size: 10px;")
+        vision_hint.setWordWrap(True)
+        vision_layout.addWidget(vision_hint)
+        vision_group.setLayout(vision_layout)
+
         layout = QVBoxLayout()
         layout.addWidget(title)
+        layout.addWidget(vision_group)
         layout.addWidget(self.add_fire_alarm_btn)
         layout.addWidget(self.fire_alarm_list, 1)
         layout.addWidget(fire_alarm_hint)
@@ -44,8 +71,16 @@ class FireAlarmPage(QWidget):
 
         self.reload_fire_alarm_list()
 
+    def _on_sensitivity_changed(self, index):
+        key = self.sensitivity_combo.itemData(index)
+        if key:
+            set_sensitivity(key)
+
     def refresh(self):
         """هر بار که صفحه از هدر باز می‌شود صدا زده می‌شود تا لیست تازه باشد."""
+        self.sensitivity_combo.setCurrentIndex(
+            self.sensitivity_combo.findData(get_sensitivity())
+        )
         self.reload_fire_alarm_list()
 
     def open_add_fire_alarm_dialog(self):

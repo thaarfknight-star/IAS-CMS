@@ -134,17 +134,20 @@ class FireSmokeDetector:
                 self._load_error = str(e)
                 print(f"خطا در بارگذاری مدل تشخیص آتش/دود: {e}")
 
-    def detect(self, frame):
+    def detect(self, frame, conf=None):
         """خروجی: لیستی از (box, kind, conf) که box=(top,right,bottom,left)
         (همان قالب FaceEngine/PersonDetector)، kind یکی از 'fire'/'smoke' و
         conf عددی بین ۰ و ۱ است. اگر مدل در دسترس نباشد، لیست خالی (بدون
-        خطا) برمی‌گرداند."""
+        خطا) برمی‌گرداند. پارامتر اختیاری conf آستانه‌ی اطمینان این فراخوانی
+        را بازنویسی می‌کند (برای حساسیت قابل‌تنظیم و آبشار کراپ)."""
         if not self.available:
             return []
         with self._lock:
             try:
                 results = self._model.predict(
-                    frame, imgsz=self.imgsz, conf=self.conf_threshold, verbose=False,
+                    frame, imgsz=self.imgsz,
+                    conf=self.conf_threshold if conf is None else conf,
+                    verbose=False,
                 )
             except Exception as e:
                 print(f"خطا در تشخیص آتش/دود: {e}")
