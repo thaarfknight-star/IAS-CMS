@@ -10,6 +10,7 @@ from rtsp_utils import open_capture, STREAM_FFMPEG_OPTS
 from person_detector import person_detector
 from fire_smoke_detector import fire_smoke_detector
 from fire_config import get_params as get_fire_params
+from image_profile import apply_profile as _apply_image_profile, is_neutral as _is_image_profile_neutral
 from small_flame_detector import (
     SmallFlameDetector, DetectionConfirmer, merge_detections, cascade_yolo_confirm,
 )
@@ -326,6 +327,9 @@ class CameraStreamThread(QThread):
         # فقط فاصله‌ی ارسال فریم‌های جدید برای پردازش تشخیص چهره را کنترل می‌کند.
         self.process_every_n = max(1, process_every_n)
         self._run_flag = True
+        # پروفایل «تنظیمات تصویر» این دوربین (روشنایی/WDR/ضد مه/...)؛ None یعنی
+        # خنثی (بدون پردازش). با set_image_profile از ترد GUI به‌روزرسانی می‌شود.
+        self._image_profile = None
         self._last_results = []
         # نتیجه‌ی خام PersonDetector (کادر کل بدن، فارغ از حالت/چهره) روی
         # آخرین فریم پردازش‌شده؛ رجوع کنید به توضیح بالای فایل.
@@ -382,6 +386,19 @@ class CameraStreamThread(QThread):
         self._last_people_count = -1
         if not self.count_people_enabled:
             self.people_count_signal.emit(0)
+
+    def set_image_profile(self, profile):
+        """تنظیم پروفایل «تنظیمات تصویر» (روشنایی/WDR/ضد مه/...) برای این دوربین.
+
+        از ترد GUI صدا زده می‌شود و بلافاصله روی فریم‌های بعدی اعمال می‌گردد.
+        تعویض، اتمیک (جایگزینی ارجاع) است و دیکشنری هیچ‌وقت درجا جهش داده
+        نمی‌شود، پس قفل لازم نیست. پروفایل خنثی/None یعنی بدون پردازش (مسیر سریع).
+        فقط روی فریم نمایشی اثر می‌گذارد؛ فریم خامِ ارسالی برای تشخیص دست‌نخورده می‌ماند.
+        """
+        if profile is None or _is_image_profile_neutral(profile):
+            self._image_profile = None
+        else:
+            self._image_profile = dict(profile)
 
     def set_regions(self, regions):
         """تنظیم لیست کامل محدوده‌های هشدار برای این دوربین. regions لیستی
@@ -546,6 +563,16 @@ class CameraStreamThread(QThread):
             # دوربین باقی است، کادر را ببیند - دقیقاً مثل کادر شخص/چهره.
             if self._fire_detector_available:
                 fire_smoke_detector.draw_boxes(display_frame, self._last_fire_detections)
+
+            # تنظیمات تصویر این دوربین (روشنایی/WDR/ضد مه/...) فقط روی فریم
+            # نمایشی اعمال می‌شود؛ فریم خام (برای تشخیص) دست‌نخورده می‌ماند.
+            # خطا هرگز نباید حلقه‌ی پخش را متوقف کند.
+            _img_profile = self._image_profile
+            if _img_profile is not None:
+                try:
+                    display_frame = _apply_image_profile(display_frame, _img_profile)
+                except Exception:
+                    pass
 
             # frame خام (بدون باکس) هم ارسال می‌شود تا برای «ثبت چهره از تصویر زنده» استفاده شود.
             self.frame_ready.emit(display_frame, frame)

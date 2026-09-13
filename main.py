@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QGridLayout, QComboBox, QScrollArea, QSizePolicy, QSplitter, QStackedWidget
 )
 from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon, QDrag, QFontMetrics, QPainter, QPen, QColor, QPolygonF
-from PyQt6.QtCore import Qt, QSize, QMimeData, QPointF, QRectF, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QMimeData, QPointF, QRectF, QTimer, QEvent, pyqtSignal
 
 from face_engine import FaceEngine
 from scanner import NetworkScanThread
@@ -35,6 +35,7 @@ from device_detect import DeviceDetectThread
 from fire_alarm_store import FireAlarmStore
 from fire_alarm_io import FireAlarmMonitorThread
 from fire_alarm_dialog import FireAlarmPage
+from image_settings_dialog import ImageSettingsDialog
 from theme import (
     apply_theme, LOGO_SHIELD, APP_NAME_FA, APP_NAME_EN, LOGO_BLUE, TEXT_MUTED,
 )
@@ -478,6 +479,29 @@ class CameraSlotWidget(QWidget):
         self.cam = None
         self.stream_thread = None
         self.latest_raw_frame = None
+        # رفع باگ «یک فریم از دوربین قبلی در کادر می‌ماند» هنگام جابه‌جایی با
+        # درگ‌انددراپ: سیگنال‌های ترد پخش با اتصال صف‌شده (queued) به ترد GUI
+        # می‌رسند؛ بعد از stop() (که ترد را کاملاً متوقف می‌کند) ممکن است
+        # هنوز چند رویداد قدیمی در صف رویداد GUI مانده باشد و بعد از start()
+        # دوربین جدید، دیرتر تحویل شوند - مثلاً آخرین فریم دوربین قبلی روی
+        # خانه‌ای که حالا دوربین دیگری را نشان می‌دهد نقاشی می‌شد. هر start/
+        # stop یک شماره‌ی نسل (generation) تازه می‌سازد و همه‌ی اتصال‌های
+        # سیگنال فقط رویدادهای هم‌نسل با استریم جاری را قبول می‌کنند.
+        self._stream_seq = 0
+        # رفع درخواست «هر کادر قابلیت Zoom in/out داشته باشه»: بزرگ‌نمایی
+        # دیجیتالِ مستقلِ هر خانه.
+        #   _zoom: ضریب بزرگ‌نمایی (1.0 = کل فریم)؛ سقف 8 برابر
+        #   _zoom_cx/_zoom_cy: مرکز ناحیه‌ی نمایشی، نرمال 0..1 نسبت به فریم اصلی
+        #   _last_zoom_crop: آخرین کراپ اعمال‌شده (x0,y0,cw,ch) به پیکسل فریم -
+        #       برای نگاشت موقعیت نشانگر ماوس به مختصات فریم (زوم حول نشانگر + پن)
+        self._zoom = 1.0
+        self._zoom_cx = 0.5
+        self._zoom_cy = 0.5
+        self._last_zoom_crop = None
+        self._panning = False
+        self._pan_button = None
+        self._pan_start_label_pos = None
+        self._pan_start_center = None
         self._selected = False
         self._on_clicked = on_clicked
         self._on_close_requested = on_close_requested
@@ -586,8 +610,31 @@ class CameraSlotWidget(QWidget):
         self.close_btn.setStyleSheet("QPushButton{color:#ccc; background:#333; border-radius:9px;}")
         self.close_btn.setVisible(False)
         self.close_btn.clicked.connect(lambda: self._on_close_requested(self))
+        # رفع درخواست «هر کادر قابلیت Zoom in/out داشته باشه»: دکمه‌های
+        # بزرگ‌نمایی/کوچک‌نمایی/بازنشانی هر خانه (علاوه بر زوم با اسکرول ماوس
+        # روی تصویر و پن با Shift+درگ یا درگ با دکمه‌ی وسط ماوس).
+        _zoom_style = ("QPushButton{color:#ccc; background:#333; border-radius:9px; font-size:11px;}"
+                       "QPushButton:disabled{color:#666; background:#2a2a2a;}")
+        self.zoom_in_btn = QPushButton("+")
+        self.zoom_in_btn.setFixedSize(18, 18)
+        self.zoom_in_btn.setStyleSheet(_zoom_style)
+        self.zoom_in_btn.setToolTip("بزرگ‌نمایی تصویر (می‌توانید با اسکرول ماوس روی تصویر هم زوم کنید)")
+        self.zoom_in_btn.clicked.connect(self.zoom_in)
+        self.zoom_out_btn = QPushButton("−")
+        self.zoom_out_btn.setFixedSize(18, 18)
+        self.zoom_out_btn.setStyleSheet(_zoom_style)
+        self.zoom_out_btn.setToolTip("کوچک‌نمایی تصویر")
+        self.zoom_out_btn.clicked.connect(self.zoom_out)
+        self.zoom_reset_btn = QPushButton("1:1")
+        self.zoom_reset_btn.setFixedSize(26, 18)
+        self.zoom_reset_btn.setStyleSheet(_zoom_style)
+        self.zoom_reset_btn.setToolTip("بازنشانی بزرگ‌نمایی (نمایش کل فریم)")
+        self.zoom_reset_btn.clicked.connect(lambda: self._reset_zoom())
         header.addWidget(self.name_label, 1)
         header.addWidget(self.people_count_label)
+        header.addWidget(self.zoom_in_btn)
+        header.addWidget(self.zoom_out_btn)
+        header.addWidget(self.zoom_reset_btn)
         header.addWidget(self.close_btn)
 
         self.status_label = QLabel("")
@@ -616,6 +663,10 @@ class CameraSlotWidget(QWidget):
         # داده‌شده به خانه را ملاک قرار می‌دهد.
         self.video_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.video_label.region_drawn.connect(self._on_region_drawn)
+        # برای زوم با اسکرول و پن (Shift+درگ / درگ با دکمه‌ی وسط) روی تصویر،
+        # رویدادهای لیبل نمایش از همین‌جا رهگیری می‌شوند - رجوع کنید به eventFilter.
+        self.video_label.installEventFilter(self)
+        self._refresh_zoom_buttons()
 
         outer.addLayout(header)
         outer.addWidget(self.status_label)
@@ -639,7 +690,12 @@ class CameraSlotWidget(QWidget):
     # ----------------------------------------------------- محدوده‌ی هشدار --
 
     def set_draw_mode(self, enabled: bool):
+        # مختصات رسم محدوده نرمالِ کل فریم است؛ اگر زوم فعال باشد ابتدا به
+        # حالت عادی برمی‌گردیم تا محدوده سر جای درستش رسم شود.
+        if enabled:
+            self._reset_zoom()
         self.video_label.set_draw_mode(enabled)
+        self._refresh_zoom_buttons()
 
     def is_draw_mode(self) -> bool:
         return self.video_label.draw_mode
@@ -1022,7 +1078,22 @@ class CameraSlotWidget(QWidget):
 
     # --------------------------------------------------------------- start -
 
+    def _guarded_connect(self, seq):
+        """سازنده‌ی اتصال سیگنالِ محافظت‌شده با شماره‌ی نسل استریم: هندلر فقط
+        وقتی صدا زده می‌شود که seq برابر نسل جاری همین خانه باشد؛ رویدادهای
+        جامانده‌ی استریم قبلی (که در صف GUI گیر کرده‌اند) بی‌صدا نادیده گرفته
+        می‌شوند - رجوع کنید به توضیح self._stream_seq در __init__."""
+        def connect(signal, handler):
+            signal.connect(
+                lambda *args, _s=seq, _h=handler: _h(*args) if _s == self._stream_seq else None
+            )
+        return connect
+
     def start(self, cam: dict, rtsp_url: str, face_engine: FaceEngine, face_event_cb):
+        self._stream_seq += 1
+        _seq = self._stream_seq
+        _conn = self._guarded_connect(_seq)
+        self._reset_zoom()
         self.cam = cam
         # نمایش اسم دوربین همراه با IP (کنار هم، جلوی شمارش افراد در همین
         # هدر). اگر کاربر برای دوربین اسمی وارد نکرده باشد، cam["name"] از
@@ -1039,14 +1110,17 @@ class CameraSlotWidget(QWidget):
         self.video_label.setText("در انتظار تصویر...")
 
         self.stream_thread = CameraStreamThread(rtsp_url, face_engine, process_every_n=_PROCESS_EVERY_N)
-        self.stream_thread.frame_ready.connect(self.on_frame_ready)
-        self.stream_thread.error_signal.connect(self.on_error)
-        self.stream_thread.connected_signal.connect(self.on_connected)
-        self.stream_thread.people_count_signal.connect(self.on_people_count)
-        self.stream_thread.region_entered.connect(self._on_region_entered)
-        self.stream_thread.person_detector_status_signal.connect(self._on_detector_status)
+        # همه‌ی اتصال‌ها محافظت‌شده با نسل استریم‌اند تا رویدادهای جامانده‌ی
+        # استریم قبلی همین خانه (در صف GUI) به اشتباه روی دوربین جدید اعمال
+        # نشوند - رجوع کنید به _guarded_connect/_stream_seq.
+        _conn(self.stream_thread.frame_ready, self.on_frame_ready)
+        _conn(self.stream_thread.error_signal, self.on_error)
+        _conn(self.stream_thread.connected_signal, self.on_connected)
+        _conn(self.stream_thread.people_count_signal, self.on_people_count)
+        _conn(self.stream_thread.region_entered, self._on_region_entered)
+        _conn(self.stream_thread.person_detector_status_signal, self._on_detector_status)
         # رفع درخواست «سیستم تشخیص دود و اعلام حریق»
-        self.stream_thread.fire_event_signal.connect(self._on_fire_event)
+        _conn(self.stream_thread.fire_event_signal, self._on_fire_event)
         self._last_logged_count = None
         # با هر بازِ جدید (دوربین تازه در همین خانه)، وضعیت تشخیص شخص قبلی
         # (اگر مربوط به دوربین قبلی این خانه بوده) پاک می‌شود تا وضعیت
@@ -1058,8 +1132,11 @@ class CameraSlotWidget(QWidget):
         # رفع درخواست «گزارش‌ها روی NVR ضبط بشه»: cam (کل دیکشنری دوربین، نه
         # فقط اسمش) پاس داده می‌شود تا on_face_event بتواند nvr_id/channel را
         # هم برای لینک «پخش ویدیوی NVR» در دیالوگ گزارش‌ها ثبت کند.
-        self.stream_thread.face_event_signal.connect(
-            lambda person, crop: face_event_cb(cam, person, crop)
+        # مثل بقیه‌ی سیگنال‌ها با محافظ نسل وصل می‌شود تا رویداد چهره‌ی ترد
+        # قبلی بعد از جابه‌جایی دوربین به کادر جدید نرسد.
+        self._guarded_connect(
+            self.stream_thread.face_event_signal,
+            lambda person, crop: face_event_cb(cam, person, crop),
         )
         self.stream_thread.start()
         # رفع درخواست: اگر برای این دوربین قبلاً محدوده‌های هشدار رسم و
@@ -1075,6 +1152,10 @@ class CameraSlotWidget(QWidget):
         # همین خانه است).
         if self._people_counting_enabled:
             self.stream_thread.set_people_counting(True)
+        # پروفایل تصویر ذخیره‌شده‌ی این دوربین (اگر قبلاً تنظیم شده) روی ترد
+        # تازه اعمال می‌شود - رجوع کنید به image_profile.py.
+        self._apply_saved_image_profile()
+        self._refresh_zoom_buttons()
 
     def on_connected(self):
         self.status_label.setText("متصل - پخش زنده")
@@ -1084,7 +1165,10 @@ class CameraSlotWidget(QWidget):
 
     def on_frame_ready(self, display_frame, raw_frame):
         self.latest_raw_frame = raw_frame
-        pixmap = _bgr_to_pixmap(display_frame)
+        show_frame = display_frame
+        if self._zoom > 1.0:
+            show_frame = self._zoom_crop(display_frame)
+        pixmap = _bgr_to_pixmap(show_frame)
         if pixmap is None:
             return
         self.video_label.setPixmap(
@@ -1094,7 +1178,171 @@ class CameraSlotWidget(QWidget):
             )
         )
 
+    # ------------------------------------------------- zoom in/out (هر کادر) --
+    _ZOOM_MIN = 1.0
+    _ZOOM_MAX = 8.0
+    _ZOOM_STEP = 1.25
+
+    def _reset_zoom(self):
+        self._zoom = 1.0
+        self._zoom_cx = 0.5
+        self._zoom_cy = 0.5
+        self._last_zoom_crop = None
+        self._panning = False
+        self._pan_button = None
+        self._refresh_zoom_buttons()
+
+    def _clamp_zoom_center(self):
+        half = 0.5 / self._zoom
+        self._zoom_cx = min(max(self._zoom_cx, half), 1.0 - half)
+        self._zoom_cy = min(max(self._zoom_cy, half), 1.0 - half)
+
+    def _zoom_crop(self, frame):
+        """کراپ ناحیه‌ی نمایشی از فریم بر اساس ضریب و مرکز زوم؛ ابعاد کراپ هم
+        در _last_zoom_crop نگه داشته می‌شود تا نگاشت ماوس→فریم دقیق باشد."""
+        h, w = frame.shape[:2]
+        cw, ch = w / self._zoom, h / self._zoom
+        cx = min(max(self._zoom_cx * w, cw / 2.0), w - cw / 2.0)
+        cy = min(max(self._zoom_cy * h, ch / 2.0), h - ch / 2.0)
+        x0, y0 = int(cx - cw / 2.0), int(cy - ch / 2.0)
+        cw_i, ch_i = max(1, int(cw)), max(1, int(ch))
+        self._last_zoom_crop = (x0, y0, cw_i, ch_i)
+        return frame[y0:y0 + ch_i, x0:x0 + cw_i]
+
+    def _label_pos_to_frame_norm(self, label_pos):
+        """موقعیت نشانگر (پیکسل لیبل) به مختصات نرمال 0..1 فریم اصلی - با در
+        نظر گرفتن کراپِ زومِ جاری."""
+        rect = self.video_label._frame_rect()
+        if rect is None or rect.width() <= 0 or rect.height() <= 0:
+            return None
+        if self.latest_raw_frame is None:
+            return None
+        h, w = self.latest_raw_frame.shape[:2]
+        px = (label_pos.x() - rect.x()) / rect.width()
+        py = (label_pos.y() - rect.y()) / rect.height()
+        if self._last_zoom_crop is None:
+            return (min(max(px, 0.0), 1.0), min(max(py, 0.0), 1.0))
+        x0, y0, cw, ch = self._last_zoom_crop
+        fx = (x0 + px * cw) / w
+        fy = (y0 + py * ch) / h
+        return (min(max(fx, 0.0), 1.0), min(max(fy, 0.0), 1.0))
+
+    def _zoom_at(self, focus_norm, factor):
+        """زوم حول یک نقطه‌ی ثابت از فریم (نرمال 0..1) - نقطه‌ی زیر نشانگر
+        سر جایش می‌ماند."""
+        if self.cam is None or self.is_draw_mode():
+            return
+        new_zoom = min(self._ZOOM_MAX, max(self._ZOOM_MIN, self._zoom * factor))
+        if abs(new_zoom - self._zoom) < 1e-6:
+            return
+        fx, fy = focus_norm
+        r = self._zoom / new_zoom
+        self._zoom_cx = fx - (fx - self._zoom_cx) * r
+        self._zoom_cy = fy - (fy - self._zoom_cy) * r
+        self._zoom = new_zoom
+        self._clamp_zoom_center()
+        self._refresh_zoom_buttons()
+
+    def zoom_in(self):
+        self._zoom_at((self._zoom_cx, self._zoom_cy), self._ZOOM_STEP)
+
+    def zoom_out(self):
+        self._zoom_at((self._zoom_cx, self._zoom_cy), 1.0 / self._ZOOM_STEP)
+
+    def _refresh_zoom_buttons(self):
+        has_cam = self.cam is not None
+        drawing = self.is_draw_mode()
+        self.zoom_in_btn.setEnabled(has_cam and not drawing and self._zoom < self._ZOOM_MAX)
+        self.zoom_out_btn.setEnabled(has_cam and not drawing and self._zoom > self._ZOOM_MIN)
+        self.zoom_reset_btn.setEnabled(has_cam and not drawing and self._zoom > self._ZOOM_MIN)
+        self.zoom_reset_btn.setToolTip(
+            f"بازنشانی بزرگ‌نمایی (فعلی: {self._zoom:.1f}×)"
+            if self._zoom > self._ZOOM_MIN else "بازنشانی بزرگ‌نمایی (نمایش کل فریم)"
+        )
+
+    def _pan_to(self, label_pos):
+        """جابه‌جایی مرکز زوم بر اساس درگ ماوس (پن) - محتوا دنبال نشانگر می‌آید."""
+        rect = self.video_label._frame_rect()
+        if rect is None or rect.width() <= 0 or rect.height() <= 0:
+            return
+        if self.latest_raw_frame is None or self._last_zoom_crop is None:
+            return
+        if self._pan_start_label_pos is None or self._pan_start_center is None:
+            return
+        h, w = self.latest_raw_frame.shape[:2]
+        _, _, cw, ch = self._last_zoom_crop
+        dx_px = label_pos.x() - self._pan_start_label_pos.x()
+        dy_px = label_pos.y() - self._pan_start_label_pos.y()
+        dnx = dx_px / rect.width() * (cw / w)
+        dny = dy_px / rect.height() * (ch / h)
+        sx, sy = self._pan_start_center
+        self._zoom_cx, self._zoom_cy = sx - dnx, sy - dny
+        self._clamp_zoom_center()
+
+    def eventFilter(self, obj, event):
+        # زوم با اسکرول + پن (Shift+درگ چپ یا درگ با دکمه‌ی وسط) روی تصویر هر
+        # خانه - بدون تداخل با رسم محدوده (draw_mode) و درگ‌انددراپ جابه‌جایی
+        # خانه‌ها (درگ چپِ ساده همچنان مال جابه‌جایی خانه است).
+        if obj is self.video_label:
+            etype = event.type()
+            if etype == QEvent.Type.Wheel:
+                if self.cam is not None and not self.is_draw_mode():
+                    delta = event.angleDelta().y()
+                    if delta:
+                        focus = self._label_pos_to_frame_norm(event.position())
+                        self._zoom_at(focus or (0.5, 0.5),
+                                      self._ZOOM_STEP if delta > 0 else 1.0 / self._ZOOM_STEP)
+                        return True
+            elif etype == QEvent.Type.MouseButtonPress:
+                btn = event.button()
+                if (self._zoom > 1.0 and not self.is_draw_mode() and not self._panning
+                        and (btn == Qt.MouseButton.MiddleButton
+                             or (btn == Qt.MouseButton.LeftButton
+                                 and event.modifiers() & Qt.KeyboardModifier.ShiftModifier))):
+                    self._panning = True
+                    self._pan_button = btn
+                    self._pan_start_label_pos = event.position()
+                    self._pan_start_center = (self._zoom_cx, self._zoom_cy)
+                    self.video_label.setCursor(Qt.CursorShape.ClosedHandCursor)
+                    return True
+            elif etype == QEvent.Type.MouseMove:
+                if self._panning:
+                    self._pan_to(event.position())
+                    return True
+            elif etype == QEvent.Type.MouseButtonRelease:
+                if self._panning and event.button() == self._pan_button:
+                    self._panning = False
+                    self._pan_button = None
+                    self._pan_start_label_pos = None
+                    self._pan_start_center = None
+                    self.video_label.setCursor(Qt.CursorShape.ArrowCursor)
+                    return True
+        return super().eventFilter(obj, event)
+
+    # --------------------------------------- تنظیمات تصویر (هر دوربین جدا) --
+    def apply_image_profile(self, profile):
+        """اعمال زنده‌ی پروفایل تنظیمات تصویر روی ترد پخش جاری (پیش‌نمایش
+        دیالوگ «تنظیمات تصویر») - رجوع کنید به image_profile.py."""
+        if self.stream_thread is not None:
+            self.stream_thread.set_image_profile(profile)
+
+    def _apply_saved_image_profile(self):
+        """اعمال پروفایل ذخیره‌شده‌ی این دوربین (cameras.json) روی ترد تازه."""
+        if self.stream_thread is None or self.cam is None:
+            return
+        try:
+            from image_profile import get_camera_profile
+            self.stream_thread.set_image_profile(get_camera_profile(self.cam))
+        except Exception:
+            pass
+
     def stop(self):
+        # نسل استریم را همین‌جا بالا می‌بریم تا هر رویداد جامانده‌ی ترد قبلی
+        # که هنوز در صف GUI است، با _guarded_connect نادیده گرفته شود (رفع
+        # باگ «یک فریم از دوربین قبلی در کادر می‌ماند»).
+        self._stream_seq += 1
+        # با توقف پخش، بزرگ‌نمایی هم به حالت عادی برمی‌گردد.
+        self._reset_zoom()
         if self.stream_thread and self.stream_thread.isRunning():
             self.stream_thread.stop()
         self.stream_thread = None
@@ -1123,6 +1371,7 @@ class CameraSlotWidget(QWidget):
         self._detector_available = None
         self._detector_error = ""
         self._refresh_detector_warning()
+        self._refresh_zoom_buttons()
         self.tripwire_changed.emit()
 
 
@@ -1802,6 +2051,24 @@ class MainWindow(QMainWindow):
         self.manage_regions_btn.clicked.connect(self._on_manage_regions_clicked)
         grid_toolbar.addWidget(self.manage_regions_btn)
 
+        # رفع درخواست «سیستم تنظیمات تصویر (مثل WDR، Anti Fogging و...)»:
+        # دکمه برای دوربینِ خانه‌ی انتخاب‌شده؛ هر دوربین پروفایل مستقل خودش
+        # را دارد (در cameras.json ذخیره می‌شود) و چند پیش‌فرض آماده هم داخل
+        # دیالوگ هست - رجوع کنید به image_settings_dialog.py و image_profile.py.
+        self.image_settings_btn = QPushButton("🎨 تنظیمات تصویر")
+        self.image_settings_btn.setEnabled(False)
+        self.image_settings_btn.setToolTip(
+            "تنظیمات تصویر (روشنایی، کنتراست، WDR، ضد مه و...) برای دوربین "
+            "انتخاب‌شده.\nهر دوربین تنظیم مستقل خودش را دارد؛ چند پیش‌فرض آماده "
+            "هم داخل دیالوگ هست."
+        )
+        self.image_settings_btn.setStyleSheet(
+            "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
+            "QPushButton:enabled{background:#8e44ad; color:#fff;}"
+        )
+        self.image_settings_btn.clicked.connect(self._on_image_settings_clicked)
+        grid_toolbar.addWidget(self.image_settings_btn)
+
         grid_toolbar.addStretch()
 
         self.camera_grid = CameraGridWidget(
@@ -2145,6 +2412,16 @@ class MainWindow(QMainWindow):
         dialog = RegionManagerDialog(slot, _on_changed, self)
         dialog.exec()
 
+    def _on_image_settings_clicked(self):
+        """باز کردن دیالوگ «تنظیمات تصویر» برای دوربینِ خانه‌ی انتخاب‌شده -
+        هر دوربین پروفایل مستقل خودش را دارد (رجوع کنید به
+        image_settings_dialog.py)."""
+        slot = self._selected_slot()
+        if slot is None or slot.cam is None:
+            return
+        dialog = ImageSettingsDialog(slot, self.camera_store, self)
+        dialog.exec()
+
     def on_region_alert(self, cam, number, name):
         """رفع درخواست: با ورود شخصی به یکی از محدوده‌های هشدار هر دوربین
         (از CameraSlotWidget._on_region_entered)، یک ردیف متنی قرمز هم در
@@ -2240,6 +2517,8 @@ class MainWindow(QMainWindow):
         self.confirm_line_btn.setEnabled(bool(has_pending))
         self.redraw_line_btn.setEnabled(bool(has_pending))
         self.manage_regions_btn.setEnabled(bool(has_confirmed))
+        # دکمه‌ی تنظیمات تصویر فقط وقتی یک خانه‌ی دارای دوربین انتخاب شده.
+        self.image_settings_btn.setEnabled(slot is not None and slot.cam is not None)
         # رفع درخواست: دکمه‌های «تایید»/«لغو رسم» فقط وقتی یک محدوده‌ی
         # در-انتظار یا در-حال-ویرایش وجود دارد نمایان می‌شوند (نه همیشه).
         self.region_action_row.setVisible(bool(has_pending or is_editing))
