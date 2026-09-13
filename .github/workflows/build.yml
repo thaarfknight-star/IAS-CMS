@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       quick_test:
-        description: 'بیلد سریع برای تست: PyInstaller (چند دقیقه، بدون کامپایل C) بجای Nuitka onefile (چند ساعت) - فقط وقتی دستی (Run workflow) اجرا کنید فعال است'
+        description: 'true = بیلد سریع PyInstaller (چند دقیقه) | false = بیلد نهایی Nuitka onefile (چند ساعت، فقط دستی)'
         type: boolean
         default: true
 
@@ -101,7 +101,7 @@ jobs:
     - name: Restore Nuitka cache (MinGW64 + ماژول‌های کامپایل‌شده)
       # روی مسیر quick_test (PyInstaller) اصلاً از Nuitka استفاده نمی‌شود، پس
       # restore این کش (که می‌تواند چند گیگابایت باشد) فقط وقت تلف می‌کند.
-      if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.quick_test == 'true') }}
+      if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.quick_test != 'true' }}
       id: nuitka-cache
       uses: actions/cache/restore@v4
       with:
@@ -144,24 +144,42 @@ jobs:
           nuitka-cache-windows-${{ hashFiles('requirements.txt') }}-
           nuitka-cache-windows-
 
-    # رفع درخواست «سریع خروجی بده برای تست»: تا اینجا quick_test=true فقط
-    # --standalone به‌جای --onefile می‌داد، اما bottleneck واقعی («کامپایل C»)
-    # در هر دو حالت یکسان و کند بود (Nuitka همیشه به C کامپایل می‌کند، فارغ از
-    # onefile/standalone) - یعنی هیچ‌کدام واقعاً «سریع» نبودند. حالا برای
-    # quick_test از ابزار کاملاً متفاوتی (PyInstaller) استفاده می‌شود که هیچ
-    # کامپایل Cای انجام نمی‌دهد (فقط bytecode پایتون را جمع‌آوری/بسته‌بندی
-    # می‌کند)، پس معمولاً چند دقیقه طول می‌کشد، نه چند ساعت - دقیقاً برای
-    # تستِ سریعِ عملکرد برنامه کافی است. روی push به main (بدون ورودی دستی)
-    # رفتار قبلی (Nuitka کامل با --onefile، باینری واقعی ماشین) دست‌نخورده
-    # باقی می‌ماند - یعنی نسخه‌ی نهایی/توزیعی هنوز همان یک exe کامپایل‌شده است.
-    - name: Build Executable with PyInstaller (quick test only - no C compile)
-      if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.quick_test == 'true' }}
+    # بیلد سریع PyInstaller (چند دقیقه، بدون کامپایل C): هم با اجرای دستی
+    # (workflow_dispatch + quick_test=true) و هم خودکار روی هر push به main
+    # اجرا می‌شود تا بعد از هر push یک exe تازه در Artifacts باشد.
+    # بیلد نهایی/توزیعی Nuitka onefile فقط با اجرای دستی + quick_test=false.
+    - name: Build Executable with PyInstaller (quick - no C compile)
+      if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.quick_test == 'true') }}
       shell: pwsh
       run: |
         $ErrorActionPreference = "Stop"
 
         python -m pip install pyinstaller
         if ($LASTEXITCODE -ne 0) { throw "نصب PyInstaller با کد $LASTEXITCODE شکست خورد." }
+
+        # --- فایل‌های wsdl کتابخانه‌ی onvif-zeep (لازم برای بخش «WDR سخت‌افزاری») ---
+        # wheel داخل pip پوشه‌ی wsdl را ندارد؛ از روی sdist استخراج و کنار exe
+        # بسته‌بندی می‌شود (onvif_imaging.py دنبال <bundle>/wsdl می‌گردد).
+        $wsdlDataArg = $null
+        try {
+          $tmpDl = Join-Path $env:RUNNER_TEMP "onvif_sdist"
+          New-Item -ItemType Directory -Path $tmpDl -Force | Out-Null
+          Push-Location $tmpDl
+          python -m pip download --no-deps --no-binary :all: onvif-zeep 2>$null
+          $sdist = Get-ChildItem -Filter "onvif_zeep*.tar.gz" | Select-Object -First 1
+          if ($sdist) {
+            tar -xzf $sdist.FullName
+            $wsdlSrc = Get-ChildItem -Directory -Recurse -Filter "wsdl" | Select-Object -First 1
+            if ($wsdlSrc -and (Test-Path (Join-Path $wsdlSrc.FullName "imaging.wsdl"))) {
+              $wsdlDst = Join-Path $env:GITHUB_WORKSPACE "onvif_wsdl_pkg"
+              New-Item -ItemType Directory -Path $wsdlDst -Force | Out-Null
+              Copy-Item (Join-Path $wsdlSrc.FullName "*") -Destination $wsdlDst -Recurse -Force
+              $wsdlDataArg = "--add-data=onvif_wsdl_pkg;wsdl"
+              Write-Host "onvif wsdl files bundled."
+            }
+          }
+          Pop-Location
+        } catch { Write-Host "WARNING: onvif wsdl bundling skipped: $_" }
 
         $pyiArgs = @(
           "--onedir"
@@ -177,9 +195,13 @@ jobs:
           "--collect-all=transformers"
           "--collect-all=face_recognition_models"
           "--collect-all=cv2"
+          "--collect-all=onvif"
           "--distpath=dist"
           "main.py"
         )
+        if ($wsdlDataArg) { $pyiArgs += $wsdlDataArg }
+        if (Test-Path "assets") { $pyiArgs += "--add-data=assets;assets" }
+        if (Test-Path "assets\app.ico") { $pyiArgs += "--icon=assets\app.ico" }
 
         Write-Host "PyInstaller command: python -m PyInstaller $($pyiArgs -join ' ')"
         python -m PyInstaller @pyiArgs
@@ -190,7 +212,7 @@ jobs:
         }
 
     - name: Build Executable with Nuitka (portable, compiled to machine code)
-      if: ${{ !(github.event_name == 'workflow_dispatch' && github.event.inputs.quick_test == 'true') }}
+      if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.quick_test != 'true' }}
       shell: pwsh
       run: |
         # نکته‌ی مهم: بدون این خط، اگر یکی از دستورات زیر (pip install یا
@@ -357,7 +379,7 @@ jobs:
     # به توضیح داخل step «Restore Nuitka cache» بالاتر.
     - name: Save Nuitka cache (حتی اگر ساخت ناموفق/کنسل شود)
       # روی مسیر quick_test اصلاً Nuitka اجرا نشده، پس چیزی برای ذخیره نیست.
-      if: ${{ always() && !(github.event_name == 'workflow_dispatch' && github.event.inputs.quick_test == 'true') }}
+      if: ${{ always() && github.event_name == 'workflow_dispatch' && github.event.inputs.quick_test != 'true' }}
       uses: actions/cache/save@v4
       with:
         path: |
