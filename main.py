@@ -1134,7 +1134,7 @@ class CameraSlotWidget(QWidget):
         # هم برای لینک «پخش ویدیوی NVR» در دیالوگ گزارش‌ها ثبت کند.
         # مثل بقیه‌ی سیگنال‌ها با محافظ نسل وصل می‌شود تا رویداد چهره‌ی ترد
         # قبلی بعد از جابه‌جایی دوربین به کادر جدید نرسد.
-        self._guarded_connect(
+        _conn(
             self.stream_thread.face_event_signal,
             lambda person, crop: face_event_cb(cam, person, crop),
         )
