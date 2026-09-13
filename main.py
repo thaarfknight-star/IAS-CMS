@@ -35,6 +35,19 @@ from device_detect import DeviceDetectThread
 from fire_alarm_store import FireAlarmStore
 from fire_alarm_io import FireAlarmMonitorThread
 from fire_alarm_dialog import FireAlarmPage
+try:
+    # رفع درخواست «اتصال به سیستم اعلام حریق ساختمان + صدای هشدار»:
+    # این سه فایل در پکیج ias-cms-fire-building کنار main.py قرار می‌گیرند.
+    # نبودشان باعث کرش نمی‌شود؛ فقط این قابلیت غیرفعال می‌ماند.
+    from building_fire_output import BuildingFireOutput
+    from alarm_sound import AlarmSoundPlayer
+    from building_fire_settings_dialog import BuildingFireSettingsDialog
+    _BUILDING_FIRE_AVAILABLE = True
+except ImportError:
+    BuildingFireOutput = None
+    AlarmSoundPlayer = None
+    BuildingFireSettingsDialog = None
+    _BUILDING_FIRE_AVAILABLE = False
 from image_settings_dialog import ImageSettingsDialog
 from theme import (
     apply_theme, LOGO_SHIELD, APP_NAME_FA, APP_NAME_EN, LOGO_BLUE, TEXT_MUTED,
@@ -1749,6 +1762,15 @@ class MainWindow(QMainWindow):
         # fire_alarm_io.py/fire_alarm_store.py.
         self.fire_alarm_store = FireAlarmStore()
         self._fire_alarm_threads = {}
+        # رفع درخواست «اتصال به سیستم اعلام حریق ساختمان + صدای هشدار»:
+        # وقتی آتش/دود تشخیص داده شود، آژیر ممتد پخش و سیگنال به پنل
+        # ساختمان ارسال می‌شود (تنظیمات در building_fire_config.json).
+        if _BUILDING_FIRE_AVAILABLE:
+            self.building_fire = BuildingFireOutput(logger=self._on_building_fire_log)
+            self.alarm_player = AlarmSoundPlayer()
+        else:
+            self.building_fire = None
+            self.alarm_player = None
         self.network_scan_thread = None
         self.detect_thread = None
         self._scan_ports_by_ip = {}  # ip -> [ports...] از آخرین اسکن شبکه
@@ -2111,6 +2133,18 @@ class MainWindow(QMainWindow):
         self.fire_panel_list.setIconSize(QSize(64, 64))
         self.fire_panel_list.setWordWrap(True)
         fire_panel_layout.addWidget(self.fire_panel_list)
+        # رفع درخواست «اتصال به سیستم اعلام حریق ساختمان + صدای هشدار»:
+        # دکمه‌ی قطع صدای آژیر + دکمه‌ی تنظیمات اتصال ساختمان زیر لیست حریق.
+        fire_btn_row = QHBoxLayout()
+        self.btn_stop_alarm = QPushButton("🔇 قطع صدای هشدار")
+        self.btn_stop_alarm.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_stop_alarm.clicked.connect(self.stop_fire_alarm_sound)
+        self.btn_building_fire = QPushButton("🏢 اتصال به سیستم حریق ساختمان")
+        self.btn_building_fire.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_building_fire.clicked.connect(self.open_building_fire_settings)
+        fire_btn_row.addWidget(self.btn_stop_alarm)
+        fire_btn_row.addWidget(self.btn_building_fire)
+        fire_panel_layout.addLayout(fire_btn_row)
         fire_panel_group.setLayout(fire_panel_layout)
 
         # رفع درخواست «تنظیم اندازه پنل‌های سمت راست»: به‌جای QVBoxLayout با
@@ -2462,6 +2496,12 @@ class MainWindow(QMainWindow):
                                             nvr_id=cam.get("nvr_id"), channel=cam.get("channel"))
         while self.fire_panel_list.count() > 300:
             self.fire_panel_list.takeItem(self.fire_panel_list.count() - 1)
+        # رفع درخواست «اتصال به سیستم اعلام حریق ساختمان + صدای هشدار»:
+        # با هر تشخیص آتش/دود: آژیر ممتد + ارسال سیگنال به پنل ساختمان.
+        if self.alarm_player is not None:
+            self.alarm_player.start()
+        if self.building_fire is not None:
+            self.building_fire.trigger(camera_name, kind, confidence)
 
     # ---------------------------------------------- پنل‌های فیزیکی اعلام حریق -
 
@@ -2491,6 +2531,12 @@ class MainWindow(QMainWindow):
         item.setForeground(QColor("#e74c3c"))
         self.fire_panel_list.insertItem(0, item)
         _play_alarm_beep()
+        # رفع درخواست «اتصال به سیستم اعلام حریق ساختمان + صدای هشدار»:
+        # آلارم پنل فیزیکی هم آژیر ممتد + سیگنال به پنل ساختمان را فعال می‌کند.
+        if self.alarm_player is not None:
+            self.alarm_player.start()
+        if self.building_fire is not None:
+            self.building_fire.trigger(panel["name"], "fire", 1.0)
         report_store.log_fire_alarm_panel(panel["name"], active=True)
         while self.fire_panel_list.count() > 300:
             self.fire_panel_list.takeItem(self.fire_panel_list.count() - 1)
@@ -2501,9 +2547,45 @@ class MainWindow(QMainWindow):
         item = QListWidgetItem(text)
         item.setForeground(QColor("#2ecc71"))
         self.fire_panel_list.insertItem(0, item)
+        # با عادی‌شدن پنل، آژیر ممتد هم قطع می‌شود.
+        self.stop_fire_alarm_sound()
         report_store.log_fire_alarm_panel(panel["name"], active=False)
         while self.fire_panel_list.count() > 300:
             self.fire_panel_list.takeItem(self.fire_panel_list.count() - 1)
+
+    def _on_building_fire_log(self, msg):
+        """نمایش پیام فارسی نتیجه‌ی ارسال سیگنال به پنل ساختمان
+        (از ترد پس‌زمینه‌ی BuildingFireOutput) در لیست رویدادهای حریق."""
+        try:
+            item = QListWidgetItem(f"🏢 {msg}")
+            item.setWordWrap(True)
+            self.fire_panel_list.insertItem(0, item)
+            while self.fire_panel_list.count() > 300:
+                self.fire_panel_list.takeItem(self.fire_panel_list.count() - 1)
+        except Exception:
+            pass
+
+    def stop_fire_alarm_sound(self):
+        """قطع صدای آژیر حریق (دکمه‌ی 🔇 قطع صدای هشدار)."""
+        if self.alarm_player is not None:
+            try:
+                self.alarm_player.stop()
+            except Exception:
+                pass
+
+    def open_building_fire_settings(self):
+        """باز کردن دیالوگ تنظیمات اتصال به سیستم حریق ساختمان + صدای هشدار."""
+        if not _BUILDING_FIRE_AVAILABLE or BuildingFireSettingsDialog is None:
+            QMessageBox.warning(
+                self, "اتصال به سیستم حریق ساختمان",
+                "فایل‌های اتصال ساختمان (building_fire_output.py، alarm_sound.py و\n"
+                "building_fire_settings_dialog.py) کنار main.py پیدا نشد.\n"
+                "آن‌ها را از پکیج ias-cms-fire-building کپی کنید.")
+            return
+        dlg = BuildingFireSettingsDialog(self, log_callback=self._on_building_fire_log)
+        if dlg.exec():
+            self.building_fire.reload()
+            self.alarm_player.reload()
 
     def _refresh_line_buttons(self):
         """دکمه‌های «تایید و نام‌گذاری»/«لغو رسم»/«مدیریت محدوده‌ها» و
@@ -3264,6 +3346,13 @@ class MainWindow(QMainWindow):
         # برنامه صریحاً متوقف شوند.
         for panel_id in list(self._fire_alarm_threads.keys()):
             self._stop_fire_alarm_monitor(panel_id)
+        # رفع درخواست «اتصال به سیستم اعلام حریق ساختمان + صدای هشدار»:
+        # قطع آژیر ممتد هنگام خروج از برنامه تا در پس‌زمینه ادامه پیدا نکند.
+        if getattr(self, "alarm_player", None) is not None:
+            try:
+                self.alarm_player.stop()
+            except Exception:
+                pass
 
         # رفع درخواست: هنگام خروج از برنامه، تمام رمزهای عبوری که فقط در
         # حافظه نگه‌داشته شده بودند (هیچ‌وقت روی دیسک ذخیره نمی‌شوند - رجوع
