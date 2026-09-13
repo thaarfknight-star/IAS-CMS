@@ -1,6 +1,6 @@
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget,
+    QDialog, QWidget, QVBoxLayout, QPushButton, QListWidget,
     QListWidgetItem, QLabel, QMenu
 )
 
@@ -8,21 +8,22 @@ from fire_alarm_io import PANEL_TYPE_LABELS_FA
 from add_fire_alarm_dialog import AddFireAlarmDialog
 
 
-class FireAlarmDialog(QDialog):
+class FireAlarmPage(QWidget):
     """مدیریت پنل‌ها/سنسورهای فیزیکی اعلام حریق - به‌عنوان یک صفحه‌ی جداگانه
-    (دقیقاً هم‌الگو با FaceLibraryDialog و ReportsDialog) به‌جای تبی که قبلاً
-    داخل QTabWidget مشترک با «چهره» و «گزارش‌ها» بود. افزودن/حذف پنل همچنان
-    از طریق fire_alarm_store انجام می‌شود؛ شروع/توقف ترد مانیتور پس‌زمینه‌ی
-    هر پنل با دو callback به MainWindow سپرده می‌شود چون آن تردها در سطح
-    MainWindow نگهداری می‌شوند."""
+    داخل QStackedWidget پنجره‌ی اصلی (قابل دسترسی از هدر بالای برنامه)،
+    نه یک دیالوگ مستقل. افزودن/حذف پنل همچنان از طریق fire_alarm_store
+    انجام می‌شود؛ شروع/توقف ترد مانیتور پس‌زمینه‌ی هر پنل با دو callback به
+    MainWindow سپرده می‌شود چون آن تردها در سطح MainWindow نگهداری
+    می‌شوند."""
 
     def __init__(self, fire_alarm_store, start_monitor_callback, stop_monitor_callback, parent=None):
         super().__init__(parent)
         self.fire_alarm_store = fire_alarm_store
         self.start_monitor_callback = start_monitor_callback
         self.stop_monitor_callback = stop_monitor_callback
-        self.setWindowTitle("پنل‌های اعلام حریق")
-        self.resize(480, 420)
+
+        title = QLabel("🔥 پنل‌های اعلام حریق")
+        title.setStyleSheet("font-size: 16px; font-weight: bold; padding: 4px;")
 
         self.add_fire_alarm_btn = QPushButton("+ افزودن پنل/سنسور اعلام حریق")
         self.add_fire_alarm_btn.clicked.connect(self.open_add_fire_alarm_dialog)
@@ -34,19 +35,17 @@ class FireAlarmDialog(QDialog):
         fire_alarm_hint = QLabel("کلیک راست روی هر پنل: حذف")
         fire_alarm_hint.setStyleSheet("color: #888; font-size: 10px;")
 
-        close_btn = QPushButton("بستن")
-        close_btn.clicked.connect(self.accept)
-        btn_row = QHBoxLayout()
-        btn_row.addStretch()
-        btn_row.addWidget(close_btn)
-
         layout = QVBoxLayout()
+        layout.addWidget(title)
         layout.addWidget(self.add_fire_alarm_btn)
-        layout.addWidget(self.fire_alarm_list)
+        layout.addWidget(self.fire_alarm_list, 1)
         layout.addWidget(fire_alarm_hint)
-        layout.addLayout(btn_row)
         self.setLayout(layout)
 
+        self.reload_fire_alarm_list()
+
+    def refresh(self):
+        """هر بار که صفحه از هدر باز می‌شود صدا زده می‌شود تا لیست تازه باشد."""
         self.reload_fire_alarm_list()
 
     def open_add_fire_alarm_dialog(self):
@@ -77,3 +76,7 @@ class FireAlarmDialog(QDialog):
             self.stop_monitor_callback(panel_id)
             self.fire_alarm_store.remove_panel(panel_id)
             self.reload_fire_alarm_list()
+
+
+# نام قدیمی برای سازگاری با کدی که هنوز دیالوگ را ایمپورت می‌کند.
+FireAlarmDialog = FireAlarmPage

@@ -4,7 +4,7 @@ import numpy as np
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QTextEdit,
+    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QTextEdit,
     QTableWidget, QTableWidgetItem, QPushButton, QMessageBox, QDialogButtonBox,
     QHeaderView, QLabel, QFileDialog
 )
@@ -177,8 +177,10 @@ class PersonFormDialog(QDialog):
         }
 
 
-class FaceLibraryDialog(QDialog):
-    """مدیریت Face Library: افزودن از تصویر زنده، ویرایش، حذف."""
+class FaceLibraryPage(QWidget):
+    """مدیریت Face Library: افزودن از تصویر زنده، ویرایش، حذف - به‌عنوان یک
+    صفحه‌ی جداگانه داخل QStackedWidget پنجره‌ی اصلی (قابل دسترسی از هدر
+    بالای برنامه)، نه یک دیالوگ مستقل."""
 
     COLUMNS = ["عکس", "نام", "شماره تلفن", "شماره کارمندی", "توضیحات"]
 
@@ -186,8 +188,9 @@ class FaceLibraryDialog(QDialog):
         super().__init__(parent)
         self.face_engine = face_engine
         self.get_current_frame_callback = get_current_frame_callback
-        self.setWindowTitle("Face Library - مدیریت چهره‌ها")
-        self.resize(700, 420)
+
+        title = QLabel("👤 Face Library - مدیریت چهره‌ها")
+        title.setStyleSheet("font-size: 16px; font-weight: bold; padding: 4px;")
 
         self.table = QTableWidget(0, len(self.COLUMNS))
         self.table.setHorizontalHeaderLabels(self.COLUMNS)
@@ -203,8 +206,6 @@ class FaceLibraryDialog(QDialog):
         edit_btn.clicked.connect(self.edit_selected)
         delete_btn = QPushButton("حذف")
         delete_btn.clicked.connect(self.delete_selected)
-        close_btn = QPushButton("بستن")
-        close_btn.clicked.connect(self.accept)
 
         btn_row = QHBoxLayout()
         btn_row.addWidget(add_btn)
@@ -212,13 +213,17 @@ class FaceLibraryDialog(QDialog):
         btn_row.addWidget(edit_btn)
         btn_row.addWidget(delete_btn)
         btn_row.addStretch()
-        btn_row.addWidget(close_btn)
 
         layout = QVBoxLayout()
-        layout.addWidget(self.table)
+        layout.addWidget(title)
+        layout.addWidget(self.table, 1)
         layout.addLayout(btn_row)
         self.setLayout(layout)
 
+        self.refresh_table()
+
+    def refresh(self):
+        """هر بار که صفحه از هدر باز می‌شود صدا زده می‌شود تا جدول تازه باشد."""
         self.refresh_table()
 
     def refresh_table(self):
@@ -312,3 +317,7 @@ class FaceLibraryDialog(QDialog):
         if confirm == QMessageBox.StandardButton.Yes:
             self.face_engine.delete_person(person_id)
             self.refresh_table()
+
+
+# نام قدیمی برای سازگاری با کدی که هنوز دیالوگ را ایمپورت می‌کند.
+FaceLibraryDialog = FaceLibraryPage

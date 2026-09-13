@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QDateEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QDateEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog,
     QMessageBox,
 )
@@ -26,16 +26,21 @@ PLAYBACK_MARGIN_BEFORE = timedelta(seconds=10)
 PLAYBACK_MARGIN_AFTER = timedelta(seconds=30)
 
 
-class ReportsDialog(QDialog):
+class ReportsPage(QWidget):
+    """صفحه‌ی «گزارش‌ها» - به‌عنوان یک صفحه‌ی جداگانه داخل QStackedWidget
+    پنجره‌ی اصلی (قابل دسترسی از هدر بالای برنامه)، نه یک دیالوگ مستقل."""
+
     def __init__(self, report_store, camera_store=None, parent=None):
         super().__init__(parent)
         self.report_store = report_store
         self.camera_store = camera_store
-        self.setWindowTitle("گزارش‌ها")
-        self.resize(1000, 600)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
 
         layout = QVBoxLayout(self)
+
+        title = QLabel("📊 گزارش‌ها")
+        title.setStyleSheet("font-size: 16px; font-weight: bold; padding: 4px;")
+        layout.addWidget(title)
 
         # --------------------------------------------------------- فیلترها -
         filter_row = QHBoxLayout()
@@ -59,9 +64,7 @@ class ReportsDialog(QDialog):
 
         filter_row.addWidget(QLabel("دوربین:"))
         self.camera_combo = QComboBox()
-        self.camera_combo.addItem("همه", None)
-        for cam_name in self.report_store.distinct_cameras():
-            self.camera_combo.addItem(cam_name, cam_name)
+        self._reload_camera_combo()
         filter_row.addWidget(self.camera_combo)
 
         self.search_btn = QPushButton("🔍 جست‌وجو")
@@ -90,14 +93,26 @@ class ReportsDialog(QDialog):
         self.summary_label = QLabel("")
         layout.addWidget(self.summary_label)
 
-        close_row = QHBoxLayout()
-        close_row.addStretch()
-        close_btn = QPushButton("بستن")
-        close_btn.clicked.connect(self.accept)
-        close_row.addWidget(close_btn)
-        layout.addLayout(close_row)
-
         self.run_search()
+
+    def refresh(self):
+        """هر بار که صفحه از هدر باز می‌شود صدا زده می‌شود: لیست دوربین‌ها
+        (که ممکن است از آخرین بازدید تغییر کرده باشد) تازه و جست‌وجو
+        دوباره اجرا می‌شود."""
+        self._reload_camera_combo()
+        self.run_search()
+
+    def _reload_camera_combo(self):
+        current = self.camera_combo.currentData()
+        self.camera_combo.blockSignals(True)
+        self.camera_combo.clear()
+        self.camera_combo.addItem("همه", None)
+        for cam_name in self.report_store.distinct_cameras():
+            self.camera_combo.addItem(cam_name, cam_name)
+        # اگر دوربینی که قبلاً انتخاب شده بود هنوز هست، همان انتخاب بماند.
+        idx = self.camera_combo.findData(current)
+        self.camera_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.camera_combo.blockSignals(False)
 
     # ------------------------------------------------------------- کمکی -
 
@@ -219,3 +234,7 @@ class ReportsDialog(QDialog):
             QMessageBox.warning(self, "خطا", f"خروجی گرفتن ناموفق بود:\n{e}")
             return
         QMessageBox.information(self, "انجام شد", f"فایل خروجی ذخیره شد:\n{path}")
+
+
+# نام قدیمی برای سازگاری با کدی که هنوز دیالوگ را ایمپورت می‌کند.
+ReportsDialog = ReportsPage

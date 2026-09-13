@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QListWidget, QListWidgetItem, QMessageBox,
     QGroupBox, QMenu, QTreeWidget, QTreeWidgetItem, QInputDialog, QDialog,
-    QGridLayout, QComboBox, QScrollArea, QSizePolicy, QSplitter
+    QGridLayout, QComboBox, QScrollArea, QSizePolicy, QSplitter, QStackedWidget
 )
 from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon, QDrag, QFontMetrics, QPainter, QPen, QColor, QPolygonF
 from PyQt6.QtCore import Qt, QSize, QMimeData, QPointF, QRectF, QTimer, pyqtSignal
@@ -27,14 +27,14 @@ try:
     from nvr_webview_dialog import NVRWebViewDialog, _WEBENGINE_AVAILABLE
 except ImportError:
     NVRWebViewDialog, _WEBENGINE_AVAILABLE = None, False
-from face_library_dialog import FaceLibraryDialog
+from face_library_dialog import FaceLibraryPage
 from report_store import report_store
-from reports_dialog import ReportsDialog
+from reports_dialog import ReportsPage
 from nvr_storage_dialog import NVRStorageDialog
 from device_detect import DeviceDetectThread
 from fire_alarm_store import FireAlarmStore
 from fire_alarm_io import FireAlarmMonitorThread
-from fire_alarm_dialog import FireAlarmDialog
+from fire_alarm_dialog import FireAlarmPage
 
 # بهینه‌سازی برای سیستم‌های ضعیف (رم کم / بدون کارت گرافیک):
 # OpenCV به‌صورت پیش‌فرض برای عملیات داخلی (resize، cvtColor و ...) روی *تمام*
@@ -1503,7 +1503,8 @@ class MainWindow(QMainWindow):
         # رفع درخواست «سیستم تشخیص دود و اعلام حریق»: پنل‌های ذخیره‌شده از
         # اجراهای قبلی، مانیتور پس‌زمینه‌ی هرکدام همین لحظه شروع می‌شود -
         # دقیقاً مثل بارگذاری خودکار دوربین‌ها/NVRها. نمایش خودِ لیست حالا در
-        # صفحه‌ی جداگانه‌ی FireAlarmDialog انجام می‌شود (هنگام باز شدن آن).
+        # صفحه‌ی جداگانه‌ی FireAlarmPage انجام می‌شود (هنگام باز شدن آن از
+        # هدر، متد refresh صفحه صدا زده می‌شود).
         for panel in self.fire_alarm_store.panels:
             self._start_fire_alarm_monitor(panel)
 
@@ -1511,7 +1512,7 @@ class MainWindow(QMainWindow):
 
     def init_ui(self):
         main_widget = QWidget()
-        main_layout = QHBoxLayout()
+        main_layout = QVBoxLayout()
 
         left_panel = QVBoxLayout()
 
@@ -1599,46 +1600,10 @@ class MainWindow(QMainWindow):
         cam_group.setLayout(cam_layout)
         left_panel.addWidget(cam_group)
 
-        # رفع درخواست: «🔥 اعلام حریق»، «👤 چهره» و «📊 گزارش‌ها» باید سه صفحه‌ی
-        # کاملاً جدا داشته باشند - نه سه تب کنار هم در یک QTabWidget مشترک.
-        # به همین دلیل هرکدام حالا یک QGroupBox مستقل با یک دکمه‌ی «باز کردن»
-        # است که صفحه‌ی خودش را به‌صورت یک دیالوگ جداگانه (پنجره‌ی مستقل) باز
-        # می‌کند - دقیقاً مثل الگوی موجود «چهره»/«گزارش‌ها» که قبلاً هم از
-        # طریق دیالوگ (FaceLibraryDialog/ReportsDialog) باز می‌شدند؛ حالا
-        # «اعلام حریق» هم همین الگو را می‌گیرد (رجوع کنید به
-        # fire_alarm_dialog.py).
-
-        fire_alarm_group = QGroupBox("🔥 اعلام حریق")
-        fire_alarm_layout = QVBoxLayout()
-        # رفع درخواست «سیستم تشخیص دود و اعلام حریق» - جدا از تشخیص تصویری
-        # که همیشه روی هر دوربین فعال است (نیازی به افزودن جداگانه ندارد)؛
-        # این صفحه فقط برای اتصال به سخت‌افزار *فیزیکی* موجود (پنل/دتکتور
-        # دود، از طریق ورودی آلارم یک NVR/دوربین یا یک ماژول رله Modbus) است
-        # - رجوع کنید به fire_alarm_io.py.
-        self.fire_alarm_btn = QPushButton("🔥 مدیریت پنل‌های اعلام حریق")
-        self.fire_alarm_btn.clicked.connect(self.open_fire_alarm_panels)
-        fire_alarm_layout.addWidget(self.fire_alarm_btn)
-        fire_alarm_group.setLayout(fire_alarm_layout)
-        left_panel.addWidget(fire_alarm_group)
-
-        face_group = QGroupBox("👤 چهره")
-        face_layout = QVBoxLayout()
-        self.face_library_btn = QPushButton("باز کردن Face Library")
-        self.face_library_btn.clicked.connect(self.open_face_library)
-        face_layout.addWidget(self.face_library_btn)
-        face_group.setLayout(face_layout)
-        left_panel.addWidget(face_group)
-
-        # گزارش‌ها: تاریخچه‌ی دائمیِ ثبت‌شده (شمارش نفرات، ورود به محدوده،
-        # چهره‌ی شناخته‌شده/تعریف‌نشده، آتش/دود) - رجوع کنید به
-        # report_store.py و reports_dialog.py.
-        reports_group = QGroupBox("📊 گزارش‌ها")
-        reports_layout = QVBoxLayout()
-        self.reports_btn = QPushButton("📊 مشاهده و خروجی گزارش‌ها")
-        self.reports_btn.clicked.connect(self.open_reports)
-        reports_layout.addWidget(self.reports_btn)
-        reports_group.setLayout(reports_layout)
-        left_panel.addWidget(reports_group)
+        # «🔥 اعلام حریق»، «👤 چهره‌ها» و «📊 گزارش‌ها» دیگر در پنل چپ
+        # نیستند؛ هرکدام صفحه‌ی جداگانه‌ی خودشان را دارند و از هدر بالای
+        # برنامه (دکمه‌های ناوبری) قابل دسترسی‌اند - رجوع کنید به انتهای
+        # init_ui (QStackedWidget) و متد show_page.
 
         # ------------------------------------------------ ستون میانی: شبکه‌ی
         # نمایش هم‌زمان دوربین‌ها با تعداد خانه‌ی قابل انتخاب.
@@ -1646,7 +1611,7 @@ class MainWindow(QMainWindow):
         grid_toolbar = QHBoxLayout()
 
         # دکمه‌ی نمایش/مخفی‌کردن پنل کناری سمت چپ (اسکن شبکه، دوربین‌ها و
-        # NVRهای من، Face Library). با کلیک روی این دکمه، عرض پنل چپ صفر یا
+        # NVRهای من). با کلیک روی این دکمه، عرض پنل چپ صفر یا
         # به اندازه‌ی قبلی‌اش برمی‌گردد تا کاربر در صورت نیاز فضای بیشتری
         # برای تصویر دوربین‌ها در وسط داشته باشد.
         self.sidebar_toggle_btn = QPushButton("☰")
@@ -1929,10 +1894,36 @@ class MainWindow(QMainWindow):
         # مجدد روی دکمه‌ی sidebar نگه‌داشته می‌شود.
         self._left_panel_width = left_w
 
-        main_layout.addWidget(self.splitter)
+        # -------------------------------------------- صفحه‌ها + هدر بالای برنامه --
+        # محتوای قبلی پنجره (پنل چپ + شبکه‌ی دوربین‌ها + پنل راست) حالا «صفحه‌ی
+        # اصلی» است؛ «اعلام حریق»، «چهره‌ها» و «گزارش‌ها» هرکدام صفحه‌ی
+        # جداگانه‌ی خودشان را دارند و از هدر بالای برنامه (دکمه‌های ناوبری)
+        # قابل دسترسی‌اند.
+        home_widget = QWidget()
+        home_layout = QHBoxLayout(home_widget)
+        home_layout.setContentsMargins(0, 0, 0, 0)
+        home_layout.addWidget(self.splitter)
+
+        self.pages = QStackedWidget()
+        self.pages.addWidget(home_widget)
+        self.fire_page = FireAlarmPage(
+            self.fire_alarm_store, self._start_fire_alarm_monitor,
+            self._stop_fire_alarm_monitor,
+        )
+        self.pages.addWidget(self.fire_page)
+        self.face_page = FaceLibraryPage(self.face_engine, self.get_active_camera_frame)
+        self.pages.addWidget(self.face_page)
+        # camera_store به صفحه‌ی گزارش‌ها پاس داده می‌شود تا برای دکمه‌ی
+        # «پخش ویدیوی NVR»، اطلاعات اتصال NVR مربوط به هر رویداد را پیدا کند.
+        self.reports_page = ReportsPage(report_store, self.camera_store)
+        self.pages.addWidget(self.reports_page)
+
+        main_layout.addWidget(self._build_header())
+        main_layout.addWidget(self.pages, 1)
 
         main_widget.setLayout(main_layout)
         self.setCentralWidget(main_widget)
+        self.show_page("home")
 
     def toggle_sidebar(self):
         """رفع درخواست: نمایش/مخفی‌کردن پنل کناری سمت چپ با کلیک روی دکمه‌ی
@@ -2189,17 +2180,6 @@ class MainWindow(QMainWindow):
             self.fire_panel_list.takeItem(self.fire_panel_list.count() - 1)
 
     # ---------------------------------------------- پنل‌های فیزیکی اعلام حریق -
-
-    def open_fire_alarm_panels(self):
-        """صفحه‌ی جداگانه‌ی مدیریت پنل‌های اعلام حریق (افزودن/حذف) - دقیقاً
-        هم‌الگو با open_face_library/open_reports پایین‌تر. شروع/توقف ترد
-        مانیتور پس‌زمینه‌ی هر پنل همچنان اینجا (سطح MainWindow) مدیریت
-        می‌شود و به دیالوگ به‌صورت callback پاس داده می‌شود."""
-        dialog = FireAlarmDialog(
-            self.fire_alarm_store, self._start_fire_alarm_monitor,
-            self._stop_fire_alarm_monitor, self
-        )
-        dialog.exec()
 
     def _start_fire_alarm_monitor(self, panel):
         """رفع درخواست «سیستم تشخیص دود و اعلام حریق»: برای این پنل یک ترد
@@ -2851,15 +2831,50 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------ face library ---
 
-    def open_face_library(self):
-        dialog = FaceLibraryDialog(self.face_engine, self.get_active_camera_frame, self)
-        dialog.exec()
+    # --------------------------------------------------- ناوبری هدر/صفحه‌ها --
 
-    def open_reports(self):
-        # camera_store پاس داده می‌شود تا دیالوگ گزارش‌ها بتواند برای دکمه‌ی
-        # «پخش ویدیوی NVR»، اطلاعات اتصال NVR مربوط به هر رویداد را پیدا کند.
-        dialog = ReportsDialog(report_store, self.camera_store, self)
-        dialog.exec()
+    def _build_header(self):
+        """هدر بالای برنامه: دکمه‌های ناوبری بین صفحه‌ی اصلی (دوربین‌ها) و
+        سه صفحه‌ی جداگانه‌ی «اعلام حریق»، «چهره‌ها» و «گزارش‌ها»."""
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(8, 4, 8, 4)
+
+        title = QLabel("🎥 IAS-CMS")
+        title.setStyleSheet("font-size: 15px; font-weight: bold;")
+        header_layout.addWidget(title)
+        header_layout.addStretch()
+
+        self.nav_buttons = {}
+        for key, label in (
+            ("home", "🏠 صفحه اصلی"),
+            ("fire", "🔥 اعلام حریق"),
+            ("face", "👤 چهره‌ها"),
+            ("reports", "📊 گزارش‌ها"),
+        ):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.setStyleSheet(
+                "QPushButton{padding: 6px 14px; border-radius: 6px; font-size: 12px;}"
+                "QPushButton:checked{background: #2f81f7; color: white; font-weight: bold;}"
+            )
+            btn.clicked.connect(lambda _checked=False, _key=key: self.show_page(_key))
+            header_layout.addWidget(btn)
+            self.nav_buttons[key] = btn
+        return header
+
+    def show_page(self, key):
+        """تغییر صفحه‌ی فعال از طریق هدر؛ هر صفحه هنگام نمایش، داده‌هایش را
+        با متد refresh خودش تازه می‌کند."""
+        index = {"home": 0, "fire": 1, "face": 2, "reports": 3}[key]
+        page = self.pages.widget(index)
+        refresh = getattr(page, "refresh", None)
+        if callable(refresh):
+            refresh()
+        self.pages.setCurrentIndex(index)
+        for k, btn in self.nav_buttons.items():
+            btn.setChecked(k == key)
 
     def on_face_event(self, cam, person, crop_frame):
         """برای هر چهره‌ای که هر یک از دوربین‌ها ببیند (شناخته‌شده یا
