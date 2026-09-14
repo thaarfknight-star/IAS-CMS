@@ -192,14 +192,45 @@ def get_shared_plate_detector():
 # --------------------------------------------------------------------------
 
 def _preprocess_for_ocr(crop):
-    """بزرگ‌نمایی کراپ‌های کوچک + کنتراست؛ ورودی/خروجی BGR."""
+    """آماده‌سازی کراپ پلاک برای OCR: بزرگ‌نمایی + خاکستری + کنتراست
+    + حاشیه. ورودی/خروجی BGR."""
     h, w = crop.shape[:2]
     if h <= 0 or w <= 0:
         return crop
-    if cv2 is not None and h < 96:
-        scale = 96.0 / h
-        crop = cv2.resize(crop, (int(w * scale), 96), interpolation=cv2.INTER_CUBIC)
+    if cv2 is not None:
+        # بزرگ‌نمایی کراپ‌های کوچک (متن ریز بهتر خوانده می‌شود)
+        if h < 128:
+            scale = 128.0 / h
+            crop = cv2.resize(crop, (int(w * scale), 128),
+                              interpolation=cv2.INTER_CUBIC)
+        # خاکستری + CLAHE: کنتراست بهتر زیر نورهای مختلف
+        try:
+            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            crop = cv2.cvtColor(clahe.apply(gray), cv2.COLOR_GRAY2BGR)
+        except Exception:
+            pass
+        # حاشیه‌ی روشن دور کراپ (به تشخیص مرز متن کمک می‌کند)
+        try:
+            crop = cv2.copyMakeBorder(crop, 8, 8, 8, 8,
+                                      cv2.BORDER_CONSTANT, value=(255, 255, 255))
+        except Exception:
+            pass
     return crop
+
+
+# حروف مجاز پلاک ایرانی + ارقام فارسی/عربی/لاتین؛ برای محدود کردن خروجی
+# easyocr و کم شدن خروجی‌های بی‌ربط.
+_PLATE_ALLOWLIST = ("ابپتثجچحخدرزژسشصضطظعغفقکگلمنوهی"
+                    "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩0123456789")
+
+
+def ocr_install_status():
+    """وضعیت نصب موتورهای OCR *بدون* بارگذاری سنگین:
+    خروجی (easyocr_installed, rapidocr_installed)."""
+    import importlib.util
+    return (importlib.util.find_spec("easyocr") is not None,
+            importlib.util.find_spec("rapidocr_onnxruntime") is not None)
 
 
 class PlateOCR:
@@ -246,13 +277,24 @@ class PlateOCR:
         if reader is None:
             return []
         try:
-            # detail=1 -> [(box, text, conf)]
-            results = reader.readtext(crop, detail=1)
-            out = []
+            # detail=1 -> [(box, text, conf)]؛ allowlist خروجی بی‌ربط را کم می‌کند
+            results = reader.readtext(crop, detail=1, allowlist=_PLATE_ALLOWLIST)
+            frags = []
             for _box, text, conf in results:
                 t = normalize_plate_text(text)
+                if t:
+                    frags.append((t, float(conf)))
+            out = []
+            for t, conf in frags:
                 if len(t) >= 3:
-                    out.append((t, float(conf), "easyocr-fa"))
+                    out.append((t, conf, "easyocr-fa"))
+            # گاهی پلاک به چند تکه شکسته می‌شود؛ ترکیب همه‌ی تکه‌ها هم به‌عنوان
+            # یک کاندیدا اضافه می‌شود (تطبیق فازی/تأیید چندفریمی داوری می‌کند)
+            if len(frags) > 1:
+                joined = normalize_plate_text("".join(t for t, _ in frags))
+                if len(joined) >= 5:
+                    avg = sum(c for _, c in frags) / len(frags)
+                    out.append((joined, avg * 0.95, "easyocr-fa"))
             return out
         except Exception:
             return []

@@ -510,6 +510,10 @@ class CameraSlotWidget(QWidget):
     # MainWindow._refresh_line_buttons همیشه با وضعیت واقعی هم‌گام بماند.
     tripwire_changed = pyqtSignal()
 
+    # هشدارهای وضعیت پلاک‌خوان فقط یک‌بار در کل برنامه نمایش داده می‌شوند
+    # (کلید: متن پیام) تا با چند دوربین، دیالوگ تکراری باز نشود.
+    _plate_status_warned = set()
+
     def __init__(self, on_clicked, on_close_requested, on_double_clicked=None,
                  on_slot_drag_swap=None, on_camera_drag_drop=None, on_region_alert=None,
                  on_fire_event=None, on_plate_event=None, parent=None):
@@ -1203,6 +1207,12 @@ class CameraSlotWidget(QWidget):
                 self.stream_thread.plate_event_signal,
                 lambda data: plate_event_cb(cam, data),
             )
+        # وضعیت پلاک‌خوان (مثلاً «موتور OCR نصب نیست»): یک‌بار به کاربر
+        # اطلاع داده می‌شود تا باکس خالیِ بی‌صدا نماند.
+        _conn(
+            self.stream_thread.plate_detector_status_signal,
+            lambda available, msg: self._on_plate_detector_status(cam, available, msg),
+        )
         # پلاک‌خوان این دوربین از همان تنظیم ذخیره‌شده (cam["plate_detection"])
         # فعال می‌شود - رجوع کنید به صفحه‌ی «پلاک‌خوان» تب «تعریف پلاک‌ها».
         self.stream_thread.set_plate_detection(bool(cam.get("plate_detection")))
@@ -1230,6 +1240,18 @@ class CameraSlotWidget(QWidget):
 
     def on_error(self, msg):
         self.status_label.setText(f"خطا: {msg}")
+
+    def _on_plate_detector_status(self, cam, available, msg):
+        """نمایش یک‌باره‌ی هشدار وضعیت پلاک‌خوان (مثلاً «موتور OCR نصب نیست»)."""
+        if not msg or msg in CameraSlotWidget._plate_status_warned:
+            return
+        CameraSlotWidget._plate_status_warned.add(msg)
+        cam_name = ""
+        if isinstance(cam, dict):
+            cam_name = cam.get("name") or cam.get("ip", "")
+        QMessageBox.warning(
+            self, "پلاک‌خوان",
+            f"دوربین «{cam_name}»: {msg}" if cam_name else msg)
 
     def on_frame_ready(self, display_frame, raw_frame):
         self.latest_raw_frame = raw_frame

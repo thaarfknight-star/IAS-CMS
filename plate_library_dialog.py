@@ -552,6 +552,12 @@ class PlateLibraryPage(QWidget):
         title.setStyleSheet("font-size: 16px; font-weight: bold; padding: 4px;")
         layout.addWidget(title)
 
+        # وضعیت موتور خوانش متن (بدون بارگذاری سنگین؛ فقط بررسی نصب بودن)
+        self.ocr_status_label = QLabel(self._ocr_status_text())
+        self.ocr_status_label.setStyleSheet("font-size: 11px; padding: 2px 4px;")
+        self.ocr_status_label.setWordWrap(True)
+        layout.addWidget(self.ocr_status_label)
+
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_define_tab(), "📝 تعریف پلاک‌ها")
         self.tabs.addTab(self._build_report_tab(), "📋 گزارش عبور")
@@ -563,8 +569,24 @@ class PlateLibraryPage(QWidget):
 
         self.refresh()
 
+    def _ocr_status_text(self):
+        """متن وضعیت موتور OCR برای نمایش در هدر صفحه (سبک؛ چیزی لود نمی‌کند)."""
+        try:
+            from plate_detector import ocr_install_status
+            easy, rapid = ocr_install_status()
+        except Exception:
+            easy, rapid = False, False
+        if easy:
+            return "موتور خوانش متن: EasyOCR فارسی ✅ (خوانش پلاک ایرانی فعال است)"
+        if rapid:
+            return ("موتور خوانش متن: RapidOCR ⚠️ (برای پلاک فارسی ضعیف است؛ "
+                    "برای نتیجه‌ی بهتر: pip install easyocr)")
+        return ("موتور خوانش متن: نصب نیست ⚠️ — پلاک پیدا می‌شود ولی متنی خوانده "
+                "نمی‌شود. دستور نصب: pip install easyocr")
+
     def refresh(self):
         """هر بار که صفحه از هدر باز می‌شود صدا زده می‌شود."""
+        self.ocr_status_label.setText(self._ocr_status_text())
         self._reload_camera_checklist()
         self.refresh_plates_table()
         self._reload_report_camera_combo()

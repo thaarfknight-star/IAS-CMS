@@ -572,12 +572,14 @@ class CameraStreamThread(QThread):
         self._last_plate_detections = []  # [(box, text, is_defined)] برای رسم روی تصویر
         self._plate_detector_available = False
         self._plate_detector_status_emitted = False
+        self._plate_ocr_warning_emitted = False
 
     def set_plate_detection(self, enabled: bool):
         """روشن/خاموش کردن پلاک‌خوان برای این دوربین (از صفحه‌ی پلاک‌خوان یا
         شروع پخش با cam["plate_detection"])."""
         self.plate_detection_enabled = bool(enabled)
         if self.plate_detection_enabled and self._plate_tracker is None:
+            self._plate_ocr_warning_emitted = False  # بررسی مجدد وضعیت OCR
             try:
                 from plate_detector import PlateTracker
                 # کول‌داون از تنظیمات plate_store خوانده می‌شود (پیش‌فرض ۴۵ ثانیه)
@@ -740,6 +742,16 @@ class CameraStreamThread(QThread):
                     try:
                         if self._plate_ocr is None:
                             self._plate_ocr = _get_plate_ocr()
+                        # اگر موتور OCR نصب نباشد، باکس خالیِ بی‌صدا نمی‌گذاریم؛
+                        # یک‌بار هشدار واضح می‌دهیم تا کاربر بداند چرا متنی خوانده نمی‌شود
+                        _ocr_ok = bool(self._plate_ocr is not None
+                                       and self._plate_ocr.available)
+                        if not _ocr_ok and not self._plate_ocr_warning_emitted:
+                            self._plate_ocr_warning_emitted = True
+                            self.plate_detector_status_signal.emit(
+                                True,
+                                "موتور OCR نصب نیست؛ فقط کادر پلاک نمایش داده می‌شود. "
+                                "برای خوانش متن پلاک: pip install easyocr")
                         _pevents = self._plate_tracker.update(
                             _pboxes, frame, self._plate_ocr)
                     except Exception:
