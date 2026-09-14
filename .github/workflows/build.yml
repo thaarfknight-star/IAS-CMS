@@ -52,6 +52,11 @@ jobs:
         pip install git+https://github.com/ageitgey/face_recognition_models
         pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
         pip install -r requirements.txt
+        # --- موتور OCR پلاک‌خوان (اجباری برای خوانش متن پلاک) ---
+        # easyocr موتور اصلی خوانش پلاک فارسی است؛ rapidocr سبک و کمکی.
+        # هر دو lazy-load می‌شوند (فقط وقتی پلاک‌خوان یک دوربین فعال شود)
+        # و مدل‌های easyocr در اولین استفاده‌ی واقعی دانلود می‌شوند.
+        pip install easyocr rapidocr-onnxruntime
 
     - name: Cache YOLOv8n weights
       id: yolo-weights-cache
