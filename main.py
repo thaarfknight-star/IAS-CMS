@@ -54,6 +54,15 @@ from plate_library_dialog import PlateLibraryPage
 from person_store import person_store
 from person_track_dialog import PersonTrackPage
 from person_reid import GlobalPersonMatcher
+# رفع درخواست «نقشه‌ی تعاملی ساختمان»: صفحه‌ی جدا با نقشه‌ی هر طبقه (DXF
+# اتوکد/تصویر)، جای‌گذاری دوربین/NVR/رک/سوئیچ، پخش زنده با کلیک روی دوربین
+# نقشه و نمایش مسیر تردد شخص روی نقشه‌ها.
+try:
+    from building_map_dialog import BuildingMapPage
+    _MAP_PAGE_AVAILABLE = True
+except Exception:
+    BuildingMapPage = None
+    _MAP_PAGE_AVAILABLE = False
 from nvr_storage_dialog import NVRStorageDialog
 from device_detect import DeviceDetectThread
 from fire_alarm_store import FireAlarmStore
@@ -2394,8 +2403,17 @@ class MainWindow(QMainWindow):
         # دوربینی که همین حالا باز است.
         self.person_page = PersonTrackPage(
             self.camera_store,
-            on_person_toggle=self._on_camera_person_toggle)
+            on_person_toggle=self._on_camera_person_toggle,
+            on_show_on_map=self._on_person_show_on_map)
         self.pages.addWidget(self.person_page)
+        # رفع درخواست «نقشه‌ی تعاملی ساختمان»: صفحه‌ی هفتم؛ اگر فایل
+        # building_map_dialog.py کنار برنامه نباشد، بدون کرش رد می‌شود.
+        self.map_page = None
+        if _MAP_PAGE_AVAILABLE:
+            self.map_page = BuildingMapPage(
+                self.camera_store,
+                on_camera_click=self._on_map_camera_click)
+            self.pages.addWidget(self.map_page)
 
         main_layout.addWidget(self._build_header())
         main_layout.addWidget(self.pages, 1)
@@ -3424,8 +3442,8 @@ class MainWindow(QMainWindow):
 
     def _build_header(self):
         """هدر بالای برنامه: دکمه‌های ناوبری بین صفحه‌ی اصلی (دوربین‌ها) و
-        پنج صفحه‌ی جداگانه‌ی «اعلام حریق»، «چهره‌ها»، «گزارش‌ها»،
-        «پلاک‌خوان» و «ردیابی اشخاص»."""
+        شش صفحه‌ی جداگانه‌ی «اعلام حریق»، «چهره‌ها»، «گزارش‌ها»،
+        «پلاک‌خوان»، «ردیابی اشخاص» و «نقشه ساختمان»."""
         header = QWidget()
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(8, 4, 8, 4)
@@ -3463,6 +3481,7 @@ class MainWindow(QMainWindow):
             ("reports", "📊 گزارش‌ها"),
             ("plate", "🚗 پلاک‌خوان"),
             ("person", "👥 ردیابی اشخاص"),
+            ("map", "🗺 نقشه ساختمان"),
         ):
             btn = QPushButton(label)
             btn.setCheckable(True)
@@ -3480,7 +3499,13 @@ class MainWindow(QMainWindow):
         """تغییر صفحه‌ی فعال از طریق هدر؛ هر صفحه هنگام نمایش، داده‌هایش را
         با متد refresh خودش تازه می‌کند."""
         index = {"home": 0, "fire": 1, "face": 2, "reports": 3, "plate": 4,
-                 "person": 5}[key]
+                 "person": 5, "map": 6}[key]
+        if key == "map" and self.map_page is None:
+            QMessageBox.warning(
+                self, "صفحه‌ی نقشه در دسترس نیست",
+                "فایل building_map_dialog.py (و building_map.py) کنار برنامه "
+                "پیدا نشد؛ آن‌ها را کنار main.py بگذارید و دوباره اجرا کنید.")
+            return
         page = self.pages.widget(index)
         refresh = getattr(page, "refresh", None)
         if callable(refresh):
@@ -3488,6 +3513,23 @@ class MainWindow(QMainWindow):
         self.pages.setCurrentIndex(index)
         for k, btn in self.nav_buttons.items():
             btn.setChecked(k == key)
+
+    def _on_map_camera_click(self, cam):
+        """کلیک روی دوربین در صفحه‌ی «نقشه ساختمان»: رفتن به صفحه‌ی اصلی و
+        باز کردن پخش زنده‌ی همان دوربین."""
+        self.show_page("home")
+        self.open_live_view(cam)
+
+    def _on_person_show_on_map(self, person_id):
+        """دکمه‌ی «🗺 نمایش روی نقشه» در تب گزارش مسیر حرکت: باز کردن صفحه‌ی
+        نقشه و رسم مسیر تردد همان شخص روی نقشه‌ی طبقات."""
+        if self.map_page is None:
+            QMessageBox.warning(
+                self, "صفحه‌ی نقشه در دسترس نیست",
+                "فایل building_map_dialog.py کنار برنامه پیدا نشد.")
+            return
+        self.show_page("map")
+        self.map_page.show_person_path(person_id)
 
     def on_face_event(self, cam, person, crop_frame):
         """برای هر چهره‌ای که هر یک از دوربین‌ها ببیند (شناخته‌شده یا

@@ -36,10 +36,12 @@ class PersonTrackPage(QWidget):
     PATH_COLUMNS = ["ردیف", "دوربین (اتاق)", "تاریخ ورود (شمسی)",
                     "ساعت ورود", "ساعت خروج", "مدت حضور"]
 
-    def __init__(self, camera_store, on_person_toggle=None, parent=None):
+    def __init__(self, camera_store, on_person_toggle=None, parent=None,
+                 on_show_on_map=None):
         super().__init__(parent)
         self.camera_store = camera_store
         self.on_person_toggle = on_person_toggle  # (cam_id, enabled) -> None
+        self.on_show_on_map = on_show_on_map  # (person_id) -> None: نمایش مسیر روی نقشه ساختمان
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
 
         layout = QVBoxLayout(self)
@@ -353,6 +355,11 @@ class PersonTrackPage(QWidget):
         csv_btn = QPushButton("📥 خروجی CSV")
         csv_btn.clicked.connect(self._export_csv)
         filt.addWidget(csv_btn)
+        # رفع درخواست «نقشه‌ی تعاملی ساختمان»: نمایش مسیر شخص انتخاب‌شده
+        # روی نقشه‌ی طبقات.
+        self.map_btn = QPushButton("🗺 نمایش روی نقشه")
+        self.map_btn.clicked.connect(self._show_path_on_map)
+        filt.addWidget(self.map_btn)
         filt.addStretch()
         layout.addLayout(filt)
 
@@ -433,6 +440,21 @@ class PersonTrackPage(QWidget):
             self.path_summary.setText(f"{len(rows)} حضور در بازه‌ی انتخاب‌شده پیدا شد.")
         else:
             self.path_summary.setText("در بازه‌ی انتخاب‌شده حضوری ثبت نشده است.")
+
+    def _show_path_on_map(self):
+        """دکمه‌ی «🗺 نمایش روی نقشه»: مسیر شخص انتخاب‌شده را روی نقشه‌ی
+        ساختمان رسم می‌کند (از طریق کال‌بک main)."""
+        pid = self.path_person_combo.currentData()
+        if not pid:
+            QMessageBox.information(self, "شخصی انتخاب نشده",
+                                    "اول از لیست «شخص»، یک شخص انتخاب کنید.")
+            return
+        if callable(self.on_show_on_map):
+            self.on_show_on_map(pid)
+        else:
+            QMessageBox.information(
+                self, "نقشه در دسترس نیست",
+                "صفحه‌ی «نقشه ساختمان» در این نسخه فعال نیست.")
 
     def _export_csv(self):
         pid = self.path_person_combo.currentData()
