@@ -48,6 +48,12 @@ from reports_dialog import ReportsPage
 # «تعریف پلاک‌ها» و «گزارش عبور» + دیتابیس SQLite پلاک‌ها/رویدادها.
 from plate_store import plate_store
 from plate_library_dialog import PlateLibraryPage
+# رفع درخواست «ردیابی اشخاص بین دوربین‌ها»: صفحه‌ی جدا (مثل پلاک‌خوان) با دو
+# تب «اشخاص ردیابی‌شده» و «گزارش مسیر حرکت» + دیتابیس SQLite اشخاص/حضورها +
+# تطبیق ظاهری بدون چهره (person_reid).
+from person_store import person_store
+from person_track_dialog import PersonTrackPage
+from person_reid import GlobalPersonMatcher
 from nvr_storage_dialog import NVRStorageDialog
 from device_detect import DeviceDetectThread
 from fire_alarm_store import FireAlarmStore
@@ -516,7 +522,8 @@ class CameraSlotWidget(QWidget):
 
     def __init__(self, on_clicked, on_close_requested, on_double_clicked=None,
                  on_slot_drag_swap=None, on_camera_drag_drop=None, on_region_alert=None,
-                 on_fire_event=None, on_plate_event=None, parent=None):
+                 on_fire_event=None, on_plate_event=None, on_person_event=None,
+                 parent=None):
         super().__init__(parent)
         self.cam = None
         self.stream_thread = None
@@ -567,6 +574,10 @@ class CameraSlotWidget(QWidget):
         # تعریف‌نشده) ثبت و در گزارش عبور نمایش داده شود. نام عمداً با متد
         # واکنشی سیگنال (_on_plate_event پایین‌تر) متفاوت است تا override نشود.
         self._plate_event_cb = on_plate_event
+        # رفع درخواست «ردیابی اشخاص»: با هر رد تازه‌تأییدشده/تمام‌شده روی این
+        # خانه، این callback (در MainWindow) صدا زده می‌شود تا تطبیق بین
+        # دوربینی و ثبت «حضور» در person_store انجام شود.
+        self._person_event_cb = on_person_event
         # رفع درخواست: وضعیت روشن/خاموش بودن «شمارش افراد Real Time» برای این
         # خانه؛ چون خانه‌ها هنگام عوض شدن تعداد شبکه (set_grid_size) از نو
         # ساخته می‌شوند، این وضعیت فقط تا وقتی همین خانه/دوربین برقرار است
@@ -1056,6 +1067,14 @@ class CameraSlotWidget(QWidget):
         if self.stream_thread is not None:
             self.stream_thread.set_plate_detection(enabled)
 
+    def set_person_tracking(self, enabled: bool):
+        """رفع درخواست «ردیابی اشخاص»: روشن/خاموش کردن زنده‌ی ردیابی اشخاص
+        برای دوربینِ همین خانه (از صفحه‌ی «ردیابی اشخاص» تب «اشخاص»)؛
+        روی ترد پخشِ جاری اعمال می‌شود و در cam ذخیره نمی‌شود (ذخیره با
+        camera_store.update_camera در همان صفحه انجام شده)."""
+        if self.stream_thread is not None:
+            self.stream_thread.set_person_tracking(enabled)
+
     def on_people_count(self, count):
         # رفع باگ «کسی تو اتاقه ولی صفر نشون می‌داد»: این عدد از تشخیص‌دهنده‌ی
         # شخص/بدن کامل (PersonDetector در person_detector.py) می‌آید که همه‌ی
@@ -1149,7 +1168,7 @@ class CameraSlotWidget(QWidget):
         return connect
 
     def start(self, cam: dict, rtsp_url: str, face_engine: FaceEngine, face_event_cb,
-              plate_event_cb=None):
+              plate_event_cb=None, person_event_cb=None):
         self._stream_seq += 1
         _seq = self._stream_seq
         _conn = self._guarded_connect(_seq)
@@ -1216,6 +1235,19 @@ class CameraSlotWidget(QWidget):
         # پلاک‌خوان این دوربین از همان تنظیم ذخیره‌شده (cam["plate_detection"])
         # فعال می‌شود - رجوع کنید به صفحه‌ی «پلاک‌خوان» تب «تعریف پلاک‌ها».
         self.stream_thread.set_plate_detection(bool(cam.get("plate_detection")))
+        # رفع درخواست «ردیابی اشخاص»: مثل plate_event با محافظ نسل وصل
+        # می‌شود تا رویداد ردِ ترد قبلی به دوربین جدید نرسد؛ cam (کل
+        # دیکشنری دوربین) پاس داده می‌شود تا نام دوربین و nvr_id/channel در
+        # گزارش مسیر حرکت ثبت شود.
+        if person_event_cb is not None:
+            _conn(
+                self.stream_thread.person_event_signal,
+                lambda data: person_event_cb(cam, data),
+            )
+        # ردیابی اشخاص این دوربین از همان تنظیم ذخیره‌شده
+        # (cam["person_tracking"]) فعال می‌شود - رجوع کنید به صفحه‌ی
+        # «ردیابی اشخاص» تب «اشخاص ردیابی‌شده».
+        self.stream_thread.set_person_tracking(bool(cam.get("person_tracking")))
         self.stream_thread.start()
         # رفع درخواست: اگر برای این دوربین قبلاً محدوده‌های هشدار رسم و
         # ذخیره شده باشند (cameras.json)، همان لحظه‌ی اتصال دوباره روی ترد
@@ -1445,6 +1477,14 @@ class CameraSlotWidget(QWidget):
             pass
 
     def stop(self):
+        # رفع درخواست «ردیابی اشخاص»: قبل از بالا بردن نسل استریم (که
+        # رویدادهای بعدی را با _guarded_connect نادیده می‌گیرد)، ردهای باز
+        # را می‌بندیم تا «حضور»هایشان در دیتابیس بسته شوند.
+        if self.stream_thread is not None:
+            try:
+                self.stream_thread.flush_person_tracks()
+            except Exception:
+                pass
         # نسل استریم را همین‌جا بالا می‌بریم تا هر رویداد جامانده‌ی ترد قبلی
         # که هنوز در صف GUI است، با _guarded_connect نادیده گرفته شود (رفع
         # باگ «یک فریم از دوربین قبلی در کادر می‌ماند»).
@@ -1582,7 +1622,8 @@ class CameraGridWidget(QWidget):
     tripwire_changed = pyqtSignal()
 
     def __init__(self, face_engine: FaceEngine, on_face_event, on_external_camera_drop=None,
-                 on_region_alert=None, on_fire_event=None, on_plate_event=None, parent=None):
+                 on_region_alert=None, on_fire_event=None, on_plate_event=None,
+                 on_person_event=None, parent=None):
         super().__init__(parent)
         self.face_engine = face_engine
         self.on_face_event = on_face_event
@@ -1597,6 +1638,10 @@ class CameraGridWidget(QWidget):
         # به هر خانه‌ی تازه‌ساخته‌شده پاس داده می‌شود تا عبور پلاک‌ها
         # (تعریف‌شده/تعریف‌نشده) ثبت و گزارش شود.
         self.on_plate_event = on_plate_event
+        # رفع درخواست «ردیابی اشخاص»: callback رویداد رد (در MainWindow) به
+        # هر خانه‌ی تازه‌ساخته‌شده پاس داده می‌شود تا تطبیق بین دوربینی و
+        # ثبت «حضور» در person_store انجام شود.
+        self.on_person_event = on_person_event
         # رفع درخواست: وقتی موردی از لیست دوربین‌ها (خارج از شبکه‌ی نمایش) روی
         # یک خانه رها (drop) شود، این callback (در MainWindow) صدا زده می‌شود
         # تا رمز عبور را در صورت نیاز بپرسد و آدرس RTSP را بسازد.
@@ -1655,6 +1700,7 @@ class CameraGridWidget(QWidget):
                     on_region_alert=self.on_region_alert,
                     on_fire_event=self.on_fire_event,
                     on_plate_event=self.on_plate_event,
+                    on_person_event=self.on_person_event,
                 )
                 slot.slot_index = len(self.slots)
                 slot.tripwire_changed.connect(self.tripwire_changed.emit)
@@ -1691,7 +1737,7 @@ class CameraGridWidget(QWidget):
 
         for i, slot in enumerate(self.slots):
             if slot.cam is None:
-                slot.start(cam, rtsp_url, self.face_engine, self.on_face_event, self.on_plate_event)
+                slot.start(cam, rtsp_url, self.face_engine, self.on_face_event, self.on_plate_event, self.on_person_event)
                 # اعمال وضعیت فعلیِ دکمه‌ی سراسریِ شمارش افراد روی دوربین
                 # تازه‌باز.
                 slot.set_people_counting(self._people_counting_enabled)
@@ -1718,7 +1764,7 @@ class CameraGridWidget(QWidget):
                 return
         target = self.slots[slot_index]
         target.stop()
-        target.start(cam, rtsp_url, self.face_engine, self.on_face_event, self.on_plate_event)
+        target.start(cam, rtsp_url, self.face_engine, self.on_face_event, self.on_plate_event, self.on_person_event)
         target.set_people_counting(self._people_counting_enabled)
         self._select_index(slot_index)
 
@@ -1742,10 +1788,10 @@ class CameraGridWidget(QWidget):
         slot_a.stop()
         slot_b.stop()
         if cam_b is not None:
-            slot_a.start(cam_b, url_b, self.face_engine, self.on_face_event, self.on_plate_event)
+            slot_a.start(cam_b, url_b, self.face_engine, self.on_face_event, self.on_plate_event, self.on_person_event)
             slot_a.set_people_counting(self._people_counting_enabled)
         if cam_a is not None:
-            slot_b.start(cam_a, url_a, self.face_engine, self.on_face_event, self.on_plate_event)
+            slot_b.start(cam_a, url_a, self.face_engine, self.on_face_event, self.on_plate_event, self.on_person_event)
             slot_b.set_people_counting(self._people_counting_enabled)
 
         if self.selected_index == idx_a:
@@ -1856,6 +1902,14 @@ class MainWindow(QMainWindow):
 
         self.face_engine = FaceEngine()
         self.camera_store = CameraStore()
+        # رفع درخواست «ردیابی اشخاص بین دوربین‌ها»: تطبیق‌دهنده‌ی سراسری
+        # ظاهری (یک نمونه برای کل برنامه، در ترد اصلی) + نگاشت ردهای فعال
+        # هر دوربین: (cam_id, local_id) -> {person_id, sighting_id, slot}
+        # تا «حضور»ها با ورود/خروج دقیق ثبت و کد شخص روی تصویر به‌روز شود.
+        self._person_matcher = GlobalPersonMatcher(
+            threshold=person_store.match_threshold,
+            window_s=person_store.link_window_min * 60.0)
+        self._active_person_tracks = {}
         # رفع درخواست «سیستم تشخیص دود و اعلام حریق»: لیست پنل‌ها/سنسورهای
         # فیزیکی اعلام حریق کاربر + تردهای پس‌زمینه‌ی مانیتور هرکدام
         # (panel_id -> FireAlarmMonitorThread) - رجوع کنید به
@@ -2198,6 +2252,7 @@ class MainWindow(QMainWindow):
             on_region_alert=self.on_region_alert,
             on_fire_event=self.on_fire_event,
             on_plate_event=self.on_plate_event,
+            on_person_event=self.on_person_event,
         )
         self.camera_grid.selection_changed.connect(lambda _idx: self._refresh_line_buttons())
         self.camera_grid.tripwire_changed.connect(self._refresh_line_buttons)
@@ -2333,6 +2388,14 @@ class MainWindow(QMainWindow):
             self.get_active_camera_frame, self.camera_store,
             on_plate_toggle=self._on_camera_plate_toggle)
         self.pages.addWidget(self.plate_page)
+        # رفع درخواست «ردیابی اشخاص بین دوربین‌ها»: صفحه‌ی جدا (مثل
+        # پلاک‌خوان) با دو تب «اشخاص ردیابی‌شده» و «گزارش مسیر حرکت»؛
+        # on_person_toggle برای اعمال زنده‌ی فعال/غیرفعال شدن ردیابی روی
+        # دوربینی که همین حالا باز است.
+        self.person_page = PersonTrackPage(
+            self.camera_store,
+            on_person_toggle=self._on_camera_person_toggle)
+        self.pages.addWidget(self.person_page)
 
         main_layout.addWidget(self._build_header())
         main_layout.addWidget(self.pages, 1)
@@ -3311,7 +3374,8 @@ class MainWindow(QMainWindow):
 
     def _build_header(self):
         """هدر بالای برنامه: دکمه‌های ناوبری بین صفحه‌ی اصلی (دوربین‌ها) و
-        چهار صفحه‌ی جداگانه‌ی «اعلام حریق»، «چهره‌ها»، «گزارش‌ها» و «پلاک‌خوان»."""
+        پنج صفحه‌ی جداگانه‌ی «اعلام حریق»، «چهره‌ها»، «گزارش‌ها»،
+        «پلاک‌خوان» و «ردیابی اشخاص»."""
         header = QWidget()
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(8, 4, 8, 4)
@@ -3348,6 +3412,7 @@ class MainWindow(QMainWindow):
             ("face", "👤 چهره‌ها"),
             ("reports", "📊 گزارش‌ها"),
             ("plate", "🚗 پلاک‌خوان"),
+            ("person", "👥 ردیابی اشخاص"),
         ):
             btn = QPushButton(label)
             btn.setCheckable(True)
@@ -3364,7 +3429,8 @@ class MainWindow(QMainWindow):
     def show_page(self, key):
         """تغییر صفحه‌ی فعال از طریق هدر؛ هر صفحه هنگام نمایش، داده‌هایش را
         با متد refresh خودش تازه می‌کند."""
-        index = {"home": 0, "fire": 1, "face": 2, "reports": 3, "plate": 4}[key]
+        index = {"home": 0, "fire": 1, "face": 2, "reports": 3, "plate": 4,
+                 "person": 5}[key]
         page = self.pages.widget(index)
         refresh = getattr(page, "refresh", None)
         if callable(refresh):
@@ -3444,6 +3510,85 @@ class MainWindow(QMainWindow):
                     slot.set_plate_detection(enabled)
         except Exception as e:
             print(f"خطا در اعمال پلاک‌خوان روی دوربین باز: {e}")
+
+    def on_person_event(self, cam, data):
+        """برای هر رد تازه‌تأییدشده/تمام‌شده‌ی اشخاص که یکی از دوربین‌های
+        فعالِ ردیابی ببیند فراخوانی می‌شود. data دیکشنری {"type":
+        "confirmed"/"ended", "local_id", ...} است (رجوع کنید به
+        camera_stream.py). تطبیق بین دوربینی (ظاهری، بدون چهره) + ثبت
+        «حضور» (ورود/خروج با ساعت دقیق) در person_store همین‌جا — در ترد
+        اصلی — انجام می‌شود؛ اگر صفحه‌ی «ردیابی اشخاص» باز باشد، جدول‌هایش
+        هم زنده تازه می‌شوند."""
+        try:
+            etype = (data or {}).get("type")
+            cam_id = cam.get("id") if isinstance(cam, dict) else None
+            camera_name = (cam.get("name") or cam.get("ip") or "") \
+                if isinstance(cam, dict) else ""
+            key = (cam_id, data.get("local_id"))
+            if etype == "confirmed":
+                desc = data.get("descriptor") or {}
+                vector = desc.get("vector")
+                if vector is None:
+                    return
+                ts = time.time()
+                person_id, _dist = self._person_matcher.find_match(
+                    vector, camera_name, ts)
+                is_new = person_id is None
+                if is_new:
+                    person_id = person_store.add_person(
+                        desc, thumb_bgr=data.get("crop"))
+                    self._person_matcher.register(
+                        person_id, vector, camera_name, ts)
+                sighting_id = person_store.start_sighting(
+                    person_id, camera_name,
+                    nvr_id=(cam.get("nvr_id") or "") if isinstance(cam, dict) else "",
+                    channel=(cam.get("channel") if isinstance(cam, dict) else None),
+                    snapshot_bgr=data.get("crop"))
+                # کد یکتای شخص را روی باکس تصویر همان دوربین بنویس
+                for slot in self.camera_grid.slots:
+                    if slot.cam is not None and slot.cam.get("id") == cam_id \
+                            and slot.stream_thread is not None:
+                        slot.stream_thread.set_person_track_label(
+                            data.get("local_id"), person_id)
+                        break
+                self._active_person_tracks[key] = {
+                    "person_id": person_id, "sighting_id": sighting_id}
+            elif etype == "ended":
+                info = self._active_person_tracks.pop(key, None)
+                if info is not None:
+                    person_store.end_sighting(info["sighting_id"])
+            else:
+                return
+            # اگر کاربر همین حالا صفحه‌ی «ردیابی اشخاص» را می‌بیند،
+            # جدول‌ها را زنده تازه کن.
+            try:
+                if (hasattr(self, "person_page") and self.person_page is not None
+                        and self.pages.currentWidget() is self.person_page):
+                    self.person_page.refresh_persons_table()
+                    self.person_page._reload_path_person_combo()
+                    self.person_page.run_path_search()
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"خطا در ثبت رویداد ردیابی اشخاص: {e}")
+
+    def _on_camera_person_toggle(self, cam_id, enabled):
+        """اعمال زنده‌ی تیک «ردیابی اشخاص» صفحه‌ی ردیابی اشخاص روی دوربینی
+        که همین حالا در شبکه‌ی نمایش باز است (بدون نیاز به بستن/باز کردن
+        دوباره). با خاموش شدن، ردهای باز آن دوربین بسته می‌شوند."""
+        try:
+            for slot in self.camera_grid.slots:
+                if slot.cam is not None and slot.cam.get("id") == cam_id:
+                    slot.cam["person_tracking"] = bool(enabled)
+                    slot.set_person_tracking(enabled)
+                    if not enabled:
+                        # «حضور»های باز این دوربین را ببند
+                        for key in [k for k in self._active_person_tracks
+                                    if k[0] == cam_id]:
+                            info = self._active_person_tracks.pop(key)
+                            person_store.end_sighting(info["sighting_id"])
+        except Exception as e:
+            print(f"خطا در اعمال ردیابی اشخاص روی دوربین باز: {e}")
 
     # ------------------------------------------------------------- scan ---
 

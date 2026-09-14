@@ -484,6 +484,9 @@ class CameraStreamThread(QThread):
     #    "conf": اطمینان, "crop": تصویر برش‌خورده‌ی پلاک}
     # تطبیق با پلاک‌های تعریف‌شده و ثبت رویداد در main.py انجام می‌شود.
     plate_event_signal = pyqtSignal(object)
+    # رویدادهای ردیابی اشخاص (بدون چهره): {"type": "confirmed"/"ended", ...}
+    # تطبیق بین دوربینی + ثبت در person_store در main.py (ترد اصلی) است.
+    person_event_signal = pyqtSignal(object)
     # وضعیت در دسترس بودن مدل پلاک (فقط یک‌بار بعد از اولین تلاش واقعی) تا
     # در نبود مدل، روی تایل پیام روشن نمایش داده شود نه سکوت.
     plate_detector_status_signal = pyqtSignal(bool, str)  # (available, error_message)
@@ -573,6 +576,54 @@ class CameraStreamThread(QThread):
         self._plate_detector_available = False
         self._plate_detector_status_emitted = False
         self._plate_ocr_warning_emitted = False
+
+        # --- ردیابی اشخاص بین دوربین‌ها (اختیاری، پیش‌فرض خاموش؛ بدون چهره) ---
+        # مثل PlateTracker، ردیاب محلیِ چندفریمی برای هر دوربین نمونه‌ی جداست
+        # (حالت زمانی دارد)؛ تطبیق سراسری بین دوربینی در main.py است.
+        self.person_tracking_enabled = False
+        self._person_local_tracker = None
+        self._person_draw_list = []  # [(box, label, shirt_color)] برای رسم روی تصویر
+
+    def set_person_tracking(self, enabled: bool):
+        """روشن/خاموش کردن ردیابی اشخاص برای این دوربین (از صفحه‌ی
+        «ردیابی اشخاص» یا شروع پخش با cam["person_tracking"])."""
+        self.person_tracking_enabled = bool(enabled)
+        if self.person_tracking_enabled and self._person_local_tracker is None:
+            try:
+                from person_reid import PersonLocalTracker
+                from person_store import person_store as _ps
+                self._person_local_tracker = PersonLocalTracker(
+                    confirm_frames=_ps.confirm_frames)
+            except Exception:
+                try:
+                    from person_reid import PersonLocalTracker as _PLT
+                    self._person_local_tracker = _PLT()
+                except Exception:
+                    self._person_local_tracker = None
+        if not self.person_tracking_enabled:
+            self.flush_person_tracks()
+
+    def flush_person_tracks(self):
+        """بستن همه‌ی ردهای فعال و صدور رویداد ended برایشان تا «حضور»های
+        باز در دیتابیس بسته شوند (هنگام توقف دوربین یا غیرفعال‌سازی ردیابی)."""
+        tracker = self._person_local_tracker
+        self._person_draw_list = []
+        if tracker is None:
+            return
+        try:
+            for _etype, _trk in tracker.flush():
+                self.person_event_signal.emit({
+                    "type": "ended", "local_id": _trk["local_id"]})
+        except Exception:
+            pass
+
+    def set_person_track_label(self, local_id, text):
+        """به‌روزرسانی برچسب نمایشی یک رد (کد یکتای شخص) روی تصویر زنده."""
+        try:
+            if self._person_local_tracker is not None:
+                self._person_local_tracker.set_track_label(local_id, text)
+        except Exception:
+            pass
 
     def set_plate_detection(self, enabled: bool):
         """روشن/خاموش کردن پلاک‌خوان برای این دوربین (از صفحه‌ی پلاک‌خوان یا
@@ -682,6 +733,43 @@ class CameraStreamThread(QThread):
                 h, w = frame.shape[:2]
                 for number, name in self._region_tracker.update(self._last_person_boxes, regions, w, h):
                     self.region_entered.emit(number, name)
+
+            # --- ردیابی اشخاص بین دوربین‌ها (اختیاری، بدون چهره) ---
+            # دقیقاً همان الگوی تشخیص شخص/آتش: در همین ترد پس‌زمینه‌ی تشخیص
+            # (نه ترد اصلی خواندن فریم) اجرا می‌شود تا پخش زنده هرگز منتظرش
+            # نماند. باکس‌های PersonDetector از ردیاب محلی IoU عبور می‌کنند؛
+            # ردهای تأییدشده توصیف‌گر ظاهری (رنگ لباس/شلوار/مو) می‌گیرند و
+            # رویداد confirmed/ended به main.py می‌رود تا تطبیق بین دوربینی
+            # و ثبت «حضور» در person_store همان‌جا (ترد اصلی) انجام شود.
+            if self.person_tracking_enabled and self._person_detector_available:
+                try:
+                    if self._person_local_tracker is None:
+                        self.set_person_tracking(True)
+                    _trk_events, _trk_draw = [], []
+                    if self._person_local_tracker is not None:
+                        _trk_events, _trk_draw = \
+                            self._person_local_tracker.update(
+                                self._last_person_boxes, frame)
+                    self._person_draw_list = _trk_draw
+                    for _etype, _trk in _trk_events:
+                        if _etype == "confirmed":
+                            _desc = _trk.get("descriptor") or {}
+                            self.person_event_signal.emit({
+                                "type": "confirmed",
+                                "local_id": _trk["local_id"],
+                                "box": _trk["box"],
+                                "descriptor": _desc,
+                                "crop": _trk.get("crop"),
+                            })
+                        else:
+                            self.person_event_signal.emit({
+                                "type": "ended",
+                                "local_id": _trk["local_id"],
+                            })
+                except Exception as _pte:
+                    print(f"خطا در ردیابی اشخاص: {_pte}")
+            else:
+                self._person_draw_list = []
 
             # --- تشخیص تصویری آتش/دود: خط لوله‌ی سه‌مرحله‌ای ---
             # ۱) YOLO روی تمام فریم (آتش/دود بزرگ - رفتار قبلی، با آستانه‌ی حساسیت)
@@ -864,6 +952,7 @@ class CameraStreamThread(QThread):
                 or len(self._last_person_boxes) > 0
                 or len(self._last_fire_detections) > 0
                 or len(self._last_plate_detections) > 0
+                or len(self._person_draw_list) > 0
                 or _img_profile is not None
             )
             if _needs_overlay:
@@ -875,7 +964,21 @@ class CameraStreamThread(QThread):
                 # کار است، دقیقاً مثل تشخیص چهره که همیشه فعال است.
                 if self._person_detector_available:
                     try:
-                        _get_person_detector().draw_boxes(display_frame, self._last_person_boxes)
+                        if self.person_tracking_enabled and self._person_draw_list:
+                            # ردیابی اشخاص روشن است: باکس سرخابی + کد یکتای شخص
+                            # (متن لاتین چون cv2.putText فارسی رسم نمی‌کند؛
+                            # جزئیات فارسی در صفحه‌ی «ردیابی اشخاص» است).
+                            for _tbox, _tlabel, _tshirt in self._person_draw_list:
+                                _tx1, _ty1, _tx2, _ty2 = (int(v) for v in _tbox)
+                                _tcolor = (255, 0, 255)
+                                cv2.rectangle(display_frame, (_tx1, _ty1),
+                                              (_tx2, _ty2), _tcolor, 2)
+                                cv2.putText(display_frame, str(_tlabel),
+                                            (_tx1, max(0, _ty1 - 6)),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                                            _tcolor, 2)
+                        elif not self.person_tracking_enabled:
+                            _get_person_detector().draw_boxes(display_frame, self._last_person_boxes)
                     except Exception:
                         pass
                 # کادر نارنجی/قرمز (آتش) یا خاکستری (دود) - همیشه رسم می‌شود (نه
