@@ -44,6 +44,10 @@ except ImportError:
 from face_library_dialog import FaceLibraryPage
 from report_store import report_store
 from reports_dialog import ReportsPage
+# رفع درخواست «سیستم پلاک‌خوان»: صفحه‌ی جدا (مثل Face Library) با دو تب
+# «تعریف پلاک‌ها» و «گزارش عبور» + دیتابیس SQLite پلاک‌ها/رویدادها.
+from plate_store import plate_store
+from plate_library_dialog import PlateLibraryPage
 from nvr_storage_dialog import NVRStorageDialog
 from device_detect import DeviceDetectThread
 from fire_alarm_store import FireAlarmStore
@@ -508,7 +512,7 @@ class CameraSlotWidget(QWidget):
 
     def __init__(self, on_clicked, on_close_requested, on_double_clicked=None,
                  on_slot_drag_swap=None, on_camera_drag_drop=None, on_region_alert=None,
-                 on_fire_event=None, parent=None):
+                 on_fire_event=None, on_plate_event=None, parent=None):
         super().__init__(parent)
         self.cam = None
         self.stream_thread = None
@@ -554,6 +558,11 @@ class CameraSlotWidget(QWidget):
         # متفاوت است تا با آن تداخل (override) نکند - دقیقاً مثل تمایز
         # self._on_region_alert (callback) از _on_region_entered (متد).
         self._fire_event_cb = on_fire_event
+        # رفع درخواست «سیستم پلاک‌خوان»: با هر پلاک تازه‌تأییدشده روی این خانه،
+        # این callback (در MainWindow) صدا زده می‌شود تا عبور (تعریف‌شده/
+        # تعریف‌نشده) ثبت و در گزارش عبور نمایش داده شود. نام عمداً با متد
+        # واکنشی سیگنال (_on_plate_event پایین‌تر) متفاوت است تا override نشود.
+        self._plate_event_cb = on_plate_event
         # رفع درخواست: وضعیت روشن/خاموش بودن «شمارش افراد Real Time» برای این
         # خانه؛ چون خانه‌ها هنگام عوض شدن تعداد شبکه (set_grid_size) از نو
         # ساخته می‌شوند، این وضعیت فقط تا وقتی همین خانه/دوربین برقرار است
@@ -1035,6 +1044,14 @@ class CameraSlotWidget(QWidget):
         else:
             self.people_count_label.setText("")
 
+    def set_plate_detection(self, enabled: bool):
+        """رفع درخواست «سیستم پلاک‌خوان»: روشن/خاموش کردن زنده‌ی پلاک‌خوان
+        برای دوربینِ همین خانه (از صفحه‌ی «پلاک‌خوان» تب «تعریف پلاک‌ها»)؛
+        روی ترد پخشِ جاری اعمال می‌شود و در cam ذخیره نمی‌شود (ذخیره با
+        camera_store.update_camera در همان صفحه انجام شده)."""
+        if self.stream_thread is not None:
+            self.stream_thread.set_plate_detection(enabled)
+
     def on_people_count(self, count):
         # رفع باگ «کسی تو اتاقه ولی صفر نشون می‌داد»: این عدد از تشخیص‌دهنده‌ی
         # شخص/بدن کامل (PersonDetector در person_detector.py) می‌آید که همه‌ی
@@ -1127,7 +1144,8 @@ class CameraSlotWidget(QWidget):
             )
         return connect
 
-    def start(self, cam: dict, rtsp_url: str, face_engine: FaceEngine, face_event_cb):
+    def start(self, cam: dict, rtsp_url: str, face_engine: FaceEngine, face_event_cb,
+              plate_event_cb=None):
         self._stream_seq += 1
         _seq = self._stream_seq
         _conn = self._guarded_connect(_seq)
@@ -1176,6 +1194,18 @@ class CameraSlotWidget(QWidget):
             self.stream_thread.face_event_signal,
             lambda person, crop: face_event_cb(cam, person, crop),
         )
+        # رفع درخواست «سیستم پلاک‌خوان»: مثل face_event با محافظ نسل وصل
+        # می‌شود تا رویداد پلاکِ ترد قبلی به دوربین جدید نرسد؛ cam (کل
+        # دیکشنری دوربین، نه فقط اسمش) پاس داده می‌شود تا نام دوربین و
+        # nvr_id/channel هم در گزارش عبور ثبت شود.
+        if plate_event_cb is not None:
+            _conn(
+                self.stream_thread.plate_event_signal,
+                lambda data: plate_event_cb(cam, data),
+            )
+        # پلاک‌خوان این دوربین از همان تنظیم ذخیره‌شده (cam["plate_detection"])
+        # فعال می‌شود - رجوع کنید به صفحه‌ی «پلاک‌خوان» تب «تعریف پلاک‌ها».
+        self.stream_thread.set_plate_detection(bool(cam.get("plate_detection")))
         self.stream_thread.start()
         # رفع درخواست: اگر برای این دوربین قبلاً محدوده‌های هشدار رسم و
         # ذخیره شده باشند (cameras.json)، همان لحظه‌ی اتصال دوباره روی ترد
@@ -1530,7 +1560,7 @@ class CameraGridWidget(QWidget):
     tripwire_changed = pyqtSignal()
 
     def __init__(self, face_engine: FaceEngine, on_face_event, on_external_camera_drop=None,
-                 on_region_alert=None, on_fire_event=None, parent=None):
+                 on_region_alert=None, on_fire_event=None, on_plate_event=None, parent=None):
         super().__init__(parent)
         self.face_engine = face_engine
         self.on_face_event = on_face_event
@@ -1541,6 +1571,10 @@ class CameraGridWidget(QWidget):
         # رفع درخواست «سیستم تشخیص دود و اعلام حریق»: مشابه on_region_alert،
         # به هر خانه‌ی تازه‌ساخته‌شده پاس داده می‌شود.
         self.on_fire_event = on_fire_event
+        # رفع درخواست «سیستم پلاک‌خوان»: callback رویداد پلاک (در MainWindow)
+        # به هر خانه‌ی تازه‌ساخته‌شده پاس داده می‌شود تا عبور پلاک‌ها
+        # (تعریف‌شده/تعریف‌نشده) ثبت و گزارش شود.
+        self.on_plate_event = on_plate_event
         # رفع درخواست: وقتی موردی از لیست دوربین‌ها (خارج از شبکه‌ی نمایش) روی
         # یک خانه رها (drop) شود، این callback (در MainWindow) صدا زده می‌شود
         # تا رمز عبور را در صورت نیاز بپرسد و آدرس RTSP را بسازد.
@@ -1598,6 +1632,7 @@ class CameraGridWidget(QWidget):
                     on_camera_drag_drop=self._on_camera_drag_drop,
                     on_region_alert=self.on_region_alert,
                     on_fire_event=self.on_fire_event,
+                    on_plate_event=self.on_plate_event,
                 )
                 slot.slot_index = len(self.slots)
                 slot.tripwire_changed.connect(self.tripwire_changed.emit)
@@ -1634,7 +1669,7 @@ class CameraGridWidget(QWidget):
 
         for i, slot in enumerate(self.slots):
             if slot.cam is None:
-                slot.start(cam, rtsp_url, self.face_engine, self.on_face_event)
+                slot.start(cam, rtsp_url, self.face_engine, self.on_face_event, self.on_plate_event)
                 # اعمال وضعیت فعلیِ دکمه‌ی سراسریِ شمارش افراد روی دوربین
                 # تازه‌باز.
                 slot.set_people_counting(self._people_counting_enabled)
@@ -1661,7 +1696,7 @@ class CameraGridWidget(QWidget):
                 return
         target = self.slots[slot_index]
         target.stop()
-        target.start(cam, rtsp_url, self.face_engine, self.on_face_event)
+        target.start(cam, rtsp_url, self.face_engine, self.on_face_event, self.on_plate_event)
         target.set_people_counting(self._people_counting_enabled)
         self._select_index(slot_index)
 
@@ -1685,10 +1720,10 @@ class CameraGridWidget(QWidget):
         slot_a.stop()
         slot_b.stop()
         if cam_b is not None:
-            slot_a.start(cam_b, url_b, self.face_engine, self.on_face_event)
+            slot_a.start(cam_b, url_b, self.face_engine, self.on_face_event, self.on_plate_event)
             slot_a.set_people_counting(self._people_counting_enabled)
         if cam_a is not None:
-            slot_b.start(cam_a, url_a, self.face_engine, self.on_face_event)
+            slot_b.start(cam_a, url_a, self.face_engine, self.on_face_event, self.on_plate_event)
             slot_b.set_people_counting(self._people_counting_enabled)
 
         if self.selected_index == idx_a:
@@ -2140,6 +2175,7 @@ class MainWindow(QMainWindow):
             self.face_engine, self.on_face_event, on_external_camera_drop=self.on_camera_dropped_on_grid,
             on_region_alert=self.on_region_alert,
             on_fire_event=self.on_fire_event,
+            on_plate_event=self.on_plate_event,
         )
         self.camera_grid.selection_changed.connect(lambda _idx: self._refresh_line_buttons())
         self.camera_grid.tripwire_changed.connect(self._refresh_line_buttons)
@@ -2268,6 +2304,13 @@ class MainWindow(QMainWindow):
         # «پخش ویدیوی NVR»، اطلاعات اتصال NVR مربوط به هر رویداد را پیدا کند.
         self.reports_page = ReportsPage(report_store, self.camera_store)
         self.pages.addWidget(self.reports_page)
+        # رفع درخواست «سیستم پلاک‌خوان»: صفحه‌ی جدا (مثل Face Library) با دو
+        # تب «تعریف پلاک‌ها» و «گزارش عبور»؛ on_plate_toggle برای اعمال زنده‌ی
+        # فعال/غیرفعال شدن پلاک‌خوان روی دوربینی که همین حالا باز است.
+        self.plate_page = PlateLibraryPage(
+            self.get_active_camera_frame, self.camera_store,
+            on_plate_toggle=self._on_camera_plate_toggle)
+        self.pages.addWidget(self.plate_page)
 
         main_layout.addWidget(self._build_header())
         main_layout.addWidget(self.pages, 1)
@@ -3246,7 +3289,7 @@ class MainWindow(QMainWindow):
 
     def _build_header(self):
         """هدر بالای برنامه: دکمه‌های ناوبری بین صفحه‌ی اصلی (دوربین‌ها) و
-        سه صفحه‌ی جداگانه‌ی «اعلام حریق»، «چهره‌ها» و «گزارش‌ها»."""
+        چهار صفحه‌ی جداگانه‌ی «اعلام حریق»، «چهره‌ها»، «گزارش‌ها» و «پلاک‌خوان»."""
         header = QWidget()
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(8, 4, 8, 4)
@@ -3282,6 +3325,7 @@ class MainWindow(QMainWindow):
             ("fire", "🔥 اعلام حریق"),
             ("face", "👤 چهره‌ها"),
             ("reports", "📊 گزارش‌ها"),
+            ("plate", "🚗 پلاک‌خوان"),
         ):
             btn = QPushButton(label)
             btn.setCheckable(True)
@@ -3298,7 +3342,7 @@ class MainWindow(QMainWindow):
     def show_page(self, key):
         """تغییر صفحه‌ی فعال از طریق هدر؛ هر صفحه هنگام نمایش، داده‌هایش را
         با متد refresh خودش تازه می‌کند."""
-        index = {"home": 0, "fire": 1, "face": 2, "reports": 3}[key]
+        index = {"home": 0, "fire": 1, "face": 2, "reports": 3, "plate": 4}[key]
         page = self.pages.widget(index)
         refresh = getattr(page, "refresh", None)
         if callable(refresh):
@@ -3335,6 +3379,49 @@ class MainWindow(QMainWindow):
         # جلوگیری از رشد بی‌حد پنل در نشست‌های طولانی.
         while self.face_panel_list.count() > 300:
             self.face_panel_list.takeItem(self.face_panel_list.count() - 1)
+
+    # ------------------------------------------------------ plate reader ---
+
+    def on_plate_event(self, cam, data):
+        """برای هر پلاک تازه‌تأییدشده‌ای که یکی از دوربین‌های فعالِ پلاک‌خوان
+        ببیند فراخوانی می‌شود. data دیکشنری {"plate_text", "plate_display",
+        "conf", "crop", "box"} است (رجوع کنید به camera_stream.py).
+        تطبیق با پلاک‌های تعریف‌شده + ثبت دائمی رویداد (با تصویر برش‌خورده)
+        همین‌جا انجام می‌شود؛ اگر صفحه‌ی «پلاک‌خوان» باز باشد، گزارشش هم
+        تازه می‌شود."""
+        try:
+            camera_name = cam.get("name", "")
+            event = plate_store.log_event(
+                camera_name,
+                data.get("plate_text", ""),
+                confidence=float(data.get("conf", 0.0) or 0.0),
+                crop_bgr=data.get("crop"),
+                nvr_id=cam.get("nvr_id") or "",
+                channel=cam.get("channel"),
+                plate_display=data.get("plate_display", ""),
+            )
+            # اگر کاربر همین حالا صفحه‌ی پلاک‌خوان (تب گزارش) را می‌بیند،
+            # جدول را زنده تازه کن.
+            try:
+                if (hasattr(self, "plate_page") and self.plate_page is not None
+                        and self.pages.currentWidget() is self.plate_page):
+                    self.plate_page.run_report_search()
+                    self.plate_page._update_stats()
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"خطا در ثبت رویداد پلاک: {e}")
+
+    def _on_camera_plate_toggle(self, cam_id, enabled):
+        """اعمال زنده‌ی تیک «پلاک‌خوان» صفحه‌ی پلاک‌خوان روی دوربینی که همین
+        حالا در شبکه‌ی نمایش باز است (بدون نیاز به بستن/باز کردن دوباره)."""
+        try:
+            for slot in self.camera_grid.slots:
+                if slot.cam is not None and slot.cam.get("id") == cam_id:
+                    slot.cam["plate_detection"] = bool(enabled)
+                    slot.set_plate_detection(enabled)
+        except Exception as e:
+            print(f"خطا در اعمال پلاک‌خوان روی دوربین باز: {e}")
 
     # ------------------------------------------------------------- scan ---
 

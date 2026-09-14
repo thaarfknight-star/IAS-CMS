@@ -167,6 +167,36 @@ def _get_fire_detector():
     return _fire_detector
 
 
+_plate_detector = None
+_plate_detector_failed = False
+
+
+def _get_plate_detector():
+    """دسترسی تنبل به PlateDetector (plate_detector.py)؛ اولین فراخوانی مدل
+    پلاک را بارگذاری می‌کند - فقط وقتی پلاک‌خوانِ حداقل یک دوربین فعال باشد.
+    الگو دقیقاً مثل _get_person_detector/_get_fire_detector است."""
+    global _plate_detector, _plate_detector_failed
+    if _plate_detector is None and not _plate_detector_failed:
+        try:
+            from plate_detector import get_shared_plate_detector as _get_shared
+            _plate_detector = _get_shared()
+            if _plate_detector is not None and _plate_detector.available:
+                _configure_torch_threads()
+        except Exception as e:
+            _plate_detector_failed = True
+            print(f"بارگذاری تشخیص پلاک ممکن نشد: {e}")
+    if (_plate_detector_failed or _plate_detector is None
+            or not _plate_detector.available):
+        raise ImportError("plate_detector در دسترس نیست")
+    return _plate_detector
+
+
+def _get_plate_ocr():
+    """دسترسی تنبل به موتور OCR پلاک (فقط در اولین خوانش واقعی)."""
+    from plate_detector import get_shared_plate_ocr as _get_ocr
+    return _get_ocr()
+
+
 # ---------------------------------------------------------------------------
 # شمارش افراد (Real Time People Counting)
 # ---------------------------------------------------------------------------
@@ -447,6 +477,16 @@ class CameraStreamThread(QThread):
     # فقط یک‌بار (بعد از اولین تلاش واقعی بارگذاری مدل) ارسال می‌شود تا در
     # نبود وزن مدل، کاربر پیام روشنی ببیند نه سکوت.
     fire_detector_status_signal = pyqtSignal(bool, str)  # (available, error_message)
+    # رفع درخواست «سیستم پلاک‌خوان»: برای هر پلاک تازه‌تأییدشده (بعد از
+    # تأیید چندفریمی و کول‌داون - رجوع کنید به plate_detector.py) این سیگنال
+    # با یک دیکشنری ارسال می‌شود:
+    #   {"box": (x1,y1,x2,y2), "plate_text": کانونیکال, "plate_display": نمایشی,
+    #    "conf": اطمینان, "crop": تصویر برش‌خورده‌ی پلاک}
+    # تطبیق با پلاک‌های تعریف‌شده و ثبت رویداد در main.py انجام می‌شود.
+    plate_event_signal = pyqtSignal(object)
+    # وضعیت در دسترس بودن مدل پلاک (فقط یک‌بار بعد از اولین تلاش واقعی) تا
+    # در نبود مدل، روی تایل پیام روشن نمایش داده شود نه سکوت.
+    plate_detector_status_signal = pyqtSignal(bool, str)  # (available, error_message)
 
     # حداقل فاصله (ثانیه) بین دو رویداد پیاپی از یک نوع (آتش یا دود) برای
     # همان دوربین - جلوگیری از سیل رویداد/بنر/بیپ در هر دور تشخیص وقتی آتش/
@@ -521,6 +561,37 @@ class CameraStreamThread(QThread):
         # برای هر دوربین) + تأییدکننده‌ی چندفریمی خروجی نهایی.
         self._small_flame_detector = SmallFlameDetector()
         self._fire_confirmer = DetectionConfirmer()
+
+        # --- سیستم پلاک‌خوان (اختیاری، پیش‌فرض خاموش؛ رجوع کنید به plate_detector.py) ---
+        # مثل SmallFlameDetector، ردیاب چندفریمی برای هر دوربین نمونه‌ی جداست
+        # (حالت زمانی دارد). خودِ مدل YOLO و موتور OCR بین همه‌ی دوربین‌ها
+        # مشترک‌اند (lazy singleton در plate_detector.py).
+        self.plate_detection_enabled = False
+        self._plate_tracker = None
+        self._plate_ocr = None
+        self._last_plate_detections = []  # [(box, text, is_defined)] برای رسم روی تصویر
+        self._plate_detector_available = False
+        self._plate_detector_status_emitted = False
+
+    def set_plate_detection(self, enabled: bool):
+        """روشن/خاموش کردن پلاک‌خوان برای این دوربین (از صفحه‌ی پلاک‌خوان یا
+        شروع پخش با cam["plate_detection"])."""
+        self.plate_detection_enabled = bool(enabled)
+        if self.plate_detection_enabled and self._plate_tracker is None:
+            try:
+                from plate_detector import PlateTracker
+                # کول‌داون از تنظیمات plate_store خوانده می‌شود (پیش‌فرض ۴۵ ثانیه)
+                cooldown = 45.0
+                try:
+                    from plate_store import plate_store as _ps
+                    cooldown = float(_ps.cooldown_seconds)
+                except Exception:
+                    pass
+                self._plate_tracker = PlateTracker(cooldown_s=cooldown)
+            except Exception:
+                self._plate_tracker = None
+        if not self.plate_detection_enabled:
+            self._last_plate_detections = []
 
     def set_people_counting(self, enabled: bool):
         """روشن/خاموش کردن شمارش افراد Real Time برای این دوربین."""
@@ -642,6 +713,64 @@ class CameraStreamThread(QThread):
                 self._last_fire_alert_ts[kind] = now
                 self.fire_event_signal.emit(kind, _crop_face(frame, box), conf)
 
+            # --- سیستم پلاک‌خوان: تشخیص ناحیه‌ی پلاک + OCR + ردیابی چندفریمی ---
+            # دقیقاً همان الگوی تشخیص شخص/آتش: در همین ترد پس‌زمینه‌ی تشخیص
+            # (نه ترد اصلی خواندن فریم) اجرا می‌شود تا پخش زنده هرگز منتظرش
+            # نماند. بارگذاری مدل/OCR تنبل است (اولین تیکِ دوربینی که پلاک‌خوانش
+            # فعال است). تطبیق با پلاک‌های تعریف‌شده همین‌جا (ارزان، با کش)
+            # انجام می‌شود تا رنگ باکس روی تصویر درست باشد؛ ثبت رویداد و
+            # به‌روزرسانی گزارش در main.py است.
+            if self.plate_detection_enabled and self._plate_tracker is not None:
+                try:
+                    _pld = _get_plate_detector()
+                except Exception:
+                    _pld = None
+                self._plate_detector_available = bool(
+                    _pld is not None and _pld.available)
+                if not self._plate_detector_status_emitted:
+                    self._plate_detector_status_emitted = True
+                    self.plate_detector_status_signal.emit(
+                        self._plate_detector_available,
+                        (_pld.load_error if _pld else "") or "")
+                if self._plate_detector_available:
+                    try:
+                        _pboxes = _pld.detect(frame)
+                    except Exception:
+                        _pboxes = []
+                    try:
+                        if self._plate_ocr is None:
+                            self._plate_ocr = _get_plate_ocr()
+                        _pevents = self._plate_tracker.update(
+                            _pboxes, frame, self._plate_ocr)
+                    except Exception:
+                        _pevents = []
+                    # وضعیت فعلی ترک‌ها برای رسم (با تطبیق تعریف‌شده/نشده)
+                    _draw_list = []
+                    try:
+                        from plate_store import plate_store as _ps2
+                        _tracks = self._plate_tracker.current_tracks()
+                        for _box, _text, _conf in _tracks:
+                            _m, _s, _k = _ps2.find_match(_text) if _text else (None, 0.0, "none")
+                            _draw_list.append((_box, _text, bool(_m)))
+                    except Exception:
+                        _draw_list = []
+                    self._last_plate_detections = _draw_list
+                    # رویدادهای تازه‌ی تأییدشده -> main.py
+                    for _box, _text, _conf in _pevents:
+                        try:
+                            from plate_store import prettify_plate as _pretty
+                            _x1, _y1, _x2, _y2 = (int(v) for v in _box)
+                            _crop = frame[max(0, _y1):_y2, max(0, _x1):_x2].copy()
+                        except Exception:
+                            _crop = None
+                        self.plate_event_signal.emit({
+                            "box": _box,
+                            "plate_text": _text,
+                            "plate_display": _pretty(_text),
+                            "conf": float(_conf),
+                            "crop": _crop,
+                        })
+
             if unknown_event is not None:
                 unknown_crop = _crop_face(frame, unknown_event)
                 # رفع درخواست: چهره‌ی تعریف‌نشده علاوه بر نمایش در پنل، بر اساس
@@ -722,6 +851,7 @@ class CameraStreamThread(QThread):
                 len(self._last_results) > 0
                 or len(self._last_person_boxes) > 0
                 or len(self._last_fire_detections) > 0
+                or len(self._last_plate_detections) > 0
                 or _img_profile is not None
             )
             if _needs_overlay:
@@ -742,6 +872,20 @@ class CameraStreamThread(QThread):
                 if self._fire_detector_available:
                     try:
                         _get_fire_detector().draw_boxes(display_frame, self._last_fire_detections)
+                    except Exception:
+                        pass
+                # باکس پلاک: سبز = تعریف‌شده، نارنجی = تعریف‌نشده + برچسب لاتین
+                # (متن فارسی با cv2.putText رسم نمی‌شود؛ متن کامل در گزارش عبور است).
+                if self._last_plate_detections:
+                    try:
+                        for _pbox, _ptext, _pdefined in self._last_plate_detections:
+                            _px1, _py1, _px2, _py2 = (int(v) for v in _pbox)
+                            _pcolor = (0, 200, 0) if _pdefined else (0, 165, 255)
+                            cv2.rectangle(display_frame, (_px1, _py1), (_px2, _py2),
+                                          _pcolor, 2)
+                            _plabel = f"PLATE {'OK' if _pdefined else '??'}"
+                            cv2.putText(display_frame, _plabel, (_px1, max(0, _py1 - 6)),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, _pcolor, 2)
                     except Exception:
                         pass
 
