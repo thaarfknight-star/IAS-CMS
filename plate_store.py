@@ -59,17 +59,23 @@ def normalize_plate_text(text):
 
 
 def prettify_plate(canonical):
-    """فرم کانونیکال را برای نمایش قشنگ می‌کند. اگر الگوی پلاک ایرانی
-    (۲ رقم + حرف + ۵ رقم) باشد، با ارقام فارسی و قالب «۱۲ ب ۳۴۵ ۶۷» برمی‌گرداند؛
+    """فرم کانونیکال را برای نمایش قشنگ می‌کند.
+    - پلاک خودروی ایرانی (۲ رقم + حرف + ۵ رقم): «۱۲ ب ۳۴۵ ۶۷»
+    - پلاک موتورسیکلت ایرانی (۳ رقم بالا + ۱ رقم و حرف پایین): «۱۲۳ ۴ب»
     در غیر این صورت همان متن را برمی‌گرداند."""
     if not canonical:
         return ""
     import re
     m = re.match(r"^([0-9]{2})([^0-9]{1,2})([0-9]{3})([0-9]{2})$", canonical)
+    fa = str.maketrans(_EN_DIGITS, _FA_DIGITS)
     if m:
         d1, letter, d2, code = m.groups()
-        fa = str.maketrans(_EN_DIGITS, _FA_DIGITS)
         return f"{d1.translate(fa)} {letter} {d2.translate(fa)} {code.translate(fa)}"
+    m2 = re.match(r"^([0-9]{3})([0-9])([^0-9]{1,2})$", canonical)
+    if m2:
+        top, bottom_digit, letter = m2.groups()
+        return (f"{top.translate(fa)} "
+                f"{bottom_digit.translate(fa)}{letter}")
     return canonical
 
 
@@ -116,6 +122,50 @@ def validate_phone(phone):
     if re.match(r"^09[0-9]{9}$", phone):
         return True, phone
     return False, phone
+
+
+# --------------------------------------------------------------------------
+# نوع پلاک: خودرو / موتورسیکلت / سایر
+# --------------------------------------------------------------------------
+
+# پلاک موتورسیکلت ایرانی: ۳ رقم در ردیف بالا + ۱ رقم و ۱ حرف در ردیف پایین
+# فرم کانونیکال: «1234ب» (سه رقم بالا، یک رقم پایین، حرف)
+PLATE_KIND_LABELS = {
+    "car": "خودرو",
+    "motorcycle": "موتورسیکلت",
+    "other": "سایر",
+}
+
+
+def detect_plate_kind(canonical):
+    """تشخیص نوع پلاک از روی شکل متن کانونیکال.
+    خروجی: 'car' | 'motorcycle' | 'other'"""
+    import re
+    c = (canonical or "").strip()
+    if re.match(r"^[0-9]{2}[^0-9]{1,2}[0-9]{5}$", c):
+        return "car"
+    if re.match(r"^[0-9]{4}[^0-9]{1,2}$", c):
+        return "motorcycle"
+    return "other"
+
+
+def plate_kind_label(kind):
+    """برچسب فارسی نوع پلاک."""
+    return PLATE_KIND_LABELS.get(kind or "other", "سایر")
+
+
+def validate_motorcycle_plate(d_top, d_bottom, letter):
+    """اعتبارسنجی بخش‌های پلاک موتورسیکلت ایرانی
+    (۳ رقم بالا + ۱ رقم پایین + حرف). خروجی: (معتبر؟, پیام خطا, کانونیکال)."""
+    import re
+    if not re.match(r"^[0-9۰-۹٠-٩]{3}$", d_top or ""):
+        return False, "سه رقم بالای پلاک موتور باید دقیقاً ۳ رقم باشد.", ""
+    if not re.match(r"^[0-9۰-۹٠-٩]{1}$", d_bottom or ""):
+        return False, "رقم پایین پلاک موتور باید دقیقاً ۱ رقم باشد.", ""
+    if not letter or letter not in IRANIAN_PLATE_LETTERS:
+        return False, "حرف پلاک معتبر نیست.", ""
+    canonical = normalize_plate_text(d_top + d_bottom + letter)
+    return True, "", canonical
 
 
 # --------------------------------------------------------------------------
@@ -312,6 +362,16 @@ class PlateStore:
                 )
             """)
             self._conn.commit()
+            # مهاجرت: ستون نوع پلاک (برای دیتابیس‌های قدیمی که این ستون را ندارند)
+            cols = [r["name"] for r in
+                    c.execute("PRAGMA table_info(plates)").fetchall()]
+            if "plate_type" not in cols:
+                c.execute("ALTER TABLE plates ADD COLUMN plate_type TEXT DEFAULT ''")
+                for r in c.execute("SELECT id, plate_text FROM plates").fetchall():
+                    kind = detect_plate_kind(r["plate_text"] or "")
+                    c.execute("UPDATE plates SET plate_type=? WHERE id=?",
+                              (kind, r["id"]))
+                self._conn.commit()
 
     # ------------------------------------------------------------- تنظیمات -
 
@@ -352,10 +412,13 @@ class PlateStore:
         self._plates_cache = None
 
     def _row_to_plate(self, row):
+        keys = row.keys() if hasattr(row, "keys") else []
+        plate_type = row["plate_type"] if "plate_type" in keys else ""
         return {
             "id": row["id"],
             "plate_text": row["plate_text"],
             "plate_display": row["plate_display"] or prettify_plate(row["plate_text"]),
+            "plate_type": plate_type or detect_plate_kind(row["plate_text"]),
             "owner_name": row["owner_name"] or "",
             "phone": row["phone"] or "",
             "vehicle_type": row["vehicle_type"] or "",
@@ -370,7 +433,7 @@ class PlateStore:
 
     def add_plate(self, plate_text, owner_name="", phone="", vehicle_type="",
                   vehicle_model="", vehicle_color="", description="",
-                  active=True, sample_image="", plate_display=""):
+                  active=True, sample_image="", plate_display="", plate_type=""):
         """افزودن پلاک جدید. خروجی: (True, id) یا (False, پیام خطا فارسی)."""
         canonical = normalize_plate_text(plate_text)
         if len(canonical) < 3:
@@ -378,6 +441,9 @@ class PlateStore:
         ok_phone, phone_norm = validate_phone(phone)
         if not ok_phone:
             return False, "شماره تلفن باید به شکل 09xxxxxxxxx باشد (یا خالی بماند)."
+        kind = plate_type or detect_plate_kind(canonical)
+        if kind not in PLATE_KIND_LABELS:
+            kind = "other"
         with self._lock:
             exists = self._conn.execute(
                 "SELECT id FROM plates WHERE plate_text=?", (canonical,)).fetchone()
@@ -386,12 +452,13 @@ class PlateStore:
             pid = uuid.uuid4().hex
             now = time.time()
             self._conn.execute(
-                """INSERT INTO plates(id, plate_text, plate_display, owner_name, phone,
+                """INSERT INTO plates(id, plate_text, plate_display, plate_type,
+                                      owner_name, phone,
                                       vehicle_type, vehicle_model, vehicle_color,
                                       description, active, sample_image,
                                       created_at, updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (pid, canonical, plate_display or prettify_plate(canonical),
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (pid, canonical, plate_display or prettify_plate(canonical), kind,
                  owner_name.strip(), phone_norm, vehicle_type, vehicle_model,
                  vehicle_color, description.strip(), 1 if active else 0,
                  sample_image, now, now))
@@ -402,12 +469,14 @@ class PlateStore:
     def update_plate(self, pid, **fields):
         allowed = {"owner_name", "phone", "vehicle_type", "vehicle_model",
                    "vehicle_color", "description", "active", "sample_image",
-                   "plate_display"}
+                   "plate_display", "plate_type"}
         if "phone" in fields:
             ok_phone, phone_norm = validate_phone(fields["phone"])
             if not ok_phone:
                 return False, "شماره تلفن باید به شکل 09xxxxxxxxx باشد (یا خالی بماند)."
             fields["phone"] = phone_norm
+        if "plate_type" in fields and fields["plate_type"] not in PLATE_KIND_LABELS:
+            fields["plate_type"] = "other"
         sets, vals = [], []
         for k, v in fields.items():
             if k not in allowed:
@@ -479,6 +548,9 @@ class PlateStore:
 
     def find_match(self, plate_text, threshold=None):
         """تطبیق متن خوانده‌شده با پلاک‌های تعریف‌شده‌ی فعال.
+        تطبیق دقیق روی همه‌ی پلاک‌ها انجام می‌شود؛ تطبیق فازی فقط بین
+        پلاک‌های هم‌نوع (خودرو/موتورسیکلت) به‌علاوه‌ی پلاک‌های «سایر»، تا
+        خوانش یک موتور اشتباهی به پلاک یک خودرو نسبت داده نشود.
         خروجی: (plate_dict یا None, امتیاز 0..1, نوع تطبیق: exact/fuzzy/none)."""
         canonical = normalize_plate_text(plate_text)
         if not canonical:
@@ -489,8 +561,14 @@ class PlateStore:
         for p in plates:
             if p["plate_text"] == canonical:
                 return p, 1.0, "exact"
+        kind = detect_plate_kind(canonical)
+        if kind == "other":
+            pool = plates
+        else:
+            pool = [p for p in plates
+                    if (p.get("plate_type") or "other") in ("other", kind)]
         best, best_score = None, 0.0
-        for p in plates:
+        for p in pool:
             s = difflib.SequenceMatcher(None, canonical, p["plate_text"]).ratio()
             if s > best_score:
                 best, best_score = p, s
@@ -558,9 +636,9 @@ class PlateStore:
         }
 
     def query_events(self, date_from=None, date_to=None, camera_name=None,
-                     defined=None, search="", limit=5000):
+                     defined=None, search="", limit=5000, kind=None):
         """گزارش عبور با فیلتر. date_from/date_to رشته‌ی 'YYYY-MM-DD' میلادی.
-        defined: True/False/None (همه)."""
+        defined: True/False/None (همه). kind: 'car'/'motorcycle'/'other'/None."""
         with self._lock:
             conds, vals = [], []
             if date_from:
@@ -586,7 +664,11 @@ class PlateStore:
             q += " ORDER BY ts DESC LIMIT ?"
             vals.append(int(limit))
             rows = self._conn.execute(q, vals).fetchall()
-            return [dict(r) for r in rows]
+            rows = [dict(r) for r in rows]
+        if kind in ("car", "motorcycle", "other"):
+            rows = [r for r in rows
+                    if detect_plate_kind(r.get("plate_text", "")) == kind]
+        return rows
 
     def distinct_event_cameras(self):
         with self._lock:
@@ -643,18 +725,19 @@ class PlateStore:
                     "plates_active": self.count_plates(active_only=True)}
 
     def export_events_csv(self, path, date_from=None, date_to=None,
-                          camera_name=None, defined=None, search=""):
+                          camera_name=None, defined=None, search="", kind=None):
         rows = self.query_events(date_from=date_from, date_to=date_to,
                                  camera_name=camera_name, defined=defined,
-                                 search=search, limit=100000)
+                                 search=search, kind=kind, limit=100000)
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
-            w.writerow(["تاریخ شمسی", "ساعت", "دوربین", "پلاک", "مالک",
+            w.writerow(["تاریخ شمسی", "ساعت", "دوربین", "پلاک", "نوع پلاک", "مالک",
                         "وضعیت", "اطمینان", "تصویر"])
             for r in rows:
                 w.writerow([
                     r.get("date_j", ""), r.get("time_g", ""),
                     r.get("camera_name", ""), r.get("plate_display", ""),
+                    plate_kind_label(detect_plate_kind(r.get("plate_text", ""))),
                     r.get("owner_name", ""),
                     "تعریف‌شده" if r.get("is_defined") else "تعریف‌نشده",
                     f"{(r.get('confidence') or 0):.0%}",

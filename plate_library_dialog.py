@@ -34,9 +34,13 @@ from PyQt6.QtWidgets import (
 
 from plate_store import (
     plate_store, normalize_plate_text, prettify_plate,
-    validate_iranian_plate, validate_phone,
+    validate_iranian_plate, validate_motorcycle_plate, validate_phone,
+    detect_plate_kind, plate_kind_label,
     IRANIAN_PLATE_LETTERS, VEHICLE_TYPES, VEHICLE_COLORS,
 )
+
+# اندیس تب‌های نوع پلاک در فرم تعریف
+TAB_CAR, TAB_MOTORCYCLE, TAB_OTHER = 0, 1, 2
 
 
 def _bgr_to_pixmap(frame, max_w=320):
@@ -125,7 +129,7 @@ class PlateFormDialog(QDialog):
 
         # ------------------------------------------------- تب‌های نوع پلاک -
         self.kind_tabs = QTabWidget()
-        # --- پلاک ایرانی (بخش‌بندی‌شده)
+        # --- پلاک خودروی ایرانی (بخش‌بندی‌شده: ۲ رقم + حرف + ۳ رقم + کد ایران)
         ir_widget = QWidget()
         ir_form = QFormLayout(ir_widget)
         seg_row = QHBoxLayout()
@@ -153,7 +157,36 @@ class PlateFormDialog(QDialog):
         seg_row.addWidget(self.d1_input)
         seg_row.addStretch()
         ir_form.addRow("شماره پلاک:", seg_row)
-        self.kind_tabs.addTab(ir_widget, "پلاک ایرانی")
+        self.kind_tabs.addTab(ir_widget, "🚗 پلاک خودرو")
+        # --- پلاک موتورسیکلت ایرانی (بخش‌بندی‌شده: ۳ رقم بالا + ۱ رقم و حرف پایین)
+        mc_widget = QWidget()
+        mc_form = QFormLayout(mc_widget)
+        mc_row = QHBoxLayout()
+        mc_row.setDirection(QBoxLayout.Direction.RightToLeft)
+        self.mc_top_input = QLineEdit()
+        self.mc_top_input.setMaxLength(3)
+        self.mc_top_input.setFixedWidth(70)
+        self.mc_top_input.setPlaceholderText("۱۲۳")
+        self.mc_bottom_digit = QLineEdit()
+        self.mc_bottom_digit.setMaxLength(1)
+        self.mc_bottom_digit.setFixedWidth(50)
+        self.mc_bottom_digit.setPlaceholderText("۴")
+        self.mc_letter_combo = QComboBox()
+        self.mc_letter_combo.addItems(IRANIAN_PLATE_LETTERS)
+        self.mc_letter_combo.setFixedWidth(70)
+        # ترتیب راست‌به‌چپ: ردیف بالا (۳ رقم) | ردیف پایین (۱ رقم + حرف)
+        mc_row.addWidget(QLabel("ردیف بالا:"))
+        mc_row.addWidget(self.mc_top_input)
+        mc_row.addWidget(QLabel("ردیف پایین:"))
+        mc_row.addWidget(self.mc_bottom_digit)
+        mc_row.addWidget(self.mc_letter_combo)
+        mc_row.addStretch()
+        mc_form.addRow("شماره پلاک:", mc_row)
+        mc_hint = QLabel("قالب پلاک موتورسیکلت: ۳ رقم در ردیف بالا، ۱ رقم و ۱ حرف در ردیف پایین")
+        mc_hint.setStyleSheet("color: #9e9e9e; font-size: 11px;")
+        mc_hint.setWordWrap(True)
+        mc_form.addRow("", mc_hint)
+        self.kind_tabs.addTab(mc_widget, "🏍 پلاک موتورسیکلت")
         # --- سایر پلاک‌ها
         other_widget = QWidget()
         other_form = QFormLayout(other_widget)
@@ -169,11 +202,13 @@ class PlateFormDialog(QDialog):
             "background: #1e1e1e; border-radius: 8px; padding: 8px;")
         self.preview_label.setMinimumHeight(52)
 
-        for w in (self.d1_input, self.d2_input, self.code_input):
+        for w in (self.d1_input, self.d2_input, self.code_input,
+                  self.mc_top_input, self.mc_bottom_digit):
             w.textChanged.connect(self._update_preview)
         self.letter_combo.currentIndexChanged.connect(self._update_preview)
+        self.mc_letter_combo.currentIndexChanged.connect(self._update_preview)
         self.other_input.textChanged.connect(self._update_preview)
-        self.kind_tabs.currentChanged.connect(self._update_preview)
+        self.kind_tabs.currentChanged.connect(self._on_kind_tab_changed)
 
         # ---------------------------------------------------- تصویر نمونه -
         sample_row = QHBoxLayout()
@@ -248,6 +283,15 @@ class PlateFormDialog(QDialog):
 
     # ------------------------------------------------------------- کمکی -
 
+    def _on_kind_tab_changed(self, _idx):
+        """با رفتن به تب موتورسیکلت (در حالت افزودن)، نوع خودرو هم
+        خودکار روی «موتورسیکلت» می‌رود؛ کاربر می‌تواند عوضش کند."""
+        if self.kind_tabs.currentIndex() == TAB_MOTORCYCLE and self.existing is None:
+            idx = self.vehicle_type_combo.findText("موتورسیکلت")
+            if idx >= 0:
+                self.vehicle_type_combo.setCurrentIndex(idx)
+        self._update_preview()
+
     def _fill_from_plate(self, p):
         self.owner_input.setText(p.get("owner_name", ""))
         self.phone_input.setText(p.get("phone", ""))
@@ -261,8 +305,18 @@ class PlateFormDialog(QDialog):
         self.desc_input.setPlainText(p.get("description", ""))
         self.active_check.setChecked(bool(p.get("active", True)))
         canon = p.get("plate_text", "")
+        kind = p.get("plate_type") or detect_plate_kind(canon)
         m = re.match(r"^([0-9]{2})([^0-9]{1,2})([0-9]{3})([0-9]{2})$", canon)
-        if m:
+        mm = re.match(r"^([0-9]{3})([0-9])([^0-9]{1,2})$", canon)
+        if kind == "motorcycle" and mm:
+            top, bottom_digit, letter = mm.groups()
+            self.mc_top_input.setText(top)
+            self.mc_bottom_digit.setText(bottom_digit)
+            li = self.mc_letter_combo.findText(letter)
+            if li >= 0:
+                self.mc_letter_combo.setCurrentIndex(li)
+            self.kind_tabs.setCurrentIndex(TAB_MOTORCYCLE)
+        elif m:
             d1, letter, d2, code = m.groups()
             self.d1_input.setText(d1)
             li = self.letter_combo.findText(letter)
@@ -270,10 +324,10 @@ class PlateFormDialog(QDialog):
                 self.letter_combo.setCurrentIndex(li)
             self.d2_input.setText(d2)
             self.code_input.setText(code)
-            self.kind_tabs.setCurrentIndex(0)
+            self.kind_tabs.setCurrentIndex(TAB_CAR)
         else:
             self.other_input.setText(canon)
-            self.kind_tabs.setCurrentIndex(1)
+            self.kind_tabs.setCurrentIndex(TAB_OTHER)
         sp = p.get("sample_image", "")
         if sp and os.path.isfile(sp):
             pix = QPixmap(sp)
@@ -293,14 +347,27 @@ class PlateFormDialog(QDialog):
             else:
                 # حرف ناشناخته: تب «سایر»
                 self.other_input.setText(canon)
-                self.kind_tabs.setCurrentIndex(1)
+                self.kind_tabs.setCurrentIndex(TAB_OTHER)
                 return
             self.d2_input.setText(d2)
             self.code_input.setText(code)
-            self.kind_tabs.setCurrentIndex(0)
+            self.kind_tabs.setCurrentIndex(TAB_CAR)
+            return
+        mm = re.match(r"^([0-9]{3})([0-9])([^0-9]{1,2})$", canon)
+        if mm:
+            top, bottom_digit, letter = mm.groups()
+            li = self.mc_letter_combo.findText(letter)
+            if li < 0:
+                self.other_input.setText(canon)
+                self.kind_tabs.setCurrentIndex(TAB_OTHER)
+                return
+            self.mc_top_input.setText(top)
+            self.mc_bottom_digit.setText(bottom_digit)
+            self.mc_letter_combo.setCurrentIndex(li)
+            self.kind_tabs.setCurrentIndex(TAB_MOTORCYCLE)
         else:
             self.other_input.setText(canon)
-            self.kind_tabs.setCurrentIndex(1)
+            self.kind_tabs.setCurrentIndex(TAB_OTHER)
 
     def _set_sample_frame(self, frame):
         self.sample_frame = frame
@@ -310,25 +377,33 @@ class PlateFormDialog(QDialog):
                 240, 120, Qt.AspectRatioMode.KeepAspectRatio))
 
     def _update_preview(self):
-        canon, _err = self._current_canonical()
+        canon, kind, _err = self._current_canonical()
         if canon:
-            self.preview_label.setText(f"🚗 {prettify_plate(canon)}")
+            emoji = "🏍" if kind == "motorcycle" else "🚗"
+            self.preview_label.setText(f"{emoji} {prettify_plate(canon)}")
         else:
             self.preview_label.setText("—")
 
     def _current_canonical(self):
-        """خوانش فعلی فرم -> (کانونیکال, پیام خطا)."""
-        if self.kind_tabs.currentIndex() == 0:
+        """خوانش فعلی فرم -> (کانونیکال, نوع پلاک, پیام خطا)."""
+        tab = self.kind_tabs.currentIndex()
+        if tab == TAB_CAR:
             ok, err, canon = validate_iranian_plate(
                 self.d1_input.text().strip(),
                 self.letter_combo.currentText(),
                 self.d2_input.text().strip(),
                 self.code_input.text().strip())
-            return (canon, err) if ok else ("", err)
+            return (canon, "car", err) if ok else ("", "car", err)
+        if tab == TAB_MOTORCYCLE:
+            ok, err, canon = validate_motorcycle_plate(
+                self.mc_top_input.text().strip(),
+                self.mc_bottom_digit.text().strip(),
+                self.mc_letter_combo.currentText())
+            return (canon, "motorcycle", err) if ok else ("", "motorcycle", err)
         canon = normalize_plate_text(self.other_input.text())
         if len(canon) < 3:
-            return "", "متن پلاک باید حداقل ۳ نویسه باشد."
-        return canon, ""
+            return "", "other", "متن پلاک باید حداقل ۳ نویسه باشد."
+        return canon, detect_plate_kind(canon), ""
 
     # ---------------------------------------------------- گرفتن از دوربین -
 
@@ -389,7 +464,7 @@ class PlateFormDialog(QDialog):
     # ------------------------------------------------------------- ثبت -
 
     def handle_accept(self):
-        canon, err = self._current_canonical()
+        canon, kind, err = self._current_canonical()
         if not canon:
             self.status_label.setText(err)
             return
@@ -408,6 +483,7 @@ class PlateFormDialog(QDialog):
                 f"این پلاک قبلاً برای «{match.get('owner_name', '')}» ثبت شده است.")
             return
         self._result_canonical = canon
+        self._result_kind = kind
         self._result_phone = phone_norm
         self.accept()
 
@@ -427,6 +503,7 @@ class PlateFormDialog(QDialog):
         return {
             "plate_text": getattr(self, "_result_canonical", ""),
             "plate_display": prettify_plate(getattr(self, "_result_canonical", "")),
+            "plate_type": getattr(self, "_result_kind", "other"),
             "owner_name": self.owner_input.text().strip(),
             "phone": getattr(self, "_result_phone", ""),
             "vehicle_type": self.vehicle_type_combo.currentText(),
@@ -536,8 +613,10 @@ class PlateEventDetailDialog(QDialog):
 class PlateLibraryPage(QWidget):
     """صفحه‌ی «پلاک‌خوان» داخل QStackedWidget پنجره‌ی اصلی."""
 
-    PLATE_COLUMNS = ["پلاک", "مالک", "تلفن", "نوع خودرو", "مدل", "رنگ", "وضعیت", "تاریخ ثبت"]
-    EVENT_COLUMNS = ["تصویر", "تاریخ", "ساعت", "دوربین", "پلاک", "مالک", "وضعیت", "اطمینان"]
+    PLATE_COLUMNS = ["پلاک", "نوع پلاک", "مالک", "تلفن", "نوع خودرو",
+                     "مدل", "رنگ", "وضعیت", "تاریخ ثبت"]
+    EVENT_COLUMNS = ["تصویر", "تاریخ", "ساعت", "دوربین", "پلاک", "نوع",
+                     "مالک", "وضعیت", "اطمینان"]
 
     def __init__(self, get_frame_callback, camera_store, on_plate_toggle=None,
                  parent=None):
@@ -744,16 +823,20 @@ class PlateLibraryPage(QWidget):
             font.setBold(True)
             item0.setFont(font)
             self.plates_table.setItem(r, 0, item0)
-            self.plates_table.setItem(r, 1, QTableWidgetItem(p["owner_name"]))
-            self.plates_table.setItem(r, 2, QTableWidgetItem(p["phone"]))
-            self.plates_table.setItem(r, 3, QTableWidgetItem(p["vehicle_type"]))
-            self.plates_table.setItem(r, 4, QTableWidgetItem(p["vehicle_model"]))
-            self.plates_table.setItem(r, 5, QTableWidgetItem(p["vehicle_color"]))
+            kind_item = QTableWidgetItem(
+                plate_kind_label(p.get("plate_type", "other")))
+            kind_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.plates_table.setItem(r, 1, kind_item)
+            self.plates_table.setItem(r, 2, QTableWidgetItem(p["owner_name"]))
+            self.plates_table.setItem(r, 3, QTableWidgetItem(p["phone"]))
+            self.plates_table.setItem(r, 4, QTableWidgetItem(p["vehicle_type"]))
+            self.plates_table.setItem(r, 5, QTableWidgetItem(p["vehicle_model"]))
+            self.plates_table.setItem(r, 6, QTableWidgetItem(p["vehicle_color"]))
             status_item = QTableWidgetItem("✅ فعال" if p["active"] else "⏸ غیرفعال")
             if not p["active"]:
                 status_item.setForeground(Qt.GlobalColor.gray)
-            self.plates_table.setItem(r, 6, status_item)
-            self.plates_table.setItem(r, 7, QTableWidgetItem(p["created_jalali"]))
+            self.plates_table.setItem(r, 7, status_item)
+            self.plates_table.setItem(r, 8, QTableWidgetItem(p["created_jalali"]))
         self._update_stats()
 
     def add_plate(self):
@@ -877,6 +960,13 @@ class PlateLibraryPage(QWidget):
         self.rep_status_combo.addItem("✅ تعریف‌شده", True)
         self.rep_status_combo.addItem("⚠️ تعریف‌نشده", False)
         frow.addWidget(self.rep_status_combo)
+        frow.addWidget(QLabel("نوع پلاک:"))
+        self.rep_kind_combo = QComboBox()
+        self.rep_kind_combo.addItem("همه", None)
+        self.rep_kind_combo.addItem("🚗 خودرو", "car")
+        self.rep_kind_combo.addItem("🏍 موتورسیکلت", "motorcycle")
+        self.rep_kind_combo.addItem("سایر", "other")
+        frow.addWidget(self.rep_kind_combo)
         frow.addWidget(QLabel("جست‌وجو:"))
         self.rep_search = QLineEdit()
         self.rep_search.setPlaceholderText("پلاک یا نام مالک...")
@@ -944,6 +1034,7 @@ class PlateLibraryPage(QWidget):
             "date_to": self.to_date.date().toString("yyyy-MM-dd"),
             "camera_name": self.rep_camera_combo.currentData(),
             "defined": self.rep_status_combo.currentData(),
+            "kind": self.rep_kind_combo.currentData(),
             "search": normalize_plate_text(self.rep_search.text().strip()),
         }
 
@@ -972,14 +1063,18 @@ class PlateLibraryPage(QWidget):
             font.setBold(True)
             plate_item.setFont(font)
             self.events_table.setItem(r, 4, plate_item)
-            self.events_table.setItem(r, 5, QTableWidgetItem(ev.get("owner_name", "") or "—"))
+            kind_item = QTableWidgetItem(
+                plate_kind_label(detect_plate_kind(ev.get("plate_text", ""))))
+            kind_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.events_table.setItem(r, 5, kind_item)
+            self.events_table.setItem(r, 6, QTableWidgetItem(ev.get("owner_name", "") or "—"))
             st_item = QTableWidgetItem(
                 "✅ تعریف‌شده" if ev.get("is_defined") else "⚠️ تعریف‌نشده")
             st_item.setForeground(Qt.GlobalColor.darkGreen if ev.get("is_defined")
                                   else Qt.GlobalColor.darkRed)
-            self.events_table.setItem(r, 6, st_item)
+            self.events_table.setItem(r, 7, st_item)
             conf = ev.get("confidence") or 0
-            self.events_table.setItem(r, 7, QTableWidgetItem(f"{conf:.0%}"))
+            self.events_table.setItem(r, 8, QTableWidgetItem(f"{conf:.0%}"))
         n_def = sum(1 for e in rows if e.get("is_defined"))
         self.rep_summary.setText(
             f"{len(rows)} عبور یافت شد ({n_def} تعریف‌شده / {len(rows) - n_def} تعریف‌نشده)")
