@@ -199,6 +199,23 @@ jobs:
           "--distpath=dist"
           "main.py"
         )
+        # --- سیستم پلاک‌خوان: مدل پلاک (در صورت وجود در ریپو) + موتورهای OCR ---
+        # مدل plate_detector.pt اگر در ریشه‌ی ریپو باشد کنار exe بسته‌بندی
+        # می‌شود؛ وگرنه برنامه در اولین استفاده خودش آن را دانلود می‌کند
+        # (رجوع کنید به plate_detector.py) پس نبودش بیلد را نمی‌شکند.
+        if (Test-Path "plate_detector.pt") { $pyiArgs += "--add-data=plate_detector.pt;." }
+        # easyocr/rapidocr فقط اگر در محیط بیلد نصب باشند جمع‌آوری می‌شوند تا
+        # در صورت نبودشان بیلد خطا نگیرد؛ نبودشان در exe یعنی OCR غیرفعال و
+        # برنامه بدون کرش کار می‌کند (فقط پلاک‌خوان متن را نمی‌خواند).
+        foreach ($pkg in @("easyocr", "rapidocr_onnxruntime")) {
+          python -c "import $pkg" 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            $pyiArgs += "--collect-all=$pkg"
+            Write-Host "bundling $pkg for plate OCR."
+          } else {
+            Write-Host "WARNING: $pkg not installed in build env; plate OCR will be disabled in exe."
+          }
+        }
         if ($wsdlDataArg) { $pyiArgs += $wsdlDataArg }
         if (Test-Path "assets") { $pyiArgs += "--add-data=assets;assets" }
         if (Test-Path "assets\app.ico") { $pyiArgs += "--icon=assets\app.ico" }
