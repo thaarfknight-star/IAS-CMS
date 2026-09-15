@@ -625,6 +625,88 @@ class CameraStreamThread(QThread):
         except Exception:
             pass
 
+    def get_person_diag(self):
+        """گزارش تشخیصی زنده‌ی ردیابی اشخاص این دوربین برای صفحه‌ی
+        «ردیابی اشخاص» و فایل لاگ؛ معلوم می‌کند مسیر
+        candidate→confirmed→store دقیقاً کجا می‌ایستد."""
+        info = {
+            "camera": "", "tracking_enabled": bool(self.person_tracking_enabled),
+            "detector_available": bool(self._person_detector_available),
+            "detector_error": "", "ticks": 0, "boxes_total": 0,
+            "boxes_invalid": 0, "tracks_created": 0, "candidates": 0,
+            "confirmed": 0, "ended": 0, "reactivated": 0,
+            "descriptor_failures": 0, "active_now": 0, "confirmed_now": 0,
+            "lost_now": 0,
+        }
+        try:
+            cam = getattr(self, "cam", None)
+            if isinstance(cam, dict):
+                info["camera"] = cam.get("name") or cam.get("ip") or ""
+            trk = self._person_local_tracker
+            if trk is not None:
+                try:
+                    info.update(trk.diag_snapshot())
+                except Exception:
+                    pass
+            if not info["detector_available"]:
+                try:
+                    from person_detector import person_detector as _pd
+                    err = _pd.load_error
+                    if err:
+                        info["detector_error"] = str(err)[:300]
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return info
+
+    def _person_debug_log_path(self):
+        try:
+            from person_store import person_store as _ps
+            return os.path.join(os.path.dirname(_ps.db_path),
+                               "person_debug.log")
+        except Exception:
+            return None
+
+    def _log_person_diag(self):
+        """ثبت دوره‌ای (هر ۶۰ ثانیه) شمارنده‌های ردیابی در person_debug.log
+        تا طه بتواند فایل را بفرستد و معلوم شود چرا گزارشی ثبت نمی‌شود.
+        چرخش ساده: اگر فایل از ۳۰۰KB بزرگ‌تر شد، نصف قدیمی‌اش نگه داشته
+        می‌شود."""
+        now = time.time()
+        last = getattr(self, "_person_diag_logged_ts", 0.0)
+        if now - last < 60.0:
+            return
+        self._person_diag_logged_ts = now
+        try:
+            path = self._person_debug_log_path()
+            if not path:
+                return
+            if os.path.exists(path) and os.path.getsize(path) > 300 * 1024:
+                with open(path, "rb") as f:
+                    data = f.read()
+                with open(path, "wb") as f:
+                    f.write(data[-150 * 1024:])
+            d = self.get_person_diag()
+            line = (
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')} cam={d['camera']} "
+                f"trk={'on' if d['tracking_enabled'] else 'off'} "
+                f"det={'ok' if d['detector_available'] else 'FAIL'} "
+                f"ticks={d['ticks']} boxes={d['boxes_total']} "
+                f"box_invalid={d['boxes_invalid']} created={d['tracks_created']} "
+                f"cand={d['candidates']} confirmed={d['confirmed']} "
+                f"ended={d['ended']} reactivated={d['reactivated']} "
+                f"desc_fail={d['descriptor_failures']} "
+                f"active_now={d['active_now']} lost_now={d['lost_now']}"
+            )
+            if d["detector_error"]:
+                line += f" det_err={d['detector_error']}"
+            line += "\n"
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line)
+        except Exception:
+            pass
+
     def set_plate_detection(self, enabled: bool):
         """روشن/خاموش کردن پلاک‌خوان برای این دوربین (از صفحه‌ی پلاک‌خوان یا
         شروع پخش با cam["plate_detection"])."""
@@ -787,6 +869,11 @@ class CameraStreamThread(QThread):
                     print(f"خطا در ردیابی اشخاص: {_pte}")
             else:
                 self._person_draw_list = []
+            # لاگ تشخیصی دوره‌ای ردیابی (هر ۶۰ ثانیه) — داخل _log_person_diag
+            # خودش throttle می‌شود؛ حتی وقتی دتکتور در دسترس نیست هم ثبت
+            # می‌شود تا علت «گزارشی ثبت نمی‌شود» در فایل دیده شود.
+            if self.person_tracking_enabled:
+                self._log_person_diag()
 
             # --- تشخیص تصویری آتش/دود: خط لوله‌ی سه‌مرحله‌ای ---
             # ۱) YOLO روی تمام فریم (آتش/دود بزرگ - رفتار قبلی، با آستانه‌ی حساسیت)

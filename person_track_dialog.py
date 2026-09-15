@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTabWidget, QTableWidget,
     QTableWidgetItem, QHeaderView, QListWidget, QListWidgetItem, QGroupBox,
     QPushButton, QComboBox, QDateEdit, QMessageBox, QFileDialog, QSplitter,
-    QDoubleSpinBox, QSpinBox, QInputDialog, QAbstractItemView,
+    QDoubleSpinBox, QSpinBox, QInputDialog, QAbstractItemView, QTextEdit,
 )
 
 from person_store import person_store
@@ -190,8 +190,10 @@ class PersonTrackPage(QWidget):
         self.threshold_spin.setSingleStep(0.05)
         self.threshold_spin.setDecimals(2)
         self.threshold_spin.setToolTip(
-            "کمتر = سخت‌گیرانه‌تر (کمتر اشتباه می‌گیرد ولی ممکن است یک شخص را "
-            "دو نفر حساب کند)؛ بیشتر = بخشنده‌تر (خطر یکی شدن دو شخص شبیه‌به‌هم)")
+            "فاصله‌ی کسینوسی بردار ظاهری نرمال‌شده (۰ = یکسان). کمتر = "
+            "سخت‌گیرانه‌تر (کمتر اشتباه می‌گیرد ولی ممکن است یک شخص را دو "
+            "نفر حساب کند)؛ بیشتر = بخشنده‌تر (خطر یکی شدن دو شخص "
+            "شبیه‌به‌هم). پیش‌فرض ۰.۴۵.")
         set_layout.addWidget(self.threshold_spin)
         set_layout.addWidget(QLabel("پنجره‌ی اتصال (دقیقه):"))
         self.window_spin = QSpinBox()
@@ -213,8 +215,113 @@ class PersonTrackPage(QWidget):
         set_group.setLayout(set_layout)
         layout.addWidget(set_group)
 
+        # --- وضعیت زنده‌ی تشخیصی: معلوم می‌کند مسیر
+        # candidate→confirmed→store دقیقاً کجا می‌ایستد (درخواست طه:
+        # «سیستم ردیابی اصلا کار نمیکنه» — حالا دلیلش دیده می‌شود).
+        diag_group = QGroupBox("🔍 وضعیت زنده‌ی ردیابی (تشخیصی)")
+        diag_layout = QVBoxLayout()
+        self.diag_text = QTextEdit()
+        self.diag_text.setReadOnly(True)
+        self.diag_text.setMaximumHeight(130)
+        self.diag_text.setStyleSheet(
+            "font-family: monospace; font-size: 11px; direction: ltr; "
+            "text-align: left;")
+        self.diag_text.setPlaceholderText(
+            "با دکمه‌ی «به‌روزرسانی»، شمارنده‌های زنده‌ی هر دوربین نمایش "
+            "داده می‌شود.")
+        diag_layout.addWidget(self.diag_text)
+        diag_btns = QHBoxLayout()
+        diag_refresh_btn = QPushButton("🔄 به‌روزرسانی وضعیت")
+        diag_refresh_btn.clicked.connect(self._refresh_diag)
+        diag_btns.addWidget(diag_refresh_btn)
+        diag_clear_btn = QPushButton("🗑 پاک‌سازی فایل لاگ")
+        diag_clear_btn.clicked.connect(self._clear_person_log)
+        diag_btns.addWidget(diag_clear_btn)
+        diag_btns.addStretch()
+        diag_hint = QLabel(
+            "راهنمای خواندن: تیک = تعداد دورهای تشخیص؛ باکس = باکس‌های معتبر؛ "
+            "box_invalid = باکس خرابِ دتکتور؛ desc_fail = دفعاتی که توصیف‌گر "
+            "ساخته نشد؛ det=FAIL یعنی مدل YOLO بارگذاری نشده (علت اول "
+            "«گزارشی ثبت نمی‌شود»). لاگ کامل: person_data/person_debug.log")
+        diag_hint.setStyleSheet("color: #9e9e9e; font-size: 11px;")
+        diag_hint.setWordWrap(True)
+        diag_btns.addWidget(diag_hint)
+        diag_layout.addLayout(diag_btns)
+        diag_group.setLayout(diag_layout)
+        layout.addWidget(diag_group)
+
         self._load_settings_to_ui()
         return tab
+
+    def _person_log_path(self):
+        try:
+            base = os.path.dirname(person_store.db_path)
+            return os.path.join(base, "person_debug.log")
+        except Exception:
+            return None
+
+    def _refresh_diag(self):
+        """نمایش شمارنده‌های زنده‌ی ردیابی هر دوربین + دنباله‌ی فایل لاگ."""
+        lines = []
+        try:
+            win = self.window()
+            grid = getattr(win, "camera_grid", None)
+            slots = getattr(grid, "slots", []) or []
+            found = False
+            for slot in slots:
+                cam = getattr(slot, "cam", None)
+                th = getattr(slot, "stream_thread", None)
+                if cam is None or th is None:
+                    continue
+                get_diag = getattr(th, "get_person_diag", None)
+                if not callable(get_diag):
+                    continue
+                found = True
+                d = get_diag()
+                name = d.get("camera") or "؟"
+                if not d.get("tracking_enabled"):
+                    lines.append(f"[{name}] ردیابی خاموش است (تیک بزنید).")
+                    continue
+                det = "ok" if d.get("detector_available") else "FAIL"
+                lines.append(
+                    f"[{name}] det={det} | تیک={d['ticks']} "
+                    f"باکس={d['boxes_total']} (خراب={d['boxes_invalid']}) | "
+                    f"رد ساخته‌شده={d['tracks_created']} "
+                    f"کاندیدا={d['candidates']} تأیید={d['confirmed']} "
+                    f"پایان={d['ended']} بازگشت={d['reactivated']} "
+                    f"خطای توصیف‌گر={d['descriptor_failures']} | "
+                    f"فعال={d['active_now']} گمشده={d['lost_now']}")
+                if d.get("detector_error"):
+                    lines.append(f"    خطای دتکتور: {d['detector_error']}")
+            if not found:
+                lines.append("هیچ دوربینی در صفحه‌ی اصلی باز نیست.")
+        except Exception as e:
+            lines.append(f"خطا در خواندن وضعیت: {e}")
+        # دنباله‌ی فایل لاگ
+        try:
+            path = self._person_log_path()
+            if path and os.path.exists(path):
+                with open(path, "r", encoding="utf-8",
+                          errors="replace") as f:
+                    tail = f.read().splitlines()[-8:]
+                if tail:
+                    lines.append("— آخرین خط‌های person_debug.log: —")
+                    lines.extend(tail)
+        except Exception:
+            pass
+        self.diag_text.setPlainText("\n".join(lines) if lines else "—")
+
+    def _clear_person_log(self):
+        try:
+            path = self._person_log_path()
+            if path and os.path.exists(path):
+                os.remove(path)
+                self.status_label.setText("🗑 فایل لاگ ردیابی پاک شد.")
+            else:
+                self.status_label.setText("فایل لاگی وجود ندارد.")
+        except Exception as e:
+            QMessageBox.warning(self, "خطا", f"پاک‌سازی لاگ ناموفق بود:\n{e}")
+        self._refresh_diag()
 
     def _load_settings_to_ui(self):
         self.threshold_spin.setValue(person_store.match_threshold)
