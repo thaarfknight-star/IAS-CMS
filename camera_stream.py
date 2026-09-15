@@ -576,6 +576,10 @@ class CameraStreamThread(QThread):
         self._plate_detector_available = False
         self._plate_detector_status_emitted = False
         self._plate_ocr_warning_emitted = False
+        self._plate_detect_error = ""
+        self._plate_ocr_error = ""
+        self._plate_update_error = ""
+        self._plate_diag_logged_ts = 0.0
 
         # --- ردیابی اشخاص بین دوربین‌ها (اختیاری، پیش‌فرض خاموش؛ بدون چهره) ---
         # مثل PlateTracker، ردیاب محلیِ چندفریمی برای هر دوربین نمونه‌ی جداست
@@ -704,6 +708,128 @@ class CameraStreamThread(QThread):
             line += "\n"
             with open(path, "a", encoding="utf-8") as f:
                 f.write(line)
+        except Exception:
+            pass
+
+    # ----------------------------------------------------------------------
+    # پلاک‌خوان: شمارنده‌های تشخیصی + فایل plate_debug.log
+    # ----------------------------------------------------------------------
+    def get_plate_diag(self):
+        """وضعیت واقعی پلاک‌خوان این دوربین برای صفحه‌ی پلاک‌خوان و فایل لاگ؛
+        معلوم می‌کند مسیر detect → OCR → vote → event دقیقاً کجا می‌ایستد."""
+        info = {
+            "camera": "", "enabled": bool(self.plate_detection_enabled),
+            "detector_available": bool(self._plate_detector_available),
+            "detector_error": getattr(self, "_plate_detect_error", ""),
+            "ocr_engine": "none", "ocr_models_bundled": False,
+            "ocr_error": getattr(self, "_plate_ocr_error", ""),
+            "update_error": getattr(self, "_plate_update_error", ""),
+            "ticks": 0, "boxes_total": 0, "detect_errors": 0,
+            "ocr_calls": 0, "ocr_empty": 0, "ocr_skipped_blur": 0,
+            "rectified": 0, "rect_fallback": 0,
+            "tracks_created": 0, "tracks_active": 0, "ocr_runs": 0,
+            "reads_total": 0, "reads_rejected": 0, "votes_cast": 0,
+            "events": 0, "cooldown_skips": 0,
+        }
+        try:
+            cam = getattr(self, "cam", None)
+            if isinstance(cam, dict):
+                info["camera"] = cam.get("name") or cam.get("ip") or ""
+        except Exception:
+            pass
+        try:
+            from plate_detector import (get_shared_plate_detector,
+                                        get_shared_plate_ocr,
+                                        easyocr_models_bundled)
+            d = get_shared_plate_detector()
+            if d is not None:
+                try:
+                    info.update(d.diag)
+                except Exception:
+                    pass
+            ocr = getattr(self, "_plate_ocr", None) or get_shared_plate_ocr()
+            if ocr is not None:
+                try:
+                    info["ocr_engine"] = ocr.engine_name
+                except Exception:
+                    pass
+                try:
+                    info.update(ocr.diag)
+                except Exception:
+                    pass
+            info["ocr_models_bundled"] = bool(easyocr_models_bundled())
+        except Exception:
+            pass
+        try:
+            trk = self._plate_tracker
+            if trk is not None:
+                info.update(trk.diag_snapshot())
+        except Exception:
+            pass
+        return info
+
+    def _plate_debug_log_path(self):
+        try:
+            from plate_store import plate_store as _ps
+            return os.path.join(os.path.dirname(_ps.db_path), "plate_debug.log")
+        except Exception:
+            return None
+
+    def _append_plate_log_line(self, line):
+        try:
+            path = self._plate_debug_log_path()
+            if not path:
+                return
+            if os.path.exists(path) and os.path.getsize(path) > 300 * 1024:
+                with open(path, "rb") as f:
+                    data = f.read()
+                with open(path, "wb") as f:
+                    f.write(data[-150 * 1024:])
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+
+    def _log_plate_diag(self):
+        """ثبت دوره‌ای (هر ۶۰ ثانیه) شمارنده‌های پلاک‌خوان در plate_debug.log
+        تا طه بتواند فایل را بفرستد و معلوم شود مسیر تشخیص دقیقاً کجا می‌ایستد."""
+        now = time.time()
+        last = getattr(self, "_plate_diag_logged_ts", 0.0)
+        if now - last < 60.0:
+            return
+        self._plate_diag_logged_ts = now
+        try:
+            d = self.get_plate_diag()
+            line = (
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')} cam={d['camera']} "
+                f"plate={'on' if d['enabled'] else 'off'} "
+                f"det={'ok' if d['detector_available'] else 'FAIL'} "
+                f"ocr={d['ocr_engine']} ocr_bundled={'Y' if d['ocr_models_bundled'] else 'N'} "
+                f"ticks={d['ticks']} boxes={d['boxes_total']} "
+                f"det_err={d['detect_errors']} ocr_calls={d['ocr_calls']} "
+                f"ocr_empty={d['ocr_empty']} blur_skip={d['ocr_skipped_blur']} "
+                f"reads={d['reads_total']} rejected={d['reads_rejected']} "
+                f"votes={d['votes_cast']} events={d['events']} "
+                f"cooldown_skip={d['cooldown_skips']} active={d['tracks_active']}"
+            )
+            for k, lbl in (("detector_error", "det_err_msg"),
+                           ("ocr_error", "ocr_err"),
+                           ("update_error", "upd_err")):
+                if d[k]:
+                    line += f" {lbl}={d[k]}"
+            self._append_plate_log_line(line)
+        except Exception:
+            pass
+
+    def _append_plate_event_log(self, text, conf, box):
+        """ثبت هر رویداد تأییدشده‌ی پلاک در plate_debug.log (با کول‌داون محدود
+        است، پس حجم فایل منفجر نمی‌شود)."""
+        try:
+            cam = getattr(self, "cam", None)
+            cam_name = cam.get("name") or cam.get("ip") if isinstance(cam, dict) else ""
+            self._append_plate_log_line(
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')} cam={cam_name} "
+                f"PLATE_EVENT text={text} conf={float(conf):.2f} box={box}")
         except Exception:
             pass
 
@@ -929,12 +1055,15 @@ class CameraStreamThread(QThread):
                 if self._plate_detector_available:
                     try:
                         _pboxes = _pld.detect(frame)
-                    except Exception:
+                        self._plate_detect_error = ""
+                    except Exception as e:
                         _pboxes = []
+                        if not getattr(self, "_plate_detect_error", ""):
+                            self._plate_detect_error = str(e)[:200]
                     try:
                         if self._plate_ocr is None:
                             self._plate_ocr = _get_plate_ocr()
-                        # اگر موتور OCR نصب نباشد، باکس خالیِ بی‌صدا نمی‌گذاریم؛
+                        # اگر موتور OCR داخل بیلد نباشد، باکس خالیِ بی‌صدا نمی‌گذاریم؛
                         # یک‌بار هشدار واضح می‌دهیم تا کاربر بداند چرا متنی خوانده نمی‌شود
                         _ocr_ok = bool(self._plate_ocr is not None
                                        and self._plate_ocr.available)
@@ -942,12 +1071,18 @@ class CameraStreamThread(QThread):
                             self._plate_ocr_warning_emitted = True
                             self.plate_detector_status_signal.emit(
                                 True,
-                                "موتور OCR نصب نیست؛ فقط کادر پلاک نمایش داده می‌شود. "
-                                "برای خوانش متن پلاک: pip install easyocr")
+                                "موتور OCR داخل این بیلد برنامه نیست؛ فقط کادر پلاک "
+                                "نمایش داده می‌شود و متنی خوانده نمی‌شود. با بیلد "
+                                "جدید برنامه (شامل EasyOCR) درست می‌شود؛ چیزی "
+                                "روی سیستم نصب نکنید.")
+                        self._plate_ocr_error = "" if _ocr_ok else "ocr-unavailable"
                         _pevents = self._plate_tracker.update(
                             _pboxes, frame, self._plate_ocr)
-                    except Exception:
+                        self._plate_update_error = ""
+                    except Exception as e:
                         _pevents = []
+                        if not getattr(self, "_plate_update_error", ""):
+                            self._plate_update_error = str(e)[:200]
                     # وضعیت فعلی ترک‌ها برای رسم (با تطبیق تعریف‌شده/نشده)
                     _draw_list = []
                     try:
@@ -974,6 +1109,8 @@ class CameraStreamThread(QThread):
                             "conf": float(_conf),
                             "crop": _crop,
                         })
+                        self._append_plate_event_log(_text, _conf, _box)
+                    self._log_plate_diag()  # هر ۶۰ ثانیه: شمارنده‌ها در plate_debug.log
 
             if unknown_event is not None:
                 unknown_crop = _crop_face(frame, unknown_event)

@@ -2514,7 +2514,8 @@ class MainWindow(QMainWindow):
         # فعال/غیرفعال شدن پلاک‌خوان روی دوربینی که همین حالا باز است.
         self.plate_page = PlateLibraryPage(
             self.get_active_camera_frame, self.camera_store,
-            on_plate_toggle=self._on_camera_plate_toggle)
+            on_plate_toggle=self._on_camera_plate_toggle,
+            get_plate_diag_callback=self._get_plate_live_diag)
         self.pages.addWidget(self.plate_page)
         # رفع درخواست «ردیابی اشخاص بین دوربین‌ها»: صفحه‌ی جدا (مثل
         # پلاک‌خوان) با دو تب «اشخاص ردیابی‌شده» و «گزارش مسیر حرکت»؛
@@ -3674,6 +3675,24 @@ class MainWindow(QMainWindow):
                 pass
         except Exception as e:
             print(f"خطا در ثبت رویداد پلاک: {e}")
+
+    def _get_plate_live_diag(self):
+        """جمع‌آوری شمارنده‌های تشخیصی پلاک‌خوان همه‌ی دوربین‌های باز برای
+        دیالوگ «وضعیت زنده‌ی پلاک‌خوان (تشخیصی)» صفحه‌ی پلاک‌خوان."""
+        out = {}
+        try:
+            for slot in self.camera_grid.slots:
+                try:
+                    cam = getattr(slot, "cam", None)
+                    name = (cam.get("name") or cam.get("ip") or "") if isinstance(cam, dict) else ""
+                    th = getattr(slot, "stream_thread", None)
+                    if th is not None and hasattr(th, "get_plate_diag"):
+                        out[name or "دوربین"] = th.get_plate_diag()
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return out
 
     def _on_camera_plate_toggle(self, cam_id, enabled):
         """اعمال زنده‌ی تیک «پلاک‌خوان» صفحه‌ی پلاک‌خوان روی دوربینی که همین

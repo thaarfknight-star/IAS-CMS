@@ -607,6 +607,140 @@ class PlateEventDetailDialog(QDialog):
 
 
 # --------------------------------------------------------------------------
+# دیالوگ «وضعیت زنده‌ی پلاک‌خوان (تشخیصی)»
+# --------------------------------------------------------------------------
+
+_PLATE_DIAG_ROWS = [
+    ("وضعیت پلاک‌خوان", "enabled"),
+    ("مدل تشخیص پلاک", "detector_available"),
+    ("موتور OCR", "ocr_engine"),
+    ("مدل‌های EasyOCR داخل برنامه", "ocr_models_bundled"),
+    ("دور تشخیص (ticks)", "ticks"),
+    ("کادر پلاک پیداشده", "boxes_total"),
+    ("خطای تشخیص", "detect_errors"),
+    ("اجرای OCR", "ocr_runs"),
+    ("فراخوانی OCR روی کراپ", "ocr_calls"),
+    ("OCR بدون نتیجه", "ocr_empty"),
+    ("ردشده به‌خاطر تاری تصویر", "ocr_skipped_blur"),
+    ("خوانش معتبر (وارد رأی‌گیری)", "reads_total"),
+    ("خوانش نامعتبر", "reads_rejected"),
+    ("رأی‌گیری موفق (اکثریت کاراکتری)", "votes_cast"),
+    ("رویداد تأییدشده", "events"),
+    ("ردشده در کول‌داون", "cooldown_skips"),
+    ("ترک فعال", "tracks_active"),
+    ("علت خطای تشخیص", "detector_error"),
+    ("علت خطای OCR", "ocr_error"),
+    ("علت خطای به‌روزرسانی", "update_error"),
+]
+
+
+class LivePlateStatusDialog(QDialog):
+    """نمایش زنده‌ی شمارنده‌های تشخیصی پلاک‌خوان هر دوربین + راهنمای
+    خوانش آن‌ها (کجای مسیر detect → OCR → vote → event می‌ایستد)."""
+
+    def __init__(self, get_diag_callback, parent=None):
+        super().__init__(parent)
+        self.get_diag_callback = get_diag_callback
+        self.setWindowTitle("وضعیت زنده‌ی پلاک‌خوان (تشخیصی)")
+        self.setMinimumSize(640, 480)
+        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        layout = QVBoxLayout(self)
+
+        hint = QLabel(
+            "این شمارنده‌ها مسیر واقعی پلاک‌خوان را نشان می‌دهند:\n"
+            "• اگر «کادر پلاک پیداشده» صفر است و دوربین روشن است: مدل تشخیص "
+            "پلاک لود نشده یا پلاکی در دید دوربین نیست (علت را در «علت خطای "
+            "تشخیص» ببینید).\n"
+            "• اگر کادر پیدا می‌شود ولی «خوانش معتبر» صفر است: OCR جواب "
+            "نمی‌دهد — «موتور OCR» و «علت خطای OCR» را ببینید.\n"
+            "• اگر «رأی‌گیری موفق» صفر است ولی خوانش معتبر هست: متن‌ها قالب "
+            "پلاک ایرانی را ندارند (حرف نامعتبر/نویز).\n"
+            "• اگر «رویداد تأییدشده» صفر است: هنوز به‌اندازه‌ی کافی خوانش "
+            "یکسان برای رأی‌گیری جمع نشده (چند ثانیه صبر کنید).\n"
+            "فایل plate_debug.log (کنار دیتابیس) هم همین شمارنده‌ها را "
+            "هر ۶۰ ثانیه ذخیره می‌کند تا برای پشتیبانی بفرستید.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("font-size: 11px; color: #9e9e9e;")
+        layout.addWidget(hint)
+
+        self.table = QTableWidget(0, 0)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        layout.addWidget(self.table, 1)
+
+        btn_row = QHBoxLayout()
+        self.refresh_btn = QPushButton("🔄 به‌روزرسانی")
+        self.refresh_btn.clicked.connect(self.reload)
+        btn_row.addWidget(self.refresh_btn)
+        self.log_btn = QPushButton("📄 باز کردن فایل لاگ")
+        self.log_btn.clicked.connect(self.open_log_file)
+        btn_row.addWidget(self.log_btn)
+        btn_row.addStretch(1)
+        close_btn = QPushButton("بستن")
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        self.reload()
+
+    def _diags(self):
+        try:
+            d = self.get_diag_callback() if self.get_diag_callback else None
+        except Exception:
+            d = None
+        return d if isinstance(d, dict) else {}
+
+    def reload(self):
+        diags = self._diags()
+        cams = sorted(diags.keys())
+        self.table.setRowCount(len(_PLATE_DIAG_ROWS))
+        self.table.setColumnCount(len(cams) + 1)
+        headers = ["شاخص"] + [str(c) or "—" for c in cams]
+        self.table.setHorizontalHeaderLabels(headers)
+        for r, (fa_label, key) in enumerate(_PLATE_DIAG_ROWS):
+            self.table.setItem(r, 0, QTableWidgetItem(fa_label))
+            for c, cam in enumerate(cams):
+                d = diags[cam] or {}
+                val = d.get(key, "")
+                if key in ("enabled", "detector_available", "ocr_models_bundled"):
+                    txt = "✅" if val else "❌"
+                elif key in ("detector_error", "ocr_error", "update_error"):
+                    txt = str(val)[:80] if val else "—"
+                else:
+                    txt = str(val)
+                self.table.setItem(r, c + 1, QTableWidgetItem(txt))
+        if not cams:
+            self.table.setRowCount(1)
+            self.table.setColumnCount(1)
+            self.table.setHorizontalHeaderLabels(["شاخص"])
+            self.table.setItem(0, 0, QTableWidgetItem(
+                "هنوز هیچ دوربینی پلاک‌خوانش را روشن نکرده است؛ "
+                "در تب «تعریف پلاک‌ها» دوربین را تیک بزنید و چند ثانیه "
+                "صبر کنید، بعد دوباره به‌روزرسانی بزنید."))
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch)
+
+    def open_log_file(self):
+        try:
+            from plate_store import plate_store
+            path = os.path.join(os.path.dirname(plate_store.db_path),
+                                "plate_debug.log")
+        except Exception:
+            path = ""
+        if not path or not os.path.isfile(path):
+            QMessageBox.information(
+                self, "فایل لاگ",
+                "هنوز فایل plate_debug.log ساخته نشده است؛ وقتی حداقل یک "
+                "دوربین پلاک‌خوانش فعال شود، فایل کنار دیتابیس ساخته می‌شود.")
+            return
+        try:
+            from PyQt6.QtGui import QDesktopServices
+            from PyQt6.QtCore import QUrl
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        except Exception:
+            QMessageBox.information(self, "فایل لاگ", f"مسیر فایل:\n{path}")
+
+
+# --------------------------------------------------------------------------
 # صفحه‌ی اصلی پلاک‌خوان (دو تب)
 # --------------------------------------------------------------------------
 
@@ -619,11 +753,12 @@ class PlateLibraryPage(QWidget):
                      "مالک", "وضعیت", "اطمینان"]
 
     def __init__(self, get_frame_callback, camera_store, on_plate_toggle=None,
-                 parent=None):
+                 get_plate_diag_callback=None, parent=None):
         super().__init__(parent)
         self.get_frame_callback = get_frame_callback
         self.camera_store = camera_store
         self.on_plate_toggle = on_plate_toggle  # (cam_id, enabled) -> None
+        self.get_plate_diag_callback = get_plate_diag_callback  # () -> {cam_name: diag}
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
 
         layout = QVBoxLayout(self)
@@ -631,11 +766,23 @@ class PlateLibraryPage(QWidget):
         title.setStyleSheet("font-size: 16px; font-weight: bold; padding: 4px;")
         layout.addWidget(title)
 
-        # وضعیت موتور خوانش متن (بدون بارگذاری سنگین؛ فقط بررسی نصب بودن)
+        # بنر وضعیت واقعی سیستم پلاک‌خوان (استاتیک؛ چیزی لود نمی‌کند)
+        self.system_status_label = QLabel(self._system_status_text())
+        self.system_status_label.setStyleSheet("font-size: 11px; padding: 2px 4px;")
+        self.system_status_label.setWordWrap(True)
+        layout.addWidget(self.system_status_label)
+
         self.ocr_status_label = QLabel(self._ocr_status_text())
         self.ocr_status_label.setStyleSheet("font-size: 11px; padding: 2px 4px;")
         self.ocr_status_label.setWordWrap(True)
         layout.addWidget(self.ocr_status_label)
+
+        diag_row = QHBoxLayout()
+        self.diag_btn = QPushButton("🔍 وضعیت زنده‌ی پلاک‌خوان (تشخیصی)")
+        self.diag_btn.clicked.connect(self.open_live_plate_status)
+        diag_row.addWidget(self.diag_btn)
+        diag_row.addStretch(1)
+        layout.addLayout(diag_row)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_define_tab(), "📝 تعریف پلاک‌ها")
@@ -648,23 +795,51 @@ class PlateLibraryPage(QWidget):
 
         self.refresh()
 
-    def _ocr_status_text(self):
-        """متن وضعیت موتور OCR برای نمایش در هدر صفحه (سبک؛ چیزی لود نمی‌کند)."""
+    def _system_status_text(self):
+        """بنر وضعیت واقعی باندل پلاک‌خوان (استاتیک؛ مدل لود نمی‌شود): آیا
+        فایل مدل plate_detector.pt داخل برنامه هست؟ اگر نه، در بیلد رسمی
+        هست و فقط باید برنامه به‌روز شود."""
         try:
-            from plate_detector import ocr_install_status
-            easy, rapid = ocr_install_status()
+            from plate_detector import _find_plate_model
+            model = _find_plate_model()
         except Exception:
-            easy, rapid = False, False
+            model = None
+        if model:
+            return "مدل تشخیص پلاک: ✅ داخل برنامه است"
+        return ("مدل تشخیص پلاک: ⚠️ در این بیلد پیدا نشد — در بیلد جدید "
+                "برنامه (مدل داخل exe) درست می‌شود؛ چیزی روی سیستم نصب نکنید.")
+
+    def _ocr_status_text(self):
+        """متن وضعیت موتور OCR برای نمایش در هدر صفحه (سبک؛ چیزی لود نمی‌کند).
+        نکته: در بیلد رسمی EasyOCR و مدل‌های فارسی‌اش داخل exe هستند؛ هیچ
+        دانلود/نصبی روی سیستم کاربر لازم نیست."""
+        try:
+            from plate_detector import ocr_install_status, easyocr_models_bundled
+            easy, rapid = ocr_install_status()
+            bundled = easyocr_models_bundled()
+        except Exception:
+            easy, rapid, bundled = False, False, False
+        if easy and bundled:
+            return "موتور خوانش متن: EasyOCR فارسی ✅ (مدل‌ها داخل برنامه‌اند؛ خوانش پلاک ایرانی فعال است)"
         if easy:
-            return "موتور خوانش متن: EasyOCR فارسی ✅ (خوانش پلاک ایرانی فعال است)"
+            return "موتور خوانش متن: EasyOCR ✅ (مدل فارسی‌اش در این بیلد نیست؛ با بیلد جدید درست می‌شود)"
         if rapid:
             return ("موتور خوانش متن: RapidOCR ⚠️ (برای پلاک فارسی ضعیف است؛ "
-                    "برای نتیجه‌ی بهتر: pip install easyocr)")
-        return ("موتور خوانش متن: نصب نیست ⚠️ — پلاک پیدا می‌شود ولی متنی خوانده "
-                "نمی‌شود. دستور نصب: pip install easyocr")
+                    "با بیلد جدید برنامه که EasyOCR داخلش است درست می‌شود؛ "
+                    "چیزی نصب نکنید)")
+        return ("موتور خوانش متن: ⚠️ در این بیلد نیست — پلاک پیدا می‌شود ولی "
+                "متنی خوانده نمی‌شود. با بیلد جدید برنامه درست می‌شود؛ "
+                "چیزی روی سیستم نصب نکنید.")
+
+    def open_live_plate_status(self):
+        """دیالوگ «وضعیت زنده‌ی پلاک‌خوان (تشخیصی)»: شمارنده‌های واقعی هر
+        دوربین — معلوم می‌کند مسیر detect → OCR → vote → event کجا می‌ایستد."""
+        dlg = LivePlateStatusDialog(self.get_plate_diag_callback, self)
+        dlg.exec()
 
     def refresh(self):
         """هر بار که صفحه از هدر باز می‌شود صدا زده می‌شود."""
+        self.system_status_label.setText(self._system_status_text())
         self.ocr_status_label.setText(self._ocr_status_text())
         self._reload_camera_checklist()
         self.refresh_plates_table()
