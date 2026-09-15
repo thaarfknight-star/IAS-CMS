@@ -3084,13 +3084,6 @@ class MainWindow(QMainWindow):
             return
 
         self.statusBar().showMessage("در حال بررسی مسیر اتصال مستقیم دوربین‌ها...")
-        # رفع باگ گیر کردن روی «در حال یافتن مسیر»: اگر ترد بررسی مسیر به هر
-        # دلیلی (خطای داخلی یا قفل شدن روی سوکت شبکه) سیگنال پایان را نفرستد،
-        # قبلاً برنامه برای همیشه روی همان پیام می‌ماند و هیچ کانالی اضافه
-        # نمی‌شد. حالا یک نگهبان زمانی (watchdog) داریم: اگر تا ۱۲۰ ثانیه
-        # نتیجه نیاید، کانال‌ها از مسیر خودِ NVR اضافه می‌شوند تا کاربر
-        # هیچ‌وقت گیر نکند.
-        self._probe_settled = False
         self._direct_probe_thread = DirectCameraProbeThread(
             new_entries, nvr.get("user", ""), nvr.get("pass", ""), nvr.get("rtsp_port", "554"),
         )
@@ -3099,24 +3092,12 @@ class MainWindow(QMainWindow):
             lambda results: self._on_direct_probe_finished(nvr, results)
         )
         self._direct_probe_thread.start()
-        self._probe_watchdog = QTimer(self)
-        self._probe_watchdog.setSingleShot(True)
-        self._probe_watchdog.timeout.connect(
-            lambda: self._on_direct_probe_timeout(nvr, new_entries)
-        )
-        self._probe_watchdog.start(120_000)
 
     def _on_direct_probe_finished(self, nvr, results):
         """رفع درخواست: بعد از پیدا شدن (یا نشدن) مسیر مستقیم RTSP هر دوربین
         (در ترد جدا - نگاه کنید به DirectCameraProbeThread)، کانال‌ها ثبت
         می‌شوند: کانال‌های دارای IP دوربین با اتصال مستقیم به آن IP (پورت
         ۵۵۴ خودِ دوربین + یوزرنیم/رمز همین NVR)، و بقیه مثل قبل از طریق NVR."""
-        if getattr(self, "_probe_settled", False):
-            return  # نگهبان زمانی قبلاً کانال‌ها را اضافه کرده است
-        self._probe_settled = True
-        watchdog = getattr(self, "_probe_watchdog", None)
-        if watchdog is not None:
-            watchdog.stop()
         self.statusBar().clearMessage()
         added_cams = []
         for r in results:
@@ -3147,37 +3128,6 @@ class MainWindow(QMainWindow):
                 "روی آن‌ها در لیست دابل‌کلیک کنید."
             )
         QMessageBox.information(self, "افزودن کامل شد", msg)
-
-    def _on_direct_probe_timeout(self, nvr, new_entries):
-        """رفع باگ: اگر ترد بررسی مسیر مستقیم (DirectCameraProbeThread) تا
-        ۱۲۰ ثانیه سیگنال پایان نفرستد (گیر کردن روی سوکت شبکه یا خطای داخلی
-        در nvr_scanner.py)، کانال‌ها به‌جای ماندن برای همیشه روی «در حال
-        یافتن مسیر»، از مسیر خودِ NVR اضافه می‌شوند."""
-        if getattr(self, "_probe_settled", False):
-            return
-        self._probe_settled = True
-        self.statusBar().clearMessage()
-        try:
-            thread = getattr(self, "_direct_probe_thread", None)
-            if thread is not None:
-                thread.quit()
-        except Exception:
-            pass
-        added_cams = []
-        for chn, name, cam_ip in new_entries:
-            added_cams.append(self.camera_store.add_channel_camera(nvr, chn, name, path=""))
-        self.reload_camera_list()
-        for cam in added_cams:
-            self._auto_display_camera(cam)
-        QMessageBox.warning(
-            self, "بررسی مسیر مستقیم طول کشید",
-            f"{len(added_cams)} کانال از طریق خودِ NVR اضافه شد.\n\n"
-            "بررسی مسیر اتصال مستقیم دوربین‌ها در ۱۲۰ ثانیه تمام نشد "
-            "(احتمالاً دوربین‌ها در شبکه در دسترس نیستند یا پورت ۵۵۴ آن‌ها "
-            "بسته است)؛ برای همین کانال‌ها فعلاً از مسیر NVR پخش می‌شوند. "
-            "اگر اتصال مستقیم می‌خواهید، روی هر دوربین «ویرایش» و سپس "
-            "«تشخیص خودکار» مسیر را بزنید.",
-        )
 
     def show_camera_context_menu(self, pos):
         item = self.camera_list.itemAt(pos)
