@@ -1,4 +1,5 @@
 import os
+import sys
 import threading
 
 import cv2
@@ -65,6 +66,12 @@ def _resolve_model_dir(dirname):
         candidates.append(os.path.join(__nuitka_binary_dir__, dirname))  # noqa: F821
     except NameError:
         pass
+    # exe ساخته‌شده با PyInstaller: در حالت onedirِ نسخه‌ی ۶ به بعد، همه‌ی
+    # فایل‌های باندل داخل زیرپوشه‌ی _internal کنار فایل اجرایی هستند و
+    # sys._MEIPASS همان‌جا را نشان می‌دهد.
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass and os.path.isdir(meipass):
+        candidates.append(os.path.join(meipass, dirname))
     candidates.append(os.path.join(os.getcwd(), dirname))
     candidates.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), dirname))
     for path in candidates:

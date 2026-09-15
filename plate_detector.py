@@ -74,6 +74,18 @@ def _app_dir():
     return os.getcwd()
 
 
+def _bundle_dir():
+    """پوشه‌ی فایل‌های فقط‌خواندنیِ باندل‌شده (مدل‌ها).
+    در exe ساخته‌شده با PyInstaller این sys._MEIPASS است؛ در حالت onedirِ
+    نسخه‌ی ۶ به بعد همان زیرپوشه‌ی _internal کنار فایل اجرایی است که
+    --add-dataها (مثل plate_detector.pt و easyocr_models) داخلش قرار
+    می‌گیرند. در اجرای از سورس None برمی‌گرداند."""
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass and os.path.isdir(meipass):
+        return meipass
+    return None
+
+
 def _configure_easyocr_bundled_models():
     """اگر مدل‌های EasyOCR داخل باندل برنامه باشند (easyocr_models/model)،
     متغیر EASYOCR_MODULE_PATH را طوری تنظیم می‌کند که Reader همان‌ها را لود
@@ -81,8 +93,14 @@ def _configure_easyocr_bundled_models():
     if os.environ.get("EASYOCR_MODULE_PATH"):
         return
     app = _app_dir()
-    for cand in (os.path.join(app, "easyocr_models"),
-                 os.path.join(app, "plate_data", "easyocr_models")):
+    cands = []
+    bundle = _bundle_dir()
+    if bundle:
+        # exe فریزشده: مدل‌ها با --add-data داخل _internal باندل شده‌اند
+        cands.append(os.path.join(bundle, "easyocr_models"))
+    cands.extend((os.path.join(app, "easyocr_models"),
+                  os.path.join(app, "plate_data", "easyocr_models")))
+    for cand in cands:
         try:
             if os.path.isdir(os.path.join(cand, "model")):
                 os.environ["EASYOCR_MODULE_PATH"] = cand
@@ -119,6 +137,11 @@ def _find_plate_model():
     candidates = []
     if env_path:
         candidates.append(env_path)
+    bundle = _bundle_dir()
+    if bundle:
+        # exe فریزشده (PyInstaller onedir v6+): مدل با --add-data داخل
+        # _internal باندل شده است
+        candidates.append(os.path.join(bundle, "plate_detector.pt"))
     app = _app_dir()
     candidates.append(os.path.join(app, "plate_detector.pt"))
     candidates.append(os.path.join(app, "models", "plate_detector.pt"))

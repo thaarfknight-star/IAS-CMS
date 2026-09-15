@@ -296,22 +296,33 @@ jobs:
         # «Failed to execute script 'pyi_rth_multiprocessing' ... No module
         # named '_socket'» کرش می‌کند. پس بیلد را همین‌جا با پیام فارسی
         # واضح fail می‌کنیم تا exe خراب دست کاربر نرسد.
+        # نکته‌ی چیدمان: در PyInstaller نسخه‌ی ۶ به بعد، حالت onedir همه‌ی
+        # فایل‌های باندل (باینری‌ها مثل _socket.pyd و --add-dataها) را داخل
+        # زیرپوشه‌ی _internal کنار فایل اجرایی می‌گذارد، نه کنار exe؛ پس
+        # اول همان‌جا چک می‌کنیم و بعد چیدمان قدیمی (کنار exe).
         $bundleDir = Join-Path "dist" "CCTV_CMS"
-        $socketPyd = Join-Path $bundleDir "_socket.pyd"
-        if (-not (Test-Path $socketPyd)) {
+        $bundleRoots = @((Join-Path $bundleDir "_internal"), $bundleDir)
+        function Find-Bundled([string]$rel) {
+          foreach ($root in $bundleRoots) {
+            $p = Join-Path $root $rel
+            if (Test-Path $p) { return $p }
+          }
+          return $null
+        }
+        if (-not (Find-Bundled "_socket.pyd")) {
           Write-Host "##[error] بیلد ناقص است: _socket.pyd در dist/CCTV_CMS پیدا نشد؛ exe با خطای No module named '_socket' کرش می‌کند."
           throw "Build verification failed: _socket.pyd missing from bundle."
         }
         # --- راستی‌آزمایی پلاک‌خوان: مدل و مدل‌های EasyOCR باید داخل باندل باشند ---
-        if (-not (Test-Path (Join-Path $bundleDir "plate_detector.pt"))) {
+        if (-not (Find-Bundled "plate_detector.pt")) {
           Write-Host "##[error] بیلد ناقص است: plate_detector.pt در dist/CCTV_CMS پیدا نشد؛ پلاک‌خوان در exe کار نمی‌کند."
           throw "Build verification failed: plate_detector.pt missing from bundle."
         }
-        if (-not (Test-Path (Join-Path $bundleDir "easyocr_models\model\craft_mlt_25k.pth"))) {
+        if (-not (Find-Bundled (Join-Path "easyocr_models" "model" "craft_mlt_25k.pth"))) {
           Write-Host "##[error] بیلد ناقص است: مدل‌های EasyOCR در dist/CCTV_CMS/easyocr_models پیدا نشد؛ خوانش متن پلاک در exe کار نمی‌کند."
           throw "Build verification failed: EasyOCR models missing from bundle."
         }
-        $bundleFiles = (Get-ChildItem -Path $bundleDir -File | Measure-Object).Count
+        $bundleFiles = (Get-ChildItem -Path $bundleDir -Recurse -File | Measure-Object).Count
         Write-Host "Build verification OK: _socket.pyd + plate_detector.pt + easyocr_models present, $bundleFiles files in bundle."
 
     # ساخت EXE سبک برای شبیه‌ساز پنل اعلام حریق (fire_panel_simulator.py):
