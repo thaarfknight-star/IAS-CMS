@@ -20,6 +20,16 @@ import os
 import sys
 import urllib.request
 
+# خروجی کنسول رانر ویندوز cp1252 است و چاپ متن فارسی در آن
+# UnicodeEncodeError می‌دهد؛ پس stdout را از اول UTF-8 می‌کنیم تا
+# پیام‌های خطای فارسی‌ی fail() واقعاً دیده شوند (نه اینکه خودِ چاپ
+# پیام کرش کند و خطای اصلی پنهان بماند).
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(REPO)
 
@@ -84,7 +94,10 @@ print("plate_detector.pt ready: %d bytes" % os.path.getsize(MODEL), flush=True)
 # PyInstaller می‌شد: فایل‌ها تخت دانلود شده بودند و چک
 # easyocr_models\model\text_detection.pt رد می‌شد.)
 MODEL_DIR = os.path.join(REPO, "easyocr_models", "model")
-DET = os.path.join(MODEL_DIR, "text_detection.pt")
+# نام واقعی فایل مدل تشخیص ناحیه‌ی متن در EasyOCR نسخه‌ی ۱٫۷:
+# config.py -> detection_models['craft']['filename'] == 'craft_mlt_25k.pth'
+# («text_detection.pt» نام قدیمی/اشتباه است و هیچ‌وقت ساخته نمی‌شود.)
+DET = os.path.join(MODEL_DIR, "craft_mlt_25k.pth")
 if not os.path.isfile(DET):
     import shutil
 
@@ -110,10 +123,11 @@ if not os.path.isfile(DET):
     if not os.path.isfile(DET):
         fail("بعد از پیش‌دانلود، فایل %s ساخته نشد." % DET)
     pths = [f for f in os.listdir(MODEL_DIR) if f.endswith(".pth")]
-    if not pths:
-        fail("بعد از پیش‌دانلود، هیچ مدل تشخیص کاراکتر (*.pth) در %s نیست."
-             % MODEL_DIR)
-    print("EasyOCR layout OK: text_detection.pt + %d recognizer model(s)"
+    # انتظار: حداقل مدل تشخیص ناحیه + یک مدل تشخیص کاراکتر (fa/en)
+    if len(pths) < 2:
+        fail("بعد از پیش‌دانلود، مدل‌های کافی در %s نیست (فقط %d فایل pth)."
+             % (MODEL_DIR, len(pths)))
+    print("EasyOCR layout OK: craft_mlt_25k.pth + %d recognizer model(s)"
           % len(pths), flush=True)
 else:
     print("easyocr_models exists, skip pre-download", flush=True)

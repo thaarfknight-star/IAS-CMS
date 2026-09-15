@@ -244,7 +244,7 @@ jobs:
         }
         $pyiArgs += "--add-data=plate_detector.pt;."
         Write-Host "plate_detector.pt bundled ($plateModelSize بایت)."
-        if (-not (Test-Path "easyocr_models\model\text_detection.pt")) {
+        if (-not (Test-Path "easyocr_models\model\craft_mlt_25k.pth")) {
           throw "easyocr_models\model آماده نیست؛ step «Prepare plate-reader assets» را بررسی کنید."
         }
         $pyiArgs += "--add-data=easyocr_models;easyocr_models"
@@ -295,7 +295,7 @@ jobs:
           Write-Host "##[error] بیلد ناقص است: plate_detector.pt در dist/CCTV_CMS پیدا نشد؛ پلاک‌خوان در exe کار نمی‌کند."
           throw "Build verification failed: plate_detector.pt missing from bundle."
         }
-        if (-not (Test-Path (Join-Path $bundleDir "easyocr_models\model\text_detection.pt"))) {
+        if (-not (Test-Path (Join-Path $bundleDir "easyocr_models\model\craft_mlt_25k.pth"))) {
           Write-Host "##[error] بیلد ناقص است: مدل‌های EasyOCR در dist/CCTV_CMS/easyocr_models پیدا نشد؛ خوانش متن پلاک در exe کار نمی‌کند."
           throw "Build verification failed: EasyOCR models missing from bundle."
         }
