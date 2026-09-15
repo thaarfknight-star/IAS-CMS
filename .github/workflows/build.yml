@@ -57,6 +57,10 @@ jobs:
         # هر دو lazy-load می‌شوند (فقط وقتی پلاک‌خوان یک دوربین فعال شود)
         # و مدل‌های easyocr در اولین استفاده‌ی واقعی دانلود می‌شوند.
         pip install easyocr rapidocr-onnxruntime
+        # --- کتابخانه‌ی خوانش نقشه‌های اتوکد (DXF) برای «نقشه ساختمان» ---
+        # ezdxf خالص‌پایتونی و سبک است؛ PyInstaller آن را داخل exe می‌بندد
+        # تا روی سیستم کاربر نهایی هیچ نصبی لازم نباشد.
+        pip install ezdxf
 
     - name: Cache YOLOv8n weights
       id: yolo-weights-cache
@@ -209,16 +213,16 @@ jobs:
         # می‌شود؛ وگرنه برنامه در اولین استفاده خودش آن را دانلود می‌کند
         # (رجوع کنید به plate_detector.py) پس نبودش بیلد را نمی‌شکند.
         if (Test-Path "plate_detector.pt") { $pyiArgs += "--add-data=plate_detector.pt;." }
-        # easyocr/rapidocr فقط اگر در محیط بیلد نصب باشند جمع‌آوری می‌شوند تا
-        # در صورت نبودشان بیلد خطا نگیرد؛ نبودشان در exe یعنی OCR غیرفعال و
-        # برنامه بدون کرش کار می‌کند (فقط پلاک‌خوان متن را نمی‌خواند).
-        foreach ($pkg in @("easyocr", "rapidocr_onnxruntime")) {
+        # easyocr/rapidocr/ezdxf فقط اگر در محیط بیلد نصب باشند جمع‌آوری می‌شوند
+        # تا در صورت نبودشان بیلد خطا نگیرد؛ نبودشان در exe یعنی آن قابلیت
+        # (پلاک‌خوان / نقشه‌ی DXF) غیرفعال و برنامه بدون کرش کار می‌کند.
+        foreach ($pkg in @("easyocr", "rapidocr_onnxruntime", "ezdxf")) {
           python -c "import $pkg" 2>$null
           if ($LASTEXITCODE -eq 0) {
             $pyiArgs += "--collect-all=$pkg"
-            Write-Host "bundling $pkg for plate OCR."
+            Write-Host "bundling $pkg."
           } else {
-            Write-Host "WARNING: $pkg not installed in build env; plate OCR will be disabled in exe."
+            Write-Host "WARNING: $pkg not installed in build env; its feature will be disabled in exe."
           }
         }
         if ($wsdlDataArg) { $pyiArgs += $wsdlDataArg }
@@ -338,6 +342,9 @@ jobs:
           "--include-package=torchvision"
           "--include-package=transformers"
           "--include-package-data=transformers"
+          # نقشه‌ی ساختمان (خوانش DXF اتوکد) - خالص‌پایتونی، بدون نیاز به نصب
+          # روی سیستم کاربر نهایی
+          "--include-package=ezdxf"
           # نکته‌ی مهم - تاریخچه‌ی این تصمیم: قبلاً اینجا چند ماژول از torch/
           # وابستگی‌هایش با --nofollow-import-to کنار گذاشته می‌شدند (sympy،
           # torch.onnx، torch.distributed، torch.utils.tensorboard،
