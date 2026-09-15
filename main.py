@@ -1615,6 +1615,99 @@ class RegionManagerDialog(QDialog):
         self.accept()
 
 
+class CameraPreviewDialog(QDialog):
+    """رفع درخواست: با کلیک روی دوربین در صفحه‌ی «نقشه ساختمان»، به‌جای
+    رفتن به صفحه‌ی اصلی، همین پنجره‌ی شناور باز می‌شود و پخش زنده‌ی همان
+    دوربین را نشان می‌دهد (بدون ترک نقشه). بستن پنجره، استریم را متوقف
+    می‌کند. دکمه‌ی «نمایش در صفحه اصلی» همان رفتار قبلی (باز کردن در
+    شبکه‌ی نمایش) را انجام می‌دهد."""
+
+    def __init__(self, cam: dict, rtsp_url: str, face_engine, parent=None):
+        super().__init__(parent)
+        self.cam = cam
+        self._last_display_ts = 0.0
+        cam_name = cam.get("name") or cam.get("ip", "")
+        self.setWindowTitle(f"🎥 پخش زنده — {cam_name}")
+        self.resize(680, 520)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
+        layout = QVBoxLayout(self)
+        self.video_label = QLabel("در حال اتصال...")
+        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.video_label.setMinimumSize(480, 320)
+        self.video_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.video_label.setStyleSheet(
+            "background:#111; color:#aaa; border-radius:6px;")
+        layout.addWidget(self.video_label, 1)
+
+        bottom = QHBoxLayout()
+        self.status_label = QLabel("در حال اتصال...")
+        self.status_label.setStyleSheet("color:#9b978c;")
+        bottom.addWidget(self.status_label, 1)
+        self.grid_btn = QPushButton("📌 نمایش در صفحه اصلی")
+        self.grid_btn.clicked.connect(self._open_in_grid)
+        bottom.addWidget(self.grid_btn)
+        close_btn = QPushButton("بستن")
+        close_btn.clicked.connect(self.close)
+        bottom.addWidget(close_btn)
+        layout.addLayout(bottom)
+
+        self.stream_thread = CameraStreamThread(
+            rtsp_url, face_engine, process_every_n=_PROCESS_EVERY_N)
+        self.stream_thread.frame_ready.connect(self._on_frame_ready)
+        self.stream_thread.error_signal.connect(self._on_error)
+        self.stream_thread.connected_signal.connect(self._on_connected)
+        self.stream_thread.start()
+
+    def _open_in_grid(self):
+        parent = self.parent()
+        open_fn = getattr(parent, "open_live_view", None)
+        self.close()
+        if callable(open_fn):
+            open_fn(self.cam)
+
+    def _on_frame_ready(self, display_frame, raw_frame):
+        # مثل CameraSlotWidget.on_frame_ready: حداکثر ~۱۵ فریم‌برثانیه و
+        # کوچک‌سازی اولیه با OpenCV برای سبکی روی CPU.
+        now = time.monotonic()
+        if now - self._last_display_ts < 1.0 / 15.0:
+            return
+        self._last_display_ts = now
+        try:
+            lw, lh = self.video_label.width(), self.video_label.height()
+        except Exception:
+            lw, lh = 0, 0
+        show_frame = display_frame
+        if lw > 0 and lh > 0:
+            h, w = show_frame.shape[:2]
+            _scale = min(lw / w, lh / h)
+            if _scale < 1.0:
+                _nw, _nh = max(1, int(w * _scale)), max(1, int(h * _scale))
+                show_frame = cv2.resize(show_frame, (_nw, _nh),
+                                        interpolation=cv2.INTER_LINEAR)
+        pixmap = _bgr_to_pixmap(show_frame)
+        if pixmap is not None:
+            self.video_label.setPixmap(pixmap)
+
+    def _on_connected(self):
+        self.status_label.setText("متصل شد ✓")
+
+    def _on_error(self, msg):
+        self.status_label.setText(f"خطا: {msg}")
+        if "در انتظار تصویر" in self.video_label.text() or \
+                "در حال اتصال" in self.video_label.text():
+            self.video_label.setText(f"عدم اتصال\n{msg}")
+
+    def closeEvent(self, event):
+        try:
+            if self.stream_thread is not None:
+                self.stream_thread.stop()
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+
 class CameraGridWidget(QWidget):
     """شبکه‌ی نمایش هم‌زمان دوربین‌ها با تعداد خانه‌ی قابل انتخاب
     (1، 4، 9، 16، 32 یا 64). با تغییر تعداد، دوربین‌های از قبل باز تا حد
@@ -3465,10 +3558,13 @@ class MainWindow(QMainWindow):
             btn.setChecked(k == key)
 
     def _on_map_camera_click(self, cam):
-        """کلیک روی دوربین در صفحه‌ی «نقشه ساختمان»: رفتن به صفحه‌ی اصلی و
-        باز کردن پخش زنده‌ی همان دوربین."""
-        self.show_page("home")
-        self.open_live_view(cam)
+        """کلیک روی دوربین در صفحه‌ی «نقشه ساختمان»: باز شدن پنجره‌ی شناور
+        پخش زنده‌ی همان دوربین (بدون ترک صفحه‌ی نقشه)."""
+        if not self._ensure_password(cam):
+            return  # کاربر از وارد کردن رمز صرف‌نظر کرد
+        rtsp_url = self.camera_store.build_rtsp_url(cam)
+        dlg = CameraPreviewDialog(cam, rtsp_url, self.face_engine, parent=self)
+        dlg.show()
 
     def _on_person_show_on_map(self, person_id):
         """دکمه‌ی «🗺 نمایش روی نقشه» در تب گزارش مسیر حرکت: باز کردن صفحه‌ی
@@ -3595,10 +3691,28 @@ class MainWindow(QMainWindow):
                         break
                 self._active_person_tracks[key] = {
                     "person_id": person_id, "sighting_id": sighting_id}
+                # ردیابی «در لحظه»: همان ثانیه‌ی شناسایی، نشان زنده‌ی شخص
+                # روی دوربینِ نقشه‌ی ساختمان می‌نشیند و اگر مسیر همین شخص
+                # روی نقشه باز است، توقف جدید بی‌درنگ به آن اضافه می‌شود.
+                try:
+                    mp = getattr(self, "map_page", None)
+                    if mp is not None:
+                        mp.set_live_person(cam_id, person_id, person_id,
+                                           camera_name, True)
+                        mp.append_live_stop(person_id)
+                except Exception:
+                    pass
             elif etype == "ended":
                 info = self._active_person_tracks.pop(key, None)
                 if info is not None:
                     person_store.end_sighting(info["sighting_id"])
+                    try:
+                        mp = getattr(self, "map_page", None)
+                        if mp is not None:
+                            mp.set_live_person(cam_id, info["person_id"],
+                                               info["person_id"], "", False)
+                    except Exception:
+                        pass
             else:
                 return
             # اگر کاربر همین حالا صفحه‌ی «ردیابی اشخاص» را می‌بیند،
@@ -3629,6 +3743,14 @@ class MainWindow(QMainWindow):
                                     if k[0] == cam_id]:
                             info = self._active_person_tracks.pop(key)
                             person_store.end_sighting(info["sighting_id"])
+                            try:
+                                mp = getattr(self, "map_page", None)
+                                if mp is not None:
+                                    mp.set_live_person(
+                                        cam_id, info["person_id"],
+                                        info["person_id"], "", False)
+                            except Exception:
+                                pass
         except Exception as e:
             print(f"خطا در اعمال ردیابی اشخاص روی دوربین باز: {e}")
 

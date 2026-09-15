@@ -94,6 +94,8 @@ class DeviceItem(QGraphicsItemGroup):
         self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsMovable)
         self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable)
         self._press_scene = None
+        self._sector = None
+        self._tick = None
         self._build()
         self.setPos(device.get("x", 0), device.get("y", 0))
         self.setZValue(10)
@@ -133,6 +135,7 @@ class DeviceItem(QGraphicsItemGroup):
             tick.setFlag(
                 QGraphicsLineItem.GraphicsItemFlag.ItemIgnoresTransformations)
             self.addToGroup(tick)
+            self._tick = tick
             glyph = QGraphicsSimpleTextItem("🎥")
             glyph.setPos(-9, -13)
             glyph.setFlag(
@@ -167,7 +170,28 @@ class DeviceItem(QGraphicsItemGroup):
         self._label = label
 
     def refresh(self):
-        self._build()
+        """به‌روزرسانی زنده‌ی ظاهر تجهیز، بدون بازسازی گروه.
+
+        رفع باگ «پرش دوربین هنگام تغییر زاویه»: نسخه‌ی قبلی کل گروه را با
+        removeFromGroup/addToGroup از نو می‌ساخت؛ چون گروه از قبل در موقعیت
+        P روی صحنه بود، Qt موقعیت صحنه‌ای فرزندهای تازه (۰٬۰) را حفظ می‌کرد
+        و همه‌ی گرافیک دوربین به گوشه‌ی نقشه (مبدأ صحنه) می‌پرید، ضمن این‌که
+        فرزندهای قبلی به‌صورت «روح» در صحنه می‌ماندند. حالا فقط مسیر قطاع
+        دید و خط جهت لنز درجا به‌روز می‌شوند؛ موقعیت دست نمی‌خورد.
+        """
+        dev = self.device
+        if dev.get("kind") == "camera":
+            angle = float(dev.get("angle", 0))
+            fov = float(dev.get("fov", 90))
+            rng = 8.0 / (self.to_meter or 1.0)
+            if self._sector is not None:
+                self._sector.setPath(_sector_path(0, 0, rng, angle, fov))
+            if self._tick is not None:
+                import math
+                a = math.radians(angle)
+                dx, dy = 11 * math.cos(a), -11 * math.sin(a)
+                self._tick.setLine(0, 0, dx * 1.5, dy * 1.5)
+        self.update()
 
     def set_name(self, name):
         self._label.setText(name)
@@ -413,6 +437,13 @@ class BuildingMapPage(QWidget):
         self._pending_fit = False
         self._play_timer = QTimer(self)
         self._play_timer.timeout.connect(self._play_tick)
+        # لایه‌ی زنده‌ی اشخاص: (cam_id, person_id) -> اطلاعات نشان‌ها.
+        # در لحظه‌ی شناسایی شخص توسط یک دوربین، نشان سبز چشمک‌زن با کد
+        # شخص روی همان دوربینِ نقشه می‌نشیند و با تمام شدن رد برداشته می‌شود.
+        self._live_persons = {}
+        self._live_timer = QTimer(self)
+        self._live_timer.timeout.connect(self._live_pulse_tick)
+        self._live_phase = False
         self._build_ui()
         self._reload_floors()
 
@@ -638,6 +669,7 @@ class BuildingMapPage(QWidget):
             return
         if fid in self.scenes:
             del self.scenes[fid]
+        self._clear_live_persons()
         self.store.remove_floor(fid)
         self.current_floor = None
         self._reload_floors()
@@ -748,6 +780,10 @@ class BuildingMapPage(QWidget):
         self._stop_placing()
         self.view.setScene(entry["scene"])
         self.units_label.setText(f"واحد نقشه: {entry['units_fa']}")
+        # رسم دوباره‌ی نشان‌های زنده‌ی اشخاص روی این طبقه (اگر صحنه تازه
+        # ساخته شده باشد، نشان‌هایی که قبلاً ثبت شده‌اند اعمال می‌شوند)
+        for key in list(self._live_persons.keys()):
+            self._apply_live_person(key)
         # لایه‌ها
         self.layer_list.blockSignals(True)
         self.layer_list.clear()
@@ -935,14 +971,23 @@ class BuildingMapPage(QWidget):
         dev = item.device
         name = self.prop_name.text().strip() or dev.get("name", "")
         ref_id = self.prop_link.currentData() or ""
+        angle = float(self.prop_angle.value())
+        fov = float(self.prop_fov.value())
         self.store.update_device(self.current_floor, dev["id"],
-                                 name=name, ref_id=ref_id)
+                                 name=name, ref_id=ref_id,
+                                 angle=angle, fov=fov)
         dev["name"] = name
         dev["ref_id"] = ref_id
+        dev["angle"] = angle
+        dev["fov"] = fov
         item.set_name(name)
+        item.refresh()
 
     def _prop_angle_changed(self, value):
-        # سینک اسلایدر و اسپین‌باکس + به‌روزرسانی زنده‌ی قطاع دید
+        # سینک اسلایدر و اسپین‌باکس + به‌روزرسانی زنده‌ی قطاع دید.
+        # ذخیره روی دیسک فقط هنگام رها کردن اسلایدر انجام می‌شود
+        # (sliderReleased -> _prop_apply) تا با هر تیک درگ، فایل JSON
+        # بازنویسی نشود.
         for w in (self.prop_angle, self.prop_angle_num):
             w.blockSignals(True)
             w.setValue(int(value))
@@ -952,8 +997,6 @@ class BuildingMapPage(QWidget):
             return
         item.device["angle"] = float(value)
         item.refresh()
-        self.store.update_device(self.current_floor, item.device["id"],
-                                 angle=float(value))
 
     def _delete_selected_device(self):
         item = self._selected_device_item()
@@ -987,6 +1030,30 @@ class BuildingMapPage(QWidget):
         if pid:
             self.show_person_path(pid)
 
+    def _stops_for_person(self, person_id):
+        """ساخت لیست توقف‌های یک شخص: هر «حضور» + نگاشت به دوربینِ روی نقشه.
+
+        خروجی: [{sighting, cam, placements:[(floor, dev), ...]}, ...] به ترتیب
+        زمان. «حضور»های باز (در لحظه) هم لحاظ می‌شوند تا مسیر، زنده ادامه
+        پیدا کند.
+        """
+        sightings = person_store.get_path(person_id)
+        cam_by_name = {}
+        try:
+            for cam in self.camera_store.standalone_cameras():
+                cam_by_name[cam.get("name")] = cam
+            for nvr in self.camera_store.nvrs:
+                for cam in self.camera_store.cameras_for_nvr(nvr.get("id")):
+                    cam_by_name[cam.get("name")] = cam
+        except Exception:
+            pass
+        stops = []
+        for s in sightings:
+            cam = cam_by_name.get(s.get("camera_name"))
+            placements = self.store.devices_by_camera(cam.get("id")) if cam else []
+            stops.append({"sighting": s, "cam": cam, "placements": placements})
+        return stops
+
     def show_person_path(self, person_id):
         """نمایش مسیر تردد یک شخص روی نقشه‌ها (قابل فراخوانی از بیرون)."""
         persons = {p.get("id"): p for p in person_store.get_persons()}
@@ -1000,24 +1067,7 @@ class BuildingMapPage(QWidget):
             QMessageBox.information(self, "مسیری نیست",
                                     "برای این شخص هنوز ترددی ثبت نشده است.")
             return
-        # نگاشت نام دوربین -> دوربین
-        cam_by_name = {}
-        try:
-            for cam in self.camera_store.standalone_cameras():
-                cam_by_name[cam.get("name")] = cam
-            for nvr in self.camera_store.nvrs:
-                for cam in self.camera_store.cameras_for_nvr(nvr.get("id")):
-                    cam_by_name[cam.get("name")] = cam
-        except Exception:
-            pass
-
-        stops = []  # [{sighting, cam, placements:[(floor, dev)], ...}]
-        for s in sightings:
-            cam = cam_by_name.get(s.get("camera_name"))
-            placements = []
-            if cam:
-                placements = self.store.devices_by_camera(cam.get("id"))
-            stops.append({"sighting": s, "cam": cam, "placements": placements})
+        stops = self._stops_for_person(person_id)
 
         self._path = {"person": person, "stops": stops,
                       "code": person.get("code", "")}
@@ -1109,6 +1159,9 @@ class BuildingMapPage(QWidget):
                 tlabel.setZValue(22)
                 tlabel.setData(0, "person-path")
                 sc.addItem(tlabel)
+        # اگر صحنه‌ای تازه ساخته شد، نشان‌های زنده را هم روی آن بنشان
+        for key in list(self._live_persons.keys()):
+            self._apply_live_person(key)
 
     def _fill_timeline(self):
         self.timeline_list.clear()
@@ -1157,6 +1210,137 @@ class BuildingMapPage(QWidget):
         self.unmapped_label.setText("")
         self.timeline_group.setEnabled(False)
         self.path_close_btn.setEnabled(False)
+
+    # ============================ اشخاص زنده روی نقشه ============================
+    def set_live_person(self, cam_id, person_id, code, camera_name, present):
+        """نمایش/حذف زنده‌ی موقعیت فعلی یک شخص روی نقشه.
+
+        در همان لحظه‌ای که دوربینی یک شخص را شناسایی می‌کند (present=True)،
+        یک نشان سبز چشمک‌زن با کد شخص روی همان دوربینِ نقشه می‌نشیند؛ با
+        تمام شدن رد (present=False) نشان برداشته می‌شود. حتماً از ترد اصلی
+        صدا زده شود.
+        """
+        key = (str(cam_id), str(person_id))
+        self._remove_live_person(key)
+        if not present:
+            return
+        try:
+            placements = self.store.devices_by_camera(cam_id)
+        except Exception:
+            placements = []
+        if not placements:
+            return
+        self._live_persons[key] = {
+            "placements": [(fl.get("id"), dev.get("x", 0), dev.get("y", 0))
+                           for fl, dev in placements],
+            "items": [], "rings": [],
+            "code": code, "camera_name": camera_name,
+        }
+        self._apply_live_person(key)
+
+    def _apply_live_person(self, key):
+        """رسم نشان‌های یک شخص زنده روی صحنه‌های ساخته‌شده (بدون ساخت صحنه‌ی
+        جدید تا ترد اصلی هنگام تشخیص، درگیر پارس DXF نشود)."""
+        info = self._live_persons.get(key)
+        if not info:
+            return
+        for sc, it in info["items"]:
+            try:
+                sc.removeItem(it)
+            except Exception:
+                pass
+        info["items"] = []
+        info["rings"] = []
+        code = info["code"]
+        for fid, x, y in info["placements"]:
+            entry = self.scenes.get(fid)
+            if not entry:
+                continue
+            sc = entry["scene"]
+            ring = QGraphicsEllipseItem(-20, -20, 40, 40)
+            ring.setPos(x, y)
+            ring.setPen(QPen(QColor("#22c55e"), 3))
+            ring.setBrush(QBrush(QColor(34, 197, 94, 40)))
+            ring.setFlag(
+                QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
+            ring.setZValue(25)
+            ring.setData(0, "person-live")
+            sc.addItem(ring)
+            dot = QGraphicsEllipseItem(-8, -8, 16, 16)
+            dot.setPos(x, y)
+            dot.setPen(QPen(QColor("#ffffff"), 2))
+            dot.setBrush(QBrush(QColor("#22c55e")))
+            dot.setFlag(
+                QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
+            dot.setZValue(26)
+            dot.setData(0, "person-live")
+            sc.addItem(dot)
+            lab = QGraphicsSimpleTextItem(f"🟢 {code}")
+            f = QFont()
+            f.setPointSize(10)
+            f.setBold(True)
+            lab.setFont(f)
+            lab.setBrush(QBrush(QColor("#bbf7d0")))
+            lab.setPos(x + 24, y - 16)
+            lab.setFlag(
+                QGraphicsSimpleTextItem.GraphicsItemFlag.ItemIgnoresTransformations)
+            lab.setZValue(27)
+            lab.setData(0, "person-live")
+            sc.addItem(lab)
+            info["items"].extend([(sc, ring), (sc, dot), (sc, lab)])
+            info["rings"].append(ring)
+        if info["items"] and not self._live_timer.isActive():
+            self._live_phase = True
+            self._live_timer.start(650)
+
+    def _remove_live_person(self, key):
+        info = self._live_persons.pop(key, None)
+        if not info:
+            return
+        for sc, it in info["items"]:
+            try:
+                sc.removeItem(it)
+            except Exception:
+                pass
+        if not self._live_persons:
+            try:
+                self._live_timer.stop()
+            except Exception:
+                pass
+
+    def _clear_live_persons(self):
+        for key in list(self._live_persons.keys()):
+            self._remove_live_person(key)
+
+    def _live_pulse_tick(self):
+        """چشمک‌زدن نشان‌های زنده (حس «در لحظه»)."""
+        self._live_phase = not self._live_phase
+        op = 1.0 if self._live_phase else 0.35
+        for info in self._live_persons.values():
+            for r in info["rings"]:
+                try:
+                    r.setOpacity(op)
+                except Exception:
+                    pass
+
+    def append_live_stop(self, person_id):
+        """افزودن زنده‌ی «حضور» تازه‌ثبت‌شده به مسیر نمایشی.
+
+        اگر مسیر همین شخص همین حالا روی نقشه نمایش داده می‌شود، توقف جدید
+        (که start_sighting همان لحظه در دیتابیس ثبت کرده) به انتهای مسیر
+        اضافه و نقشه/خط زمانی بی‌درنگ به‌روز می‌شوند.
+        """
+        if not self._path:
+            return
+        person = self._path.get("person") or {}
+        if str(person.get("id")) != str(person_id):
+            return
+        try:
+            self._path["stops"] = self._stops_for_person(person_id)
+            self._draw_path()
+            self._fill_timeline()
+        except Exception:
+            pass
 
     # -- پخش متحرک مسیر --
     def _toggle_play(self):
