@@ -583,6 +583,17 @@ class BuildingMapPage(QWidget):
         self.prop_fov.setSuffix("°")
         self.prop_fov.valueChanged.connect(self._prop_apply)
         pf.addRow("پهنای دید:", self.prop_fov)
+        # رفع باگ «زاویه عوض می‌کنم ولی ذخیره نمی‌شود»: _prop_angle_changed
+        # فقط حافظه/نقشه را زنده به‌روز می‌کرد و ذخیره روی دیسک فقط با
+        # sliderReleased انجام می‌شد؛ یعنی تغییر زاویه با اسپین‌باکس (تایپ
+        # عدد یا دکمه‌های بالا/پایین) هرگز ذخیره نمی‌شد و با عوض کردن طبقه
+        # یا بستن برنامه برمی‌گشت. این تایمر تک‌شات، آخرین تغییر زاویه را
+        # ۷۰۰ میلی‌ثانیه بعد از توقف کاربر روی دیسک ذخیره می‌کند (بدون
+        # بازنویسی JSON با هر تیک درگ).
+        self._angle_save_timer = QTimer(self)
+        self._angle_save_timer.setSingleShot(True)
+        self._angle_save_timer.setInterval(700)
+        self._angle_save_timer.timeout.connect(self._prop_apply)
         del_btn = QPushButton("🗑 حذف تجهیز")
         del_btn.clicked.connect(self._delete_selected_device)
         pf.addRow(del_btn)
@@ -991,9 +1002,10 @@ class BuildingMapPage(QWidget):
 
     def _prop_angle_changed(self, value):
         # سینک اسلایدر و اسپین‌باکس + به‌روزرسانی زنده‌ی قطاع دید.
-        # ذخیره روی دیسک فقط هنگام رها کردن اسلایدر انجام می‌شود
-        # (sliderReleased -> _prop_apply) تا با هر تیک درگ، فایل JSON
-        # بازنویسی نشود.
+        # ذخیره روی دیسک: برای اسلایدر هنگام رها کردن (sliderReleased ->
+        # _prop_apply) و برای همه‌ی حالت‌ها (اسلایدر/اسپین‌باکس) ۷۰۰ms بعد
+        # از آخرین تغییر، تا با هر تیک درگ فایل JSON بازنویسی نشود ولی
+        # تغییر اسپین‌باکس هم گم نشود (رفع باگ «زاویه ذخیره نمی‌شود»).
         for w in (self.prop_angle, self.prop_angle_num):
             w.blockSignals(True)
             w.setValue(int(value))
@@ -1003,6 +1015,10 @@ class BuildingMapPage(QWidget):
             return
         item.device["angle"] = float(value)
         item.refresh()
+        try:
+            self._angle_save_timer.start()
+        except Exception:
+            pass
 
     def _delete_selected_device(self):
         item = self._selected_device_item()

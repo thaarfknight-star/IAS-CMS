@@ -524,6 +524,8 @@ class CameraSlotWidget(QWidget):
     # (رسم/تایید/حذف/بارگذاری از دیسک/بستن دوربین) ارسال می‌شود تا
     # MainWindow._refresh_line_buttons همیشه با وضعیت واقعی هم‌گام بماند.
     tripwire_changed = pyqtSignal()
+    # تغییر وضعیت موتور تشخیص شخص (برای بنر صفحه‌ی «ردیابی اشخاص»).
+    detector_status_changed = pyqtSignal()
 
     # هشدارهای وضعیت پلاک‌خوان فقط یک‌بار در کل برنامه نمایش داده می‌شوند
     # (کلید: متن پیام) تا با چند دوربین، دیالوگ تکراری باز نشود.
@@ -996,6 +998,11 @@ class CameraSlotWidget(QWidget):
         self._detector_available = bool(available)
         self._detector_error = error_msg or ""
         self._refresh_detector_warning()
+        # بنر صفحه‌ی «ردیابی اشخاص» هم باید از این وضعیت باخبر شود.
+        try:
+            self.detector_status_changed.emit()
+        except Exception:
+            pass
 
     def _refresh_detector_warning(self):
         if self._detector_available is False and self.regions:
@@ -1258,6 +1265,11 @@ class CameraSlotWidget(QWidget):
         # «ردیابی اشخاص» تب «اشخاص ردیابی‌شده».
         self.stream_thread.set_person_tracking(bool(cam.get("person_tracking")))
         self.stream_thread.start()
+        # بنر صفحه‌ی «ردیابی اشخاص» را هم تازه کن (می‌شود «در حال آماده‌سازی»).
+        try:
+            self.detector_status_changed.emit()
+        except Exception:
+            pass
         # رفع درخواست: اگر برای این دوربین قبلاً محدوده‌های هشدار رسم و
         # ذخیره شده باشند (cameras.json)، همان لحظه‌ی اتصال دوباره روی ترد
         # پخش تازه فعال می‌شوند.
@@ -1506,6 +1518,11 @@ class CameraSlotWidget(QWidget):
         self.cam = None
         self.latest_raw_frame = None
         self._set_name_text("خالی")
+        # بنر صفحه‌ی «ردیابی اشخاص» را هم تازه کن.
+        try:
+            self.detector_status_changed.emit()
+        except Exception:
+            pass
         self.close_btn.setVisible(False)
         self.status_label.setText("")
         self.video_label.clear()
@@ -1723,6 +1740,10 @@ class CameraGridWidget(QWidget):
     # CameraSlotWidget.tripwire_changed) هم باید نوار ابزار به‌روز شود،
     # وگرنه دکمه‌ها با وضعیت واقعی هم‌گام نمی‌مانند.
     tripwire_changed = pyqtSignal()
+    # تغییر وضعیت موتور تشخیص شخص در هر خانه (CameraSlotWidget.
+    # detector_status_changed)؛ به صورت تجمیعی به MainWindow می‌رسد تا بنر
+    # صفحه‌ی «ردیابی اشخاص» با وضعیت واقعی به‌روز شود.
+    detector_status_changed = pyqtSignal()
 
     def __init__(self, face_engine: FaceEngine, on_face_event, on_external_camera_drop=None,
                  on_region_alert=None, on_fire_event=None, on_plate_event=None,
@@ -1807,6 +1828,8 @@ class CameraGridWidget(QWidget):
                 )
                 slot.slot_index = len(self.slots)
                 slot.tripwire_changed.connect(self.tripwire_changed.emit)
+                slot.detector_status_changed.connect(
+                    self.detector_status_changed.emit)
                 self._layout.addWidget(slot, r, c)
                 self.slots.append(slot)
                 self._slot_positions.append((r, c))
@@ -2359,6 +2382,8 @@ class MainWindow(QMainWindow):
         )
         self.camera_grid.selection_changed.connect(lambda _idx: self._refresh_line_buttons())
         self.camera_grid.tripwire_changed.connect(self._refresh_line_buttons)
+        self.camera_grid.detector_status_changed.connect(
+            self._refresh_person_detector_status)
         grid_scroll = QScrollArea()
         grid_scroll.setWidgetResizable(True)
         grid_scroll.setWidget(self.camera_grid)
@@ -3554,6 +3579,13 @@ class MainWindow(QMainWindow):
         refresh = getattr(page, "refresh", None)
         if callable(refresh):
             refresh()
+        if key == "person":
+            # بنر وضعیت موتور تشخیص شخص را هم تازه کن (رجوع کنید به
+            # _refresh_person_detector_status).
+            try:
+                self._refresh_person_detector_status()
+            except Exception:
+                pass
         self.pages.setCurrentIndex(index)
         for k, btn in self.nav_buttons.items():
             btn.setChecked(k == key)
@@ -3840,6 +3872,49 @@ class MainWindow(QMainWindow):
                             pass
         except Exception as e:
             print(f"خطا در اعمال ردیابی اشخاص روی دوربین باز: {e}")
+
+    def _refresh_person_detector_status(self):
+        """به‌روزرسانی بنر وضعیت موتور تشخیص شخص در صفحه‌ی «ردیابی اشخاص».
+
+        رفع درخواست «هیچ گزارشی از افراد ثبت نمیشه» بی‌هیچ توضیحی: علت
+        معمولاً یکی از این‌هاست و حالا هر کدام با پیام مشخص روی همان
+        صفحه دیده می‌شود:
+        ۱) هیچ دوربینی در صفحه‌ی اصلی باز/در حال پخش نیست؛
+        ۲) مدل تشخیص شخص (YOLOv8 در person_detector.py) بارگذاری نشده؛
+        ۳) همه‌چیز سالم است و گزارش‌ها در حال ثبت‌اند.
+        """
+        page = getattr(self, "person_page", None)
+        if page is None:
+            return
+        try:
+            open_slots = [s for s in self.camera_grid.slots
+                          if getattr(s, "cam", None) is not None
+                          and getattr(s, "stream_thread", None) is not None]
+        except Exception:
+            open_slots = []
+        if not open_slots:
+            page.set_detector_status("no_camera")
+            return
+        try:
+            states = [getattr(s, "_detector_available", None) for s in open_slots]
+        except Exception:
+            states = []
+        if any(s is True for s in states):
+            page.set_detector_status("ok")
+            return
+        if states and all(s is False for s in states):
+            err = ""
+            try:
+                for s in open_slots:
+                    if getattr(s, "_detector_error", ""):
+                        err = s._detector_error
+                        break
+            except Exception:
+                pass
+            page.set_detector_status("error", err)
+            return
+        page.set_detector_status("loading")
+
 
     # ------------------------------------------------------------- scan ---
 

@@ -45,18 +45,29 @@ class PersonTrackPage(QWidget):
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
 
         layout = QVBoxLayout(self)
-        title = QLabel("👥 ردیابی اشخاص — دنبال‌کردن مسیر حرکت بین دوربین‌ها (بدون تشخیص چهره)")
+        title = QLabel("👥 ردیابی اشخاص — دنبال‌کردن مسیر حرکت بین دوربین‌ها (با کمک چهره)")
         title.setStyleSheet("font-size: 16px; font-weight: bold; padding: 4px;")
         title.setWordWrap(True)
         layout.addWidget(title)
 
         hint = QLabel(
-            "اشخاص فقط از روی «ظاهر» (رنگ لباس، شلوار و مو) شناسایی می‌شوند؛ "
-            "چهره پردازش نمی‌شود. اگر دو نفر لباس خیلی شبیه بپوشند ممکن است "
-            "یکی حساب شوند، و با عوض کردن لباس، رد شخص می‌شکافد.")
+            "اشخاص از روی «ظاهر» (رنگ لباس، شلوار و مو) شناسایی می‌شوند و چهره هم "
+            "کمک می‌کند: اگر چهره‌ی شخص در «بانک چهره‌ها» تعریف شده باشد، تطبیق "
+            "بین دوربین‌ها قطعی است حتی با عوض کردن لباس. برای چهره‌های ناشناس، "
+            "اگر دو نفر لباس خیلی شبیه بپوشند ممکن است یکی حساب شوند.")
         hint.setStyleSheet("color: #9e9e9e; font-size: 11px; padding: 2px 4px;")
         hint.setWordWrap(True)
         layout.addWidget(hint)
+
+        # بنر وضعیت موتور تشخیص شخص: علت «گزارشی ثبت نمی‌شود» را بی‌صدا
+        # نمی‌گذارد. main.py با _refresh_person_detector_status آن را
+        # به‌روز می‌کند (رجوع کنید به set_detector_status پایین).
+        self.detector_banner = QLabel("⏳ در حال بررسی وضعیت موتور تشخیص شخص…")
+        self.detector_banner.setWordWrap(True)
+        self.detector_banner.setStyleSheet(
+            "font-size: 12px; padding: 6px 8px; border-radius: 6px; "
+            "background: #1c2a33; color: #e2e8f0;")
+        layout.addWidget(self.detector_banner)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_persons_tab(), "👥 اشخاص ردیابی‌شده")
@@ -77,6 +88,42 @@ class PersonTrackPage(QWidget):
         self._reload_path_camera_combo()
         self.run_path_search()
         self._update_stats()
+
+    def set_detector_status(self, state, detail=""):
+        """به‌روزرسانی بنر وضعیت موتور تشخیص شخص (از main.py صدا زده
+        می‌شود). state یکی از:
+        - "unknown": هنوز معلوم نیست؛
+        - "no_camera": هیچ دوربینی در صفحه‌ی اصلی باز/در حال پخش نیست؛
+        - "loading": دوربین باز است ولی اولین تلاش تشخیص هنوز انجام نشده؛
+        - "ok": موتور روی حداقل یک دوربین فعال است؛
+        - "error": بارگذاری موتور ناموفق بود (detail = پیام خطا).
+        """
+        styles = {
+            "unknown": ("#1c2a33", "#e2e8f0"),
+            "no_camera": ("#3a2c14", "#fbbf24"),
+            "loading": ("#1c2a33", "#e2e8f0"),
+            "ok": ("#123324", "#4ade80"),
+            "error": ("#3a1414", "#f87171"),
+        }
+        texts = {
+            "unknown": "⏳ در حال بررسی وضعیت موتور تشخیص شخص…",
+            "no_camera": ("📷 هیچ دوربینی در «صفحه اصلی» باز نیست — ردیابی اشخاص "
+                          "فقط روی دوربین‌های باز و در حال پخش انجام می‌شود؛ "
+                          "اول دوربین‌ها را باز کنید."),
+            "loading": "⏳ در حال آماده‌سازی موتور تشخیص شخص…",
+            "ok": ("✅ موتور تشخیص شخص فعال است — ردیابی و ثبت گزارش در حال "
+                   "انجام است."),
+            "error": ("❌ موتور تشخیص شخص بارگذاری نشد؛ تا این مشکل حل نشود "
+                      "گزارشی ثبت نمی‌شود."),
+        }
+        bg, fg = styles.get(state, styles["unknown"])
+        text = texts.get(state, texts["unknown"])
+        if state == "error" and detail:
+            text += f"\nعلت: {detail}"
+        self.detector_banner.setText(text)
+        self.detector_banner.setStyleSheet(
+            f"font-size: 12px; padding: 6px 8px; border-radius: 6px; "
+            f"background: {bg}; color: {fg};")
 
     # ============================================================ تب اشخاص --
 
