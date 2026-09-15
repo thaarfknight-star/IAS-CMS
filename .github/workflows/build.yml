@@ -116,7 +116,7 @@ jobs:
         path: |
           plate_detector.pt
           easyocr_models
-        key: plate-assets-v2
+        key: plate-assets-v3
 
     - name: Prepare plate-reader assets (model + EasyOCR models)
       # اجباری: این‌ها باید حتماً داخل exe باشند تا روی سیستم کاربر

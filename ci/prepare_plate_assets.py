@@ -73,20 +73,48 @@ if os.path.getsize(MODEL) < 1024 * 1024:
 print("plate_detector.pt ready: %d bytes" % os.path.getsize(MODEL), flush=True)
 
 # ------------------------------------------------------- 2) EasyOCR models
-DET = os.path.join(REPO, "easyocr_models", "model", "text_detection.pt")
+# نکته‌ی مهم درباره‌ی چیدمان پوشه‌ها: وقتی به easyocr.Reader پارامتر
+# model_storage_directory داده می‌شود، ایزی‌اوسی‌آر فایل‌ها را «تخت»
+# (بدون زیرپوشه) داخل همان مسیر می‌ریزد؛ ولی در زمان اجرا، ما متغیر
+# EASYOCR_MODULE_PATH را به پوشه‌ی easyocr_models می‌دهیم و خودِ
+# ایزی‌اوسی‌آر دنبال زیرپوشه‌ی model/ می‌گردد
+# (پیش‌فرض: os.path.join(MODULE_PATH, 'model')). پس باید دانلود را
+# مستقیم داخل easyocr_models/model انجام دهیم تا چیدمان باندل با
+# چیدمان زمان اجرا یکی باشد. (این باگ قبلاً باعث fail مرحله‌ی
+# PyInstaller می‌شد: فایل‌ها تخت دانلود شده بودند و چک
+# easyocr_models\model\text_detection.pt رد می‌شد.)
+MODEL_DIR = os.path.join(REPO, "easyocr_models", "model")
+DET = os.path.join(MODEL_DIR, "text_detection.pt")
 if not os.path.isfile(DET):
+    import shutil
+
+    # پاک‌سازی چیدمان قدیمی/اشتباه (کش خراب یا دانلود تخت قبلی) تا
+    # باندل دو نسخه از مدل‌ها را با هم نداشته باشد.
+    stale = os.path.join(REPO, "easyocr_models")
+    if os.path.isdir(stale):
+        shutil.rmtree(stale, ignore_errors=True)
+    os.makedirs(MODEL_DIR, exist_ok=True)
     try:
         import easyocr  # noqa: E402
 
         easyocr.Reader(
             ["fa", "en"],
             gpu=False,
-            model_storage_directory=os.path.join(REPO, "easyocr_models"),
+            model_storage_directory=MODEL_DIR,
             verbose=False,
         )
         print("EasyOCR models pre-downloaded OK", flush=True)
     except Exception as e:  # noqa: BLE001
         fail("پیش‌دانلود مدل‌های EasyOCR شکست خورد: %s" % e)
+    # راستی‌آزمایی واقعیِ چیدمان بعد از دانلود (نه فقط «خطا نداد»):
+    if not os.path.isfile(DET):
+        fail("بعد از پیش‌دانلود، فایل %s ساخته نشد." % DET)
+    pths = [f for f in os.listdir(MODEL_DIR) if f.endswith(".pth")]
+    if not pths:
+        fail("بعد از پیش‌دانلود، هیچ مدل تشخیص کاراکتر (*.pth) در %s نیست."
+             % MODEL_DIR)
+    print("EasyOCR layout OK: text_detection.pt + %d recognizer model(s)"
+          % len(pths), flush=True)
 else:
     print("easyocr_models exists, skip pre-download", flush=True)
 print("easyocr_models ready.", flush=True)
