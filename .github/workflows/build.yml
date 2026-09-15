@@ -121,75 +121,15 @@ jobs:
     - name: Prepare plate-reader assets (model + EasyOCR models)
       # اجباری: این‌ها باید حتماً داخل exe باشند تا روی سیستم کاربر
       # هیچ دانلودی لازم نباشد (شرط سخت). نبود/ناقص بودن هرکدام → بیلد fail.
-      shell: bash
+      # نکته‌ی فنی: منطق پایتون در ci/prepare_plate_assets.py است، نه heredoc
+      # داخل YAML؛ چون checkout روی رانر ویندوز انتهای خط‌ها را CRLF می‌کند و
+      # heredoc داخل shell: bash با CRLF می‌شکند (syntax error).
+      shell: pwsh
       run: |
-        set -e
-
-        # ۱) مدل plate_detector.pt (اول HuggingFace، بعد آینه‌ی hf-mirror)
-        if [ ! -f "plate_detector.pt" ]; then
-          python - << 'PYEOF'
-          import os, urllib.request
-          repo = "joker5914/yolov8n-license-plate"
-          urls = [f"https://huggingface.co/{repo}/resolve/main/best.pt",
-                  f"https://hf-mirror.com/{repo}/resolve/main/best.pt"]
-          tmp = "plate_detector.pt.downloading"
-          ok = False
-          for url in urls:
-              try:
-                  print("downloading " + url, flush=True)
-                  req = urllib.request.Request(url, headers={"User-Agent": "IAS-CMS"})
-                  with urllib.request.urlopen(req, timeout=180) as r, open(tmp, "wb") as f:
-                      while True:
-                          chunk = r.read(1024 * 256)
-                          if not chunk:
-                              break
-                          f.write(chunk)
-                  if os.path.getsize(tmp) < 1024 * 1024:
-                      raise IOError("model file too small")
-                  os.replace(tmp, "plate_detector.pt")
-                  ok = True
-                  break
-              except Exception as e:
-                  print(f"failed ({url}): {e}", flush=True)
-                  try:
-                      if os.path.exists(tmp):
-                          os.remove(tmp)
-                  except Exception:
-                      pass
-          if not ok:
-              raise SystemExit("FAIL: دانلود plate_detector.pt با همه‌ی منابع شکست خورد.")
-          print("plate_detector.pt OK:", os.path.getsize("plate_detector.pt"), "bytes", flush=True)
-          PYEOF
-        fi
-        plate_size=$(wc -c < plate_detector.pt)
-        if [ "$plate_size" -lt 1048576 ]; then echo "plate_detector.pt ناقص است ($plate_size بایت)."; exit 1; fi
-        echo "plate_detector.pt ready: $plate_size bytes"
-
-        # ۲) مدل‌های EasyOCR فارسی/انگلیسی: پیش‌دانلود در CI تا در exe باندل
-        # شوند و برنامه روی سیستم کاربر هیچ دانلودی انجام ندهد.
-        if [ ! -f "easyocr_models/model/text_detection.pt" ]; then
-          python - << 'PYEOF'
-          import easyocr
-          r = easyocr.Reader(["fa", "en"], gpu=False,
-                             model_storage_directory="easyocr_models", verbose=False)
-          print("EasyOCR models pre-downloaded OK", flush=True)
-          PYEOF
-        fi
-        echo "easyocr_models ready."
-
-        # ۳) smoke test آفلاین: لود واقعی مدل پلاک با خودِ plate_detector.py
-        # (بدون اینترنت؛ اگر فایل خراب باشد همین‌جا بیلد fail می‌شود)
-        python - << 'PYEOF'
-        import os
-        os.environ["IAS_PLATE_MODEL"] = os.path.abspath("plate_detector.pt")
-        import plate_detector as pd
-        d = pd.PlateDetector()
-        print("PlateDetector.available =", d.available, "| source =", d.model_source, flush=True)
-        if not d.available:
-            raise SystemExit("FAIL: PlateDetector could not load plate_detector.pt: " + d.load_error)
-        print("smoke test OK", flush=True)
-        PYEOF
-
+        $ErrorActionPreference = "Stop"
+        python ci/prepare_plate_assets.py
+        if ($LASTEXITCODE -ne 0) { throw "ci/prepare_plate_assets.py شکست خورد." }
+        Write-Host "plate assets ready."
     - name: Restore Nuitka cache (MinGW64 + ماژول‌های کامپایل‌شده)
       # روی مسیر quick_test (PyInstaller) اصلاً از Nuitka استفاده نمی‌شود، پس
       # restore این کش (که می‌تواند چند گیگابایت باشد) فقط وقت تلف می‌کند.
