@@ -3601,14 +3601,18 @@ class MainWindow(QMainWindow):
 
     def _on_person_show_on_map(self, person_id):
         """دکمه‌ی «🗺 نمایش روی نقشه» در تب گزارش مسیر حرکت: باز کردن صفحه‌ی
-        نقشه و رسم مسیر تردد همان شخص روی نقشه‌ی طبقات."""
+        نقشه و رسم مسیر تردد روی نقشه‌ی طبقات. person_id=None یعنی «همه‌ی
+        اشخاص» — هر شخص با خط‌چینِ رنگ مخصوص خودش."""
         if self.map_page is None:
             QMessageBox.warning(
                 self, "صفحه‌ی نقشه در دسترس نیست",
                 "فایل building_map_dialog.py کنار برنامه پیدا نشد.")
             return
         self.show_page("map")
-        self.map_page.show_person_path(person_id)
+        if person_id:
+            self.map_page.show_person_path(person_id)
+        else:
+            self.map_page.show_all_person_paths()
 
     def on_face_event(self, cam, person, crop_frame):
         """برای هر چهره‌ای که هر یک از دوربین‌ها ببیند (شناخته‌شده یا

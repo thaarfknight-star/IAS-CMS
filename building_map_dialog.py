@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QGraphicsView, QGraphicsScene, QGraphicsItemGroup,
     QGraphicsPathItem, QGraphicsSimpleTextItem, QGraphicsEllipseItem,
     QGraphicsLineItem, QSplitter, QComboBox, QLineEdit, QSpinBox, QSlider,
+    QDoubleSpinBox,
     QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QFileDialog,
     QInputDialog, QGroupBox, QAbstractItemView,
 )
@@ -83,6 +84,15 @@ def _sector_path(cx, cy, radius, angle_deg, fov_deg, steps=28):
     return p
 
 
+def person_color(person_id):
+    """رنگ یکتا و ثابت برای هر شخص — از روی id هش می‌شود تا در اجراهای
+    مختلف همان رنگ بماند. برای مسیر خط‌چین هر شخص روی نقشه."""
+    import hashlib
+    h = int(hashlib.md5(
+        str(person_id or "?").encode("utf-8")).hexdigest()[:8], 16)
+    return QColor.fromHsv(h % 360, 225, 255)
+
+
 class DeviceItem(QGraphicsItemGroup):
     """نمایش یک تجهیز (دوربین/NVR/رک/...) روی نقشه."""
 
@@ -114,7 +124,9 @@ class DeviceItem(QGraphicsItemGroup):
         if kind == "camera":
             angle = float(dev.get("angle", 0))
             fov = float(dev.get("fov", 90))
-            rng = 8.0 / self.to_meter  # برد نمایشی ۸ متر
+            # برد نمایشی قطاع دید = «فاصله دید» دوربین (متر)؛ پیش‌فرض ۸ متر
+            # تا نقشه‌های قدیمی دقیقاً مثل قبل دیده شوند.
+            rng = float(dev.get("view_distance", 8.0)) / (self.to_meter or 1.0)
             sector = QGraphicsPathItem(_sector_path(0, 0, rng, angle, fov))
             sector.setPen(QPen(QColor(34, 211, 238, 110), 0))
             sector.setBrush(QBrush(QColor(34, 211, 238, 38)))
@@ -184,7 +196,7 @@ class DeviceItem(QGraphicsItemGroup):
         if dev.get("kind") == "camera":
             angle = float(dev.get("angle", 0))
             fov = float(dev.get("fov", 90))
-            rng = 8.0 / (self.to_meter or 1.0)
+            rng = float(dev.get("view_distance", 8.0)) / (self.to_meter or 1.0)
             if self._sector is not None:
                 self._sector.setPath(_sector_path(0, 0, rng, angle, fov))
             if self._tick is not None:
@@ -351,6 +363,17 @@ class DeviceConfigDialog(QDialog):
         self.fov_spin.setEnabled(kind == "camera")
         form.addRow("پهنای دید (FOV):", self.fov_spin)
 
+        # فاصله دید دوربین (متر): تا کجا را می‌گیرد؛ روی نقشه قطاع دید
+        # با همین برد رسم می‌شود.
+        self.range_spin = QDoubleSpinBox()
+        self.range_spin.setRange(2, 200)
+        self.range_spin.setSingleStep(1)
+        self.range_spin.setDecimals(1)
+        self.range_spin.setValue(float((device or {}).get("view_distance", 8.0)))
+        self.range_spin.setSuffix(" متر")
+        self.range_spin.setEnabled(kind == "camera")
+        form.addRow("فاصله دید (برد دوربین):", self.range_spin)
+
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
             QDialogButtonBox.StandardButton.Cancel)
@@ -382,6 +405,7 @@ class DeviceConfigDialog(QDialog):
             "ref_id": self.link_combo.currentData() or "",
             "angle": float(self.angle_spin.value()),
             "fov": float(self.fov_spin.value()),
+            "view_distance": float(self.range_spin.value()),
         }
 
 
@@ -583,17 +607,27 @@ class BuildingMapPage(QWidget):
         self.prop_fov.setSuffix("°")
         self.prop_fov.valueChanged.connect(self._prop_apply)
         pf.addRow("پهنای دید:", self.prop_fov)
+        # فاصله دید دوربین (متر): تا کجا را می‌گیرد — قطاع دید روی نقشه
+        # با همین برد رسم می‌شود.
+        self.prop_range = QDoubleSpinBox()
+        self.prop_range.setRange(2, 200)
+        self.prop_range.setSingleStep(1)
+        self.prop_range.setDecimals(1)
+        self.prop_range.setSuffix(" متر")
+        self.prop_range.valueChanged.connect(self._prop_range_changed)
+        pf.addRow("فاصله دید:", self.prop_range)
         # رفع باگ «زاویه عوض می‌کنم ولی ذخیره نمی‌شود»: _prop_angle_changed
         # فقط حافظه/نقشه را زنده به‌روز می‌کرد و ذخیره روی دیسک فقط با
         # sliderReleased انجام می‌شد؛ یعنی تغییر زاویه با اسپین‌باکس (تایپ
         # عدد یا دکمه‌های بالا/پایین) هرگز ذخیره نمی‌شد و با عوض کردن طبقه
-        # یا بستن برنامه برمی‌گشت. این تایمر تک‌شات، آخرین تغییر زاویه را
-        # ۷۰۰ میلی‌ثانیه بعد از توقف کاربر روی دیسک ذخیره می‌کند (بدون
-        # بازنویسی JSON با هر تیک درگ).
-        self._angle_save_timer = QTimer(self)
-        self._angle_save_timer.setSingleShot(True)
-        self._angle_save_timer.setInterval(700)
-        self._angle_save_timer.timeout.connect(self._prop_apply)
+        # یا بستن برنامه برمی‌گشت. این تایمر تک‌شات، آخرین تغییر زاویه/فاصله
+        # دید را ۷۰۰ میلی‌ثانیه بعد از توقف کاربر روی دیسک ذخیره می‌کند
+        # (بدون بازنویسی JSON با هر تیک درگ). چون _prop_apply همه‌ی فیلدها
+        # را یکجا می‌خواند، همین یک تایمر برای هر دو کافی است.
+        self._prop_save_timer = QTimer(self)
+        self._prop_save_timer.setSingleShot(True)
+        self._prop_save_timer.setInterval(700)
+        self._prop_save_timer.timeout.connect(self._prop_apply)
         del_btn = QPushButton("🗑 حذف تجهیز")
         del_btn.clicked.connect(self._delete_selected_device)
         pf.addRow(del_btn)
@@ -740,6 +774,16 @@ class BuildingMapPage(QWidget):
         to_meter = 1.0
         units_fa = "—"
         scene = MapScene(to_meter)
+        # رفع باگ «پنل مشخصات تا خروج/ورود مجدد کار نمی‌کند»: اتصال
+        # selectionChanged باید همان لحظه‌ی ساخت صحنه انجام شود. قبلاً فقط
+        # در refresh() (هنگام نمایش صفحه از هدر) وصل می‌شد؛ صحنه‌هایی که
+        # بعد از آن ساخته می‌شدند (تعویض طبقه، ایمپورت نقشه، طبقه‌ی جدید)
+        # این اتصال را نداشتند و کلیک روی تجهیز پنل را به‌روز نمی‌کرد تا
+        # کاربر یک‌بار از صفحه بیرون برود و برگردد.
+        try:
+            scene.selectionChanged.connect(self._refresh_prop_panel)
+        except Exception:
+            pass
         layers = {}
         bounds = None
 
@@ -887,7 +931,8 @@ class BuildingMapPage(QWidget):
         dev = self.store.add_device(
             self.current_floor, kind, vals["name"],
             scene_pos.x(), scene_pos.y(),
-            ref_id=vals["ref_id"], angle=vals["angle"], fov=vals["fov"])
+            ref_id=vals["ref_id"], angle=vals["angle"], fov=vals["fov"],
+            view_distance=vals["view_distance"])
         entry = self.scenes.get(self.current_floor)
         if entry and dev:
             item = DeviceItem(self.current_floor, dev, entry["to_meter"], {
@@ -969,9 +1014,13 @@ class BuildingMapPage(QWidget):
         self.prop_fov.blockSignals(True)
         self.prop_fov.setValue(int(dev.get("fov", 90)))
         self.prop_fov.blockSignals(False)
+        self.prop_range.blockSignals(True)
+        self.prop_range.setValue(float(dev.get("view_distance", 8.0)))
+        self.prop_range.blockSignals(False)
         self.prop_fov.setEnabled(kind == "camera")
         self.prop_angle.setEnabled(kind == "camera")
         self.prop_angle_num.setEnabled(kind == "camera")
+        self.prop_range.setEnabled(kind == "camera")
 
     def _selected_device_item(self):
         if not self.view.scene():
@@ -990,13 +1039,16 @@ class BuildingMapPage(QWidget):
         ref_id = self.prop_link.currentData() or ""
         angle = float(self.prop_angle.value())
         fov = float(self.prop_fov.value())
+        view_distance = float(self.prop_range.value())
         self.store.update_device(self.current_floor, dev["id"],
                                  name=name, ref_id=ref_id,
-                                 angle=angle, fov=fov)
+                                 angle=angle, fov=fov,
+                                 view_distance=view_distance)
         dev["name"] = name
         dev["ref_id"] = ref_id
         dev["angle"] = angle
         dev["fov"] = fov
+        dev["view_distance"] = view_distance
         item.set_name(name)
         item.refresh()
 
@@ -1016,7 +1068,20 @@ class BuildingMapPage(QWidget):
         item.device["angle"] = float(value)
         item.refresh()
         try:
-            self._angle_save_timer.start()
+            self._prop_save_timer.start()
+        except Exception:
+            pass
+
+    def _prop_range_changed(self, value):
+        # تغییر «فاصله دید»: قطاع دید زنده روی نقشه بزرگ/کوچک می‌شود و
+        # ذخیره روی دیسک با همان تایمر مشترک ۷۰۰ms بعد انجام می‌شود.
+        item = self._selected_device_item()
+        if not item:
+            return
+        item.device["view_distance"] = float(value)
+        item.refresh()
+        try:
+            self._prop_save_timer.start()
         except Exception:
             pass
 
@@ -1076,8 +1141,49 @@ class BuildingMapPage(QWidget):
             stops.append({"sighting": s, "cam": cam, "placements": placements})
         return stops
 
+    def _map_devices_ready(self):
+        """آیا نقشه و دوربین برای نمایش مسیر آماده‌اند؟
+        خروجی: (has_map, has_cam) — نقشه یعنی حداقل یک طبقه فایل DXF/تصویر
+        داشته باشد، دوربین یعنی حداقل یک تجهیز camera روی نقشه گذاشته شده
+        باشد."""
+        has_map = False
+        has_cam = False
+        try:
+            for fl in self.store.floors():
+                try:
+                    mp, kind = self.store.floor_map_abs(fl)
+                except Exception:
+                    mp, kind = None, None
+                if mp and kind in ("dxf", "image"):
+                    has_map = True
+                for dev in fl.get("devices", []) or []:
+                    if dev.get("kind") == "camera":
+                        has_cam = True
+        except Exception:
+            pass
+        return has_map, has_cam
+
+    def _check_map_ready(self):
+        """گیت نمایش مسیر: فقط وقتی نقشه و دوربین‌ها اضافه شده باشند مسیر
+        رسم می‌شود؛ در غیر این صورت راهنمایی فارسی نمایش داده می‌شود."""
+        has_map, has_cam = self._map_devices_ready()
+        if has_map and has_cam:
+            return True
+        missing = []
+        if not has_map:
+            missing.append("نقشه‌ی طبقه (فایل DXF اتوکد یا تصویر)")
+        if not has_cam:
+            missing.append("دوربین روی نقشه (از جعبه‌ابزار، 🎥 دوربین)")
+        QMessageBox.information(
+            self, "نقشه آماده نیست",
+            "برای نمایش مسیر حرکت روی نقشه، اول این‌ها را در همین صفحه‌ی "
+            "«نقشه ساختمان» اضافه کنید:\n• " + "\n• ".join(missing))
+        return False
+
     def show_person_path(self, person_id):
         """نمایش مسیر تردد یک شخص روی نقشه‌ها (قابل فراخوانی از بیرون)."""
+        if not self._check_map_ready():
+            return
         persons = {p.get("id"): p for p in person_store.get_persons()}
         person = persons.get(person_id)
         if not person:
@@ -1089,20 +1195,50 @@ class BuildingMapPage(QWidget):
             QMessageBox.information(self, "مسیری نیست",
                                     "برای این شخص هنوز ترددی ثبت نشده است.")
             return
-        stops = self._stops_for_person(person_id)
-
-        self._path = {"person": person, "stops": stops,
-                      "code": person.get("code", "")}
+        self._path = {"persons": [self._person_path_entry(person)]}
         self.timeline_group.setEnabled(True)
         self.path_close_btn.setEnabled(True)
         self._draw_path()
         self._fill_timeline()
         # رفتن به طبقه‌ی اولین توقفِ دارای نقشه
-        for st in stops:
+        for st in self._path["persons"][0]["stops"]:
             if st["placements"]:
                 fid = st["placements"][0][0].get("id")
                 self._select_floor(fid)
                 break
+
+    def show_all_person_paths(self):
+        """نمایش مسیر تردد «همه‌ی» اشخاص روی نقشه — هر شخص با خط‌چینِ رنگ
+        مخصوص خودش (از دکمه‌ی «🗺 نمایش روی نقشه» وقتی «همه‌ی اشخاص»
+        انتخاب شده باشد)."""
+        if not self._check_map_ready():
+            return
+        entries = []
+        for person in person_store.get_persons():
+            if not person_store.get_path(person.get("id")):
+                continue
+            entries.append(self._person_path_entry(person))
+        if not entries:
+            QMessageBox.information(self, "مسیری نیست",
+                                    "هنوز برای هیچ شخصی ترددی ثبت نشده است.")
+            return
+        self._path = {"persons": entries}
+        self.timeline_group.setEnabled(True)
+        self.path_close_btn.setEnabled(True)
+        self._draw_path()
+        self._fill_timeline()
+        for entry in entries:
+            for st in entry["stops"]:
+                if st["placements"]:
+                    self._select_floor(st["placements"][0][0].get("id"))
+                    return
+
+    def _person_path_entry(self, person):
+        """یک ورودی مسیر برای _path: شخص + توقف‌ها + رنگ مخصوصش."""
+        return {"person": person,
+                "stops": self._stops_for_person(person.get("id")),
+                "code": person.get("code", ""),
+                "color": person_color(person.get("id"))}
 
     def _select_floor(self, floor_id):
         for i in range(self.floor_list.count()):
@@ -1123,64 +1259,68 @@ class BuildingMapPage(QWidget):
                 except Exception:
                     pass
         self._stop_play()
-        stops = self._path["stops"]
-        # شماره‌گذاری به ترتیب زمان
-        per_floor_points = {}  # floor_id -> [(x, y, seq, sighting)]
-        seq = 0
-        for st in stops:
-            seq += 1
-            s = st["sighting"]
-            for fl, dev in st["placements"]:
-                fid = fl.get("id")
-                per_floor_points.setdefault(fid, []).append(
-                    (dev.get("x", 0), dev.get("y", 0), seq, s, dev))
-        # رسم روی هر طبقه
-        for fid, pts in per_floor_points.items():
-            entry = self._build_scene(fid)
-            if not entry:
-                continue
-            sc = entry["scene"]
-            # خطوط اتصال متوالیِ همان طبقه
-            for a, b in zip(pts, pts[1:]):
-                line = QGraphicsLineItem(a[0], a[1], b[0], b[1])
-                pen = QPen(QColor("#f472b6"), 0)
-                pen.setCosmetic(True)
-                pen.setStyle(Qt.PenStyle.DashLine)
-                pen.setDashOffset(0)
-                line.setPen(pen)
-                line.setZValue(20)
-                line.setData(0, "person-path")
-                sc.addItem(line)
-            # نشان‌های شماره‌دار
-            for (x, y, n, s, _dev) in pts:
-                badge = QGraphicsEllipseItem(-13, -13, 26, 26)
-                badge.setPos(x, y)
-                badge.setPen(QPen(QColor("#f472b6"), 2))
-                badge.setBrush(QBrush(QColor("#1a0f1e")))
-                badge.setFlag(
-                    QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
-                badge.setZValue(21)
-                badge.setData(0, "person-path")
-                sc.addItem(badge)
-                num = QGraphicsSimpleTextItem(str(n))
-                num.setFont(QFont("", 10, QFont.Weight.Bold))
-                num.setBrush(QBrush(QColor("white")))
-                num.setPos(x - 6, y - 10)
-                num.setFlag(
-                    QGraphicsSimpleTextItem.GraphicsItemFlag.ItemIgnoresTransformations)
-                num.setZValue(22)
-                num.setData(0, "person-path")
-                sc.addItem(num)
-                tlabel = QGraphicsSimpleTextItem(
-                    f"{s.get('enter_time', '')}")
-                tlabel.setFont(QFont("", 8))
-                tlabel.setBrush(QBrush(QColor("#fbcfe8")))
-                tlabel.setPos(x - 26, y - 34)
-                tlabel.setFlag(
-                    QGraphicsSimpleTextItem.GraphicsItemFlag.ItemIgnoresTransformations)
-                tlabel.setZValue(22)
-                tlabel.setData(0, "person-path")
-                sc.addItem(tlabel)
+        # هر شخص با خط‌چینِ رنگ مخصوص خودش رسم می‌شود
+        for entry_p in self._path.get("persons", []):
+            color = entry_p.get("color") or QColor("#f472b6")
+            dark = QColor.fromHsv(color.hue(), 160, 70)
+            stops = entry_p["stops"]
+            # شماره‌گذاری به ترتیب زمان
+            per_floor_points = {}  # floor_id -> [(x, y, seq, sighting)]
+            seq = 0
+            for st in stops:
+                seq += 1
+                s = st["sighting"]
+                for fl, dev in st["placements"]:
+                    fid = fl.get("id")
+                    per_floor_points.setdefault(fid, []).append(
+                        (dev.get("x", 0), dev.get("y", 0), seq, s, dev))
+            # رسم روی هر طبقه
+            for fid, pts in per_floor_points.items():
+                entry = self._build_scene(fid)
+                if not entry:
+                    continue
+                sc = entry["scene"]
+                # خطوط اتصال متوالیِ همان طبقه — خط‌چین به رنگ شخص
+                for a, b in zip(pts, pts[1:]):
+                    line = QGraphicsLineItem(a[0], a[1], b[0], b[1])
+                    pen = QPen(color, 0)
+                    pen.setCosmetic(True)
+                    pen.setStyle(Qt.PenStyle.DashLine)
+                    pen.setDashOffset(0)
+                    line.setPen(pen)
+                    line.setZValue(20)
+                    line.setData(0, "person-path")
+                    sc.addItem(line)
+                # نشان‌های شماره‌دار
+                for (x, y, n, s, _dev) in pts:
+                    badge = QGraphicsEllipseItem(-13, -13, 26, 26)
+                    badge.setPos(x, y)
+                    badge.setPen(QPen(color, 2))
+                    badge.setBrush(QBrush(dark))
+                    badge.setFlag(
+                        QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
+                    badge.setZValue(21)
+                    badge.setData(0, "person-path")
+                    sc.addItem(badge)
+                    num = QGraphicsSimpleTextItem(str(n))
+                    num.setFont(QFont("", 10, QFont.Weight.Bold))
+                    num.setBrush(QBrush(QColor("white")))
+                    num.setPos(x - 6, y - 10)
+                    num.setFlag(
+                        QGraphicsSimpleTextItem.GraphicsItemFlag.ItemIgnoresTransformations)
+                    num.setZValue(22)
+                    num.setData(0, "person-path")
+                    sc.addItem(num)
+                    tlabel = QGraphicsSimpleTextItem(
+                        f"{s.get('enter_time', '')}")
+                    tlabel.setFont(QFont("", 8))
+                    tlabel.setBrush(QBrush(color))
+                    tlabel.setPos(x - 26, y - 34)
+                    tlabel.setFlag(
+                        QGraphicsSimpleTextItem.GraphicsItemFlag.ItemIgnoresTransformations)
+                    tlabel.setZValue(22)
+                    tlabel.setData(0, "person-path")
+                    sc.addItem(tlabel)
         # اگر صحنه‌ای تازه ساخته شد، نشان‌های زنده را هم روی آن بنشان
         for key in list(self._live_persons.keys()):
             self._apply_live_person(key)
@@ -1188,25 +1328,46 @@ class BuildingMapPage(QWidget):
     def _fill_timeline(self):
         self.timeline_list.clear()
         unmapped = 0
-        for i, st in enumerate(self._path["stops"], 1):
-            s = st["sighting"]
-            cam_name = s.get("camera_name") or "؟"
-            when = f"{s.get('enter_j', '')} {s.get('enter_time', '')}"
-            floors = ", ".join(
-                fl.get("name", "") for fl, _d in st["placements"]) or "—"
-            if not st["placements"]:
-                unmapped += 1
-            item = QListWidgetItem(f"{i}. 🎥 {cam_name}\n    🕐 {when}")
-            item.setData(Qt.ItemDataRole.UserRole, i - 1)
-            self.timeline_list.addItem(item)
+        total = 0
+        persons = self._path.get("persons", []) if self._path else []
+        multi = len(persons) > 1
+        for pidx, entry_p in enumerate(persons):
+            color = entry_p.get("color") or QColor("#f472b6")
+            code = entry_p.get("code", "")
+            if multi:
+                # سرفصل رنگی هر شخص = راهنمای رنگ‌ها
+                head = QListWidgetItem(f"⬤ {code} — مسیر")
+                head.setForeground(QBrush(color))
+                f = head.font()
+                f.setBold(True)
+                head.setFont(f)
+                head.setData(Qt.ItemDataRole.UserRole, None)
+                self.timeline_list.addItem(head)
+            for i, st in enumerate(entry_p["stops"], 1):
+                s = st["sighting"]
+                cam_name = s.get("camera_name") or "؟"
+                when = f"{s.get('enter_j', '')} {s.get('enter_time', '')}"
+                if not st["placements"]:
+                    unmapped += 1
+                total += 1
+                item = QListWidgetItem(f"{i}. 🎥 {cam_name}\n    🕐 {when}")
+                item.setData(Qt.ItemDataRole.UserRole, (pidx, i - 1))
+                self.timeline_list.addItem(item)
+        names = "، ".join(e.get("code", "") for e in persons)
         self.unmapped_label.setText(
-            f"{len(self._path['stops'])} توقف در مسیر «{self._path['code']}»"
+            f"{total} توقف در مسیر «{names}»"
             + (f" — {unmapped} توقف خارج از نقشه است (دوربین روی نقشه گذاشته نشده)"
                if unmapped else ""))
 
     def _on_timeline_clicked(self, item):
-        idx = item.data(Qt.ItemDataRole.UserRole)
-        st = self._path["stops"][idx]
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if not data:
+            return
+        pidx, idx = data
+        try:
+            st = self._path["persons"][pidx]["stops"][idx]
+        except (IndexError, KeyError, TypeError):
+            return
         if not st["placements"]:
             QMessageBox.information(
                 self, "خارج از نقشه",
@@ -1365,11 +1526,16 @@ class BuildingMapPage(QWidget):
         """
         if not self._path:
             return
-        person = self._path.get("person") or {}
-        if str(person.get("id")) != str(person_id):
+        persons = self._path.get("persons", [])
+        hit = None
+        for entry_p in persons:
+            if str((entry_p.get("person") or {}).get("id")) == str(person_id):
+                hit = entry_p
+                break
+        if not hit:
             return
         try:
-            self._path["stops"] = self._stops_for_person(person_id)
+            hit["stops"] = self._stops_for_person(person_id)
             self._draw_path()
             self._fill_timeline()
         except Exception:
@@ -1383,10 +1549,13 @@ class BuildingMapPage(QWidget):
             return
         if not self._path:
             return
-        # ساخت سگمنت‌های همان‌طبقه به ترتیب
+        # ساخت سگمنت‌های همان‌طبقه به ترتیب — در حالت چندنفره، مسیر
+        # نفر اول پخش می‌شود.
+        persons = self._path.get("persons", [])
+        stops = persons[0]["stops"] if persons else []
         seq_pts = []
         n = 0
-        for st in self._path["stops"]:
+        for st in stops:
             n += 1
             for fl, dev in st["placements"]:
                 seq_pts.append((fl.get("id"), dev.get("x", 0), dev.get("y", 0)))
@@ -1399,7 +1568,7 @@ class BuildingMapPage(QWidget):
                                     "توقف‌های روی نقشه در یک طبقه‌ی مشترک نیستند.")
             return
         dot = QGraphicsEllipseItem(-8, -8, 16, 16)
-        dot.setBrush(QBrush(QColor("#f472b6")))
+        dot.setBrush(QBrush(persons[0].get("color") or QColor("#f472b6")))
         dot.setPen(QPen(QColor("white"), 2))
         dot.setFlag(
             QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)

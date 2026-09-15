@@ -173,7 +173,7 @@ class MapStore:
 
     # -- تجهیزات --
     def add_device(self, floor_id, kind, name, x, y, ref_id="",
-                   angle=0.0, fov=90.0):
+                   angle=0.0, fov=90.0, view_distance=8.0):
         fl = self.get_floor(floor_id)
         if not fl:
             return None
@@ -185,6 +185,7 @@ class MapStore:
             "x": float(x), "y": float(y),
             "angle": float(angle),  # درجه؛ ۰ = سمت راست (شرق)، خلاف عقربه ساعت
             "fov": float(fov),      # زاویه‌ی دید دوربین (فقط برای camera)
+            "view_distance": float(view_distance),  # فاصله دید دوربین به متر
         }
         fl["devices"].append(dev)
         self.save()

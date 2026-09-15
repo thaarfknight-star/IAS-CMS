@@ -145,9 +145,10 @@ class PersonStore:
                 self._conn.execute(
                     "INSERT OR IGNORE INTO person_settings(key, value) VALUES(?, ?)",
                     (k, v))
-            # مهاجرت سبک: ستون‌های چهره (اگر دیتابیس قدیمی باشد)
+            # مهاجرت سبک: ستون‌های چهره و رنگ (اگر دیتابیس قدیمی باشد)
             for _col, _typ in (("face_person_id", "TEXT DEFAULT ''"),
-                               ("face_name", "TEXT DEFAULT ''")):
+                               ("face_name", "TEXT DEFAULT ''"),
+                               ("color", "TEXT DEFAULT ''")):
                 try:
                     self._conn.execute(
                         f"ALTER TABLE persons ADD COLUMN {_col} {_typ}")
@@ -282,6 +283,29 @@ class PersonStore:
         with self._lock:
             self._conn.execute("UPDATE persons SET notes=? WHERE id=?",
                                (notes or "", person_id))
+            self._conn.commit()
+
+    @staticmethod
+    def _valid_hex_color(hexcol):
+        h = str(hexcol or "").strip()
+        if len(h) != 7 or not h.startswith("#"):
+            return False
+        try:
+            int(h[1:], 16)
+        except ValueError:
+            return False
+        return True
+
+    def set_person_color(self, person_id, color_hex):
+        """تعیین رنگ اختصاصی شخص (hex مثل #ff5500) — برای نمایش مسیر
+        حرکتش روی نقشه با خط‌چینِ رنگ خودش. رشته‌ی خالی یعنی «پاک کردن
+        رنگ دستی» (برگشت به رنگ خودکار)."""
+        hexcol = str(color_hex or "").strip()
+        if hexcol and not self._valid_hex_color(hexcol):
+            raise ValueError(f"قالب رنگ نامعتبر است: {hexcol!r}")
+        with self._lock:
+            self._conn.execute("UPDATE persons SET color=? WHERE id=?",
+                               (hexcol, person_id))
             self._conn.commit()
 
     def get_persons(self):

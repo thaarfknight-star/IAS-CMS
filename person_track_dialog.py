@@ -22,9 +22,76 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QHeaderView, QListWidget, QListWidgetItem, QGroupBox,
     QPushButton, QComboBox, QDateEdit, QMessageBox, QFileDialog, QSplitter,
     QDoubleSpinBox, QSpinBox, QInputDialog, QAbstractItemView, QTextEdit,
+    QDialog,
 )
 
 from person_store import person_store
+
+
+class LiveTrackStatusDialog(QDialog):
+    """پنل «🔍 وضعیت زنده‌ی ردیابی (تشخیصی)» — با دکمه باز می‌شود.
+
+    شمارنده‌های زنده‌ی هر دوربین (تیک/باکس/کاندیدا/تأیید/...) + دنباله‌ی
+    فایل person_debug.log را نشان می‌دهد؛ معلوم می‌کند مسیر
+    candidate→confirmed→store دقیقاً کجا می‌ایستد.
+    """
+
+    HINT = (
+        "راهنمای خواندن: تیک = تعداد دورهای تشخیص؛ باکس = باکس‌های معتبر؛ "
+        "box_invalid = باکس خرابِ دتکتور؛ desc_fail = دفعاتی که توصیف‌گر "
+        "ساخته نشد؛ det=FAIL یعنی مدل YOLO بارگذاری نشده (علت اول "
+        "«گزارشی ثبت نمی‌شود»). لاگ کامل: person_data/person_debug.log")
+
+    def __init__(self, collect_lines, clear_log, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("وضعیت زنده‌ی ردیابی (تشخیصی)")
+        self.resize(760, 460)
+        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self._collect_lines = collect_lines
+        self._clear_log = clear_log
+
+        layout = QVBoxLayout(self)
+        self.text = QTextEdit()
+        self.text.setReadOnly(True)
+        self.text.setStyleSheet(
+            "font-family: monospace; font-size: 11px; direction: ltr; "
+            "text-align: left;")
+        layout.addWidget(self.text, 1)
+
+        hint = QLabel(self.HINT)
+        hint.setStyleSheet("color: #9e9e9e; font-size: 11px;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        btns = QHBoxLayout()
+        refresh_btn = QPushButton("🔄 به‌روزرسانی وضعیت")
+        refresh_btn.clicked.connect(self.do_refresh)
+        btns.addWidget(refresh_btn)
+        clear_btn = QPushButton("🗑 پاک‌سازی فایل لاگ")
+        clear_btn.clicked.connect(self._on_clear)
+        btns.addWidget(clear_btn)
+        btns.addStretch()
+        close_btn = QPushButton("بستن")
+        close_btn.clicked.connect(self.accept)
+        btns.addWidget(close_btn)
+        layout.addLayout(btns)
+
+        self.do_refresh()
+
+    def do_refresh(self):
+        try:
+            lines = self._collect_lines()
+        except Exception as e:
+            lines = [f"خطا در خواندن وضعیت: {e}"]
+        self.text.setPlainText("\n".join(lines) if lines else "—")
+
+    def _on_clear(self):
+        try:
+            msg = self._clear_log()
+        except Exception as e:
+            msg = f"پاک‌سازی لاگ ناموفق بود: {e}"
+        self.do_refresh()
+        QMessageBox.information(self, "پاک‌سازی لاگ", msg)
 
 
 class PersonTrackPage(QWidget):
@@ -215,43 +282,30 @@ class PersonTrackPage(QWidget):
         set_group.setLayout(set_layout)
         layout.addWidget(set_group)
 
-        # --- وضعیت زنده‌ی تشخیصی: معلوم می‌کند مسیر
-        # candidate→confirmed→store دقیقاً کجا می‌ایستد (درخواست طه:
-        # «سیستم ردیابی اصلا کار نمیکنه» — حالا دلیلش دیده می‌شود).
-        diag_group = QGroupBox("🔍 وضعیت زنده‌ی ردیابی (تشخیصی)")
-        diag_layout = QVBoxLayout()
-        self.diag_text = QTextEdit()
-        self.diag_text.setReadOnly(True)
-        self.diag_text.setMaximumHeight(130)
-        self.diag_text.setStyleSheet(
-            "font-family: monospace; font-size: 11px; direction: ltr; "
-            "text-align: left;")
-        self.diag_text.setPlaceholderText(
-            "با دکمه‌ی «به‌روزرسانی»، شمارنده‌های زنده‌ی هر دوربین نمایش "
-            "داده می‌شود.")
-        diag_layout.addWidget(self.diag_text)
-        diag_btns = QHBoxLayout()
-        diag_refresh_btn = QPushButton("🔄 به‌روزرسانی وضعیت")
-        diag_refresh_btn.clicked.connect(self._refresh_diag)
-        diag_btns.addWidget(diag_refresh_btn)
-        diag_clear_btn = QPushButton("🗑 پاک‌سازی فایل لاگ")
-        diag_clear_btn.clicked.connect(self._clear_person_log)
-        diag_btns.addWidget(diag_clear_btn)
-        diag_btns.addStretch()
-        diag_hint = QLabel(
-            "راهنمای خواندن: تیک = تعداد دورهای تشخیص؛ باکس = باکس‌های معتبر؛ "
-            "box_invalid = باکس خرابِ دتکتور؛ desc_fail = دفعاتی که توصیف‌گر "
-            "ساخته نشد؛ det=FAIL یعنی مدل YOLO بارگذاری نشده (علت اول "
-            "«گزارشی ثبت نمی‌شود»). لاگ کامل: person_data/person_debug.log")
-        diag_hint.setStyleSheet("color: #9e9e9e; font-size: 11px;")
-        diag_hint.setWordWrap(True)
-        diag_btns.addWidget(diag_hint)
-        diag_layout.addLayout(diag_btns)
-        diag_group.setLayout(diag_layout)
-        layout.addWidget(diag_group)
+        # --- وضعیت زنده‌ی تشخیصی: با دکمه باز می‌شود (درخواست طه: «یه دکمه
+        # تعریف کن که هر وقت کلیک کرد باز بشه اون پنل»). معلوم می‌کند مسیر
+        # candidate→confirmed→store دقیقاً کجا می‌ایستد.
+        diag_row = QHBoxLayout()
+        diag_row.addWidget(QLabel("🔍"))
+        diag_btn = QPushButton("وضعیت زنده‌ی ردیابی (تشخیصی)")
+        diag_btn.setToolTip(
+            "باز کردن پنل تشخیصی: شمارنده‌های زنده‌ی هر دوربین و دنباله‌ی "
+            "فایل لاگ")
+        diag_btn.clicked.connect(self._open_live_status)
+        diag_row.addWidget(diag_btn)
+        diag_row.addStretch()
+        layout.addLayout(diag_row)
 
         self._load_settings_to_ui()
         return tab
+
+    def _open_live_status(self):
+        """باز کردن پنل «وضعیت زنده‌ی ردیابی (تشخیصی)» با دکمه."""
+        dlg = LiveTrackStatusDialog(
+            collect_lines=self._collect_diag_lines,
+            clear_log=self._clear_person_log_core,
+            parent=self)
+        dlg.exec()
 
     def _person_log_path(self):
         try:
@@ -260,8 +314,11 @@ class PersonTrackPage(QWidget):
         except Exception:
             return None
 
-    def _refresh_diag(self):
-        """نمایش شمارنده‌های زنده‌ی ردیابی هر دوربین + دنباله‌ی فایل لاگ."""
+    def _collect_diag_lines(self):
+        """ساخت خط‌های گزارش تشخیصی زنده (برای پنل «وضعیت زنده‌ی ردیابی»).
+
+        خروجی: لیست خط‌ها — شمارنده‌های هر دوربین + دنباله‌ی فایل لاگ.
+        """
         lines = []
         try:
             win = self.window()
@@ -309,19 +366,21 @@ class PersonTrackPage(QWidget):
                     lines.extend(tail)
         except Exception:
             pass
-        self.diag_text.setPlainText("\n".join(lines) if lines else "—")
+        return lines if lines else ["—"]
 
-    def _clear_person_log(self):
+    def _clear_person_log_core(self):
+        """پاک‌سازی فایل لاگ ردیابی؛ خروجی: پیام فارسی نتیجه."""
         try:
             path = self._person_log_path()
             if path and os.path.exists(path):
                 os.remove(path)
-                self.status_label.setText("🗑 فایل لاگ ردیابی پاک شد.")
+                msg = "🗑 فایل لاگ ردیابی پاک شد."
             else:
-                self.status_label.setText("فایل لاگی وجود ندارد.")
+                msg = "فایل لاگی وجود ندارد."
         except Exception as e:
-            QMessageBox.warning(self, "خطا", f"پاک‌سازی لاگ ناموفق بود:\n{e}")
-        self._refresh_diag()
+            msg = f"پاک‌سازی لاگ ناموفق بود: {e}"
+        self.status_label.setText(msg)
+        return msg
 
     def _load_settings_to_ui(self):
         self.threshold_spin.setValue(person_store.match_threshold)
@@ -596,14 +655,14 @@ class PersonTrackPage(QWidget):
             self.path_summary.setText("در بازه‌ی انتخاب‌شده حضوری ثبت نشده است.")
 
     def _show_path_on_map(self):
-        """دکمه‌ی «🗺 نمایش روی نقشه»: مسیر شخص انتخاب‌شده را روی نقشه‌ی
-        ساختمان رسم می‌کند (از طریق کال‌بک main)."""
+        """دکمه‌ی «🗺 نمایش روی نقشه»: مسیر شخص انتخاب‌شده (یا اگر «همه‌ی
+        اشخاص» انتخاب شده، مسیر همه‌ی اشخاص — هر کدام با خط‌چینِ رنگ
+        مخصوص خودش) را روی نقشه‌ی ساختمان رسم می‌کند (از طریق کال‌بک
+        main). فقط وقتی نقشه و دوربین‌ها اضافه شده باشند رسم انجام
+        می‌شود."""
         pid = self.path_person_combo.currentData()
-        if not pid:
-            QMessageBox.information(self, "شخصی انتخاب نشده",
-                                    "اول از لیست «شخص»، یک شخص انتخاب کنید.")
-            return
         if callable(self.on_show_on_map):
+            # pid=None یعنی «همه‌ی اشخاص»
             self.on_show_on_map(pid)
         else:
             QMessageBox.information(
