@@ -121,12 +121,12 @@ jobs:
     - name: Prepare plate-reader assets (model + EasyOCR models)
       # اجباری: این‌ها باید حتماً داخل exe باشند تا روی سیستم کاربر
       # هیچ دانلودی لازم نباشد (شرط سخت). نبود/ناقص بودن هرکدام → بیلد fail.
-      shell: pwsh
+      shell: bash
       run: |
-        $ErrorActionPreference = "Stop"
+        set -e
 
         # ۱) مدل plate_detector.pt (اول HuggingFace، بعد آینه‌ی hf-mirror)
-        if (-not (Test-Path "plate_detector.pt")) {
+        if [ ! -f "plate_detector.pt" ]; then
           python - << 'PYEOF'
           import os, urllib.request
           repo = "joker5914/yolov8n-license-plate"
@@ -160,24 +160,22 @@ jobs:
               raise SystemExit("FAIL: دانلود plate_detector.pt با همه‌ی منابع شکست خورد.")
           print("plate_detector.pt OK:", os.path.getsize("plate_detector.pt"), "bytes", flush=True)
           PYEOF
-          if ($LASTEXITCODE -ne 0) { throw "دانلود plate_detector.pt شکست خورد." }
-        }
-        $plateSize = (Get-Item "plate_detector.pt").Length
-        if ($plateSize -lt 1MB) { throw "plate_detector.pt ناقص است ($plateSize بایت)." }
-        Write-Host "plate_detector.pt ready: $plateSize بایت"
+        fi
+        plate_size=$(wc -c < plate_detector.pt)
+        if [ "$plate_size" -lt 1048576 ]; then echo "plate_detector.pt ناقص است ($plate_size بایت)."; exit 1; fi
+        echo "plate_detector.pt ready: $plate_size bytes"
 
         # ۲) مدل‌های EasyOCR فارسی/انگلیسی: پیش‌دانلود در CI تا در exe باندل
         # شوند و برنامه روی سیستم کاربر هیچ دانلودی انجام ندهد.
-        if (-not (Test-Path "easyocr_models\model\text_detection.pt")) {
+        if [ ! -f "easyocr_models/model/text_detection.pt" ]; then
           python - << 'PYEOF'
           import easyocr
           r = easyocr.Reader(["fa", "en"], gpu=False,
                              model_storage_directory="easyocr_models", verbose=False)
           print("EasyOCR models pre-downloaded OK", flush=True)
           PYEOF
-          if ($LASTEXITCODE -ne 0) { throw "پیش‌دانلود مدل‌های EasyOCR شکست خورد." }
-        }
-        Write-Host "easyocr_models ready."
+        fi
+        echo "easyocr_models ready."
 
         # ۳) smoke test آفلاین: لود واقعی مدل پلاک با خودِ plate_detector.py
         # (بدون اینترنت؛ اگر فایل خراب باشد همین‌جا بیلد fail می‌شود)
@@ -191,7 +189,6 @@ jobs:
             raise SystemExit("FAIL: PlateDetector could not load plate_detector.pt: " + d.load_error)
         print("smoke test OK", flush=True)
         PYEOF
-        if ($LASTEXITCODE -ne 0) { throw "smoke test لود مدل پلاک شکست خورد." }
 
     - name: Restore Nuitka cache (MinGW64 + ماژول‌های کامپایل‌شده)
       # روی مسیر quick_test (PyInstaller) اصلاً از Nuitka استفاده نمی‌شود، پس
