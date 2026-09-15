@@ -1,0 +1,486 @@
+name: Build Desktop EXE
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      quick_test:
+        description: 'true = بیلد سریع PyInstaller (چند دقیقه) | false = بیلد نهایی Nuitka onefile (چند ساعت، فقط دستی)'
+        type: boolean
+        default: true
+
+concurrency:
+  group: build-exe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.10"
+        cache: 'pip'
+        cache-dependency-path: requirements.txt
+
+    - name: Cache pip-built wheels (dlib و بقیه)
+      id: pip-wheel-cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~\AppData\Local\pip\Cache
+        key: pip-wheels-windows-py310-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          pip-wheels-windows-
+
+    - name: Install CMake (فقط وقتی dlib هنوز کش‌نشده)
+      if: steps.pip-wheel-cache.outputs.cache-hit != 'true'
+      run: |
+        choco install cmake --installargs "ADD_CMAKE_TO_PATH=System" --no-progress
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install "setuptools<70" wheel
+        pip install dlib --only-binary :all: || pip install dlib
+        pip install git+https://github.com/ageitgey/face_recognition_models
+        pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+        pip install -r requirements.txt
+        # --- موتور OCR پلاک‌خوان (اجباری برای خوانش متن پلاک) ---
+        # easyocr موتور اصلی خوانش پلاک فارسی است؛ rapidocr سبک و کمکی.
+        # هر دو lazy-load می‌شوند (فقط وقتی پلاک‌خوان یک دوربین فعال شود)
+        # و مدل‌های easyocr در اولین استفاده‌ی واقعی دانلود می‌شوند.
+        pip install easyocr rapidocr-onnxruntime
+        # --- کتابخانه‌ی خوانش نقشه‌های اتوکد (DXF) برای «نقشه ساختمان» ---
+        # ezdxf خالص‌پایتونی و سبک است؛ PyInstaller آن را داخل exe می‌بندد
+        # تا روی سیستم کاربر نهایی هیچ نصبی لازم نباشد.
+        pip install ezdxf
+
+    - name: Cache YOLOv8n weights
+      id: yolo-weights-cache
+      uses: actions/cache@v4
+      with:
+        path: yolov8n.pt
+        key: yolov8n-weights-v1
+
+    - name: Download YOLOv8n weights (فقط اگر در کش نبود)
+      if: steps.yolo-weights-cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+        if (-not (Test-Path "yolov8n.pt")) {
+          $found = Get-ChildItem -Path $env:USERPROFILE -Recurse -Filter "yolov8n.pt" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($found) { Copy-Item $found.FullName -Destination "yolov8n.pt" }
+        }
+        if (-not (Test-Path "yolov8n.pt")) {
+          Invoke-WebRequest -Uri "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt" -OutFile "yolov8n.pt"
+        }
+        if (-not (Test-Path "yolov8n.pt")) {
+          throw "دانلود yolov8n.pt با هیچ‌کدام از روش‌ها موفق نشد."
+        }
+        Write-Host "yolov8n.pt آماده‌ی بسته‌بندی است: $((Get-Item yolov8n.pt).Length) بایت"
+
+    - name: Cache SegFormer floor-detection weights
+      # رفع درخواست «تشخیص هوشمند زمین با AI»: دقیقاً همان الگوی cache‌ی
+      # yolov8n.pt بالا - وزن مدل SegFormer-B0 (ADE20K) هم فقط یک‌بار
+      # دانلود و در کش نگه داشته می‌شود تا build‌های بعدی دوباره دانلودش
+      # نکنند (رجوع کنید به floor_detector.py: _LOCAL_MODEL_DIRNAME).
+      id: segformer-weights-cache
+      uses: actions/cache@v4
+      with:
+        path: segformer_floor_model
+        key: segformer-floor-weights-v1
+
+    - name: Download SegFormer floor-detection weights (فقط اگر در کش نبود)
+      if: steps.segformer-weights-cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        python -c "from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation; m='nvidia/segformer-b0-finetuned-ade-512-512'; p=SegformerImageProcessor.from_pretrained(m); mdl=SegformerForSemanticSegmentation.from_pretrained(m); p.save_pretrained('segformer_floor_model'); mdl.save_pretrained('segformer_floor_model')"
+        if (-not (Test-Path "segformer_floor_model\config.json")) {
+          throw "دانلود وزن مدل SegFormer (تشخیص هوشمند زمین) موفق نشد."
+        }
+        Write-Host "segformer_floor_model آماده‌ی بسته‌بندی است."
+
+    - name: Restore Nuitka cache (MinGW64 + ماژول‌های کامپایل‌شده)
+      # روی مسیر quick_test (PyInstaller) اصلاً از Nuitka استفاده نمی‌شود، پس
+      # restore این کش (که می‌تواند چند گیگابایت باشد) فقط وقت تلف می‌کند.
+      if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.quick_test != 'true' }}
+      id: nuitka-cache
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          ~\AppData\Local\Nuitka\Nuitka\Cache
+        # نکته‌ی مهم: قبلاً کلید این کش بر اساس hashFiles('**/*.py') بود، یعنی
+        # با تغییر حتی یک خط کد پروژه، کل کش (شامل کامپایلر MinGW64 + همه‌ی
+        # آبجکت‌های از قبل کامپایل‌شده‌ی torch/dlib/PyQt6) باطل می‌شد و بیلد
+        # از صفر انجام می‌شد. حالا کلید فقط به وابستگی‌ها (requirements.txt)
+        # بستگی دارد؛ Nuitka خودش هر ماژول را جدا هش می‌کند و فقط کد
+        # تغییرکرده را دوباره کامپایل می‌کند.
+        #
+        # رفع ریشه‌ای مشکل «بیلد کنسل‌شده هیچ‌وقت کش را ذخیره نمی‌کند»: قبلاً
+        # از خودِ actions/cache@v4 (که هم restore هم save را خودکار در فاز
+        # "post" انجام می‌دهد) استفاده می‌شد. طبق مستندات رسمی گیت‌هاب، وقتی
+        # jobی کنسل می‌شود (چه دستی چه به‌خاطر رسیدن به سقف زمانیِ ۶ ساعته -
+        # دقیقاً همان اتفاقی که افتاد)، فقط stepهایی که صراحتاً شرط
+        # ``if: always()`` دارند فرصت اجرا (در یک بازه‌ی ۵ دقیقه‌ای) پیدا
+        # می‌کنند؛ فاز "post" خودکارِ actions/cache این شرط را ندارد، پس با
+        # کنسل‌شدن job، ذخیره‌ی کش هم دقیقاً وسط همان لحظه قطع می‌شود - یعنی
+        # با اینکه Nuitka واقعاً چند ساعت پیشرفت کرده بود، هیچ‌کدام از آن
+        # پیشرفت روی دیسک کش‌شده برای اجرای بعدی باقی نمی‌ماند و هر بار از
+        # صفر شروع می‌شود (یک حلقه‌ی بی‌پایان شکست). با جدا کردن restore/save
+        # (این step فقط می‌خواند) و اضافه‌کردن یک step صریح "Save" با
+        # ``if: always()`` دقیقاً بعد از step ساخت (پایین‌تر)، حالا ذخیره‌ی
+        # کش هم در همان بازه‌ی ۵ دقیقه‌ای فرصت اجرا پیدا می‌کند.
+        #
+        # نکته‌ی فنی مهم درباره‌ی کلید کش: چون گیت‌هاب اجازه نمی‌دهد روی یک
+        # کلید کش دقیقاً تکراری دوباره ذخیره شود (کلیدهای کش immutable
+        # هستند)، اگر کلید save همیشه دقیقاً همین hashFiles ثابت باشد، از
+        # دومین اجرا به بعد (که یک کش با همین کلید از قبل وجود دارد) هر
+        # تلاش برای «Save» صرفاً بی‌صدا شکست می‌خورد و پیشرفت تازه هیچ‌وقت
+        # واقعاً ذخیره نمی‌شود - دقیقاً همان مشکلی که قرار بود حل شود. برای
+        # همین، کلید save (و restore) پایین‌تر شامل ``github.run_id`` هم
+        # هست تا هر اجرا کلید یکتای خودش را بسازد؛ ``restore-keys`` با همان
+        # پیشوند مشترک (بدون run_id) تنظیم شده تا جدیدترین کش ذخیره‌شده از
+        # هر اجرای قبلی (با همین requirements.txt) پیدا و بازیابی شود.
+        key: nuitka-cache-windows-${{ hashFiles('requirements.txt') }}-${{ github.run_id }}
+        restore-keys: |
+          nuitka-cache-windows-${{ hashFiles('requirements.txt') }}-
+          nuitka-cache-windows-
+
+    # بیلد سریع PyInstaller (چند دقیقه، بدون کامپایل C): هم با اجرای دستی
+    # (workflow_dispatch + quick_test=true) و هم خودکار روی هر push به main
+    # اجرا می‌شود تا بعد از هر push یک exe تازه در Artifacts باشد.
+    # بیلد نهایی/توزیعی Nuitka onefile فقط با اجرای دستی + quick_test=false.
+    - name: Build Executable with PyInstaller (quick - no C compile)
+      if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.quick_test == 'true') }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        python -m pip install pyinstaller
+        if ($LASTEXITCODE -ne 0) { throw "نصب PyInstaller با کد $LASTEXITCODE شکست خورد." }
+
+        # --- فایل‌های wsdl کتابخانه‌ی onvif-zeep (لازم برای بخش «WDR سخت‌افزاری») ---
+        # wheel داخل pip پوشه‌ی wsdl را ندارد؛ از روی sdist استخراج و کنار exe
+        # بسته‌بندی می‌شود (onvif_imaging.py دنبال <bundle>/wsdl می‌گردد).
+        $wsdlDataArg = $null
+        try {
+          $tmpDl = Join-Path $env:RUNNER_TEMP "onvif_sdist"
+          New-Item -ItemType Directory -Path $tmpDl -Force | Out-Null
+          Push-Location $tmpDl
+          python -m pip download --no-deps --no-binary :all: onvif-zeep 2>$null
+          $sdist = Get-ChildItem -Filter "onvif_zeep*.tar.gz" | Select-Object -First 1
+          if ($sdist) {
+            tar -xzf $sdist.FullName
+            $wsdlSrc = Get-ChildItem -Directory -Recurse -Filter "wsdl" | Select-Object -First 1
+            if ($wsdlSrc -and (Test-Path (Join-Path $wsdlSrc.FullName "imaging.wsdl"))) {
+              $wsdlDst = Join-Path $env:GITHUB_WORKSPACE "onvif_wsdl_pkg"
+              New-Item -ItemType Directory -Path $wsdlDst -Force | Out-Null
+              Copy-Item (Join-Path $wsdlSrc.FullName "*") -Destination $wsdlDst -Recurse -Force
+              $wsdlDataArg = "--add-data=onvif_wsdl_pkg;wsdl"
+              Write-Host "onvif wsdl files bundled."
+            }
+          }
+          Pop-Location
+        } catch { Write-Host "WARNING: onvif wsdl bundling skipped: $_" }
+
+        $pyiArgs = @(
+          "--onedir"
+          "--noconfirm"
+          "--name=CCTV_CMS"
+          "--windowed"
+          "--add-data=faces;faces"
+          "--add-data=yolov8n.pt;."
+          "--add-data=segformer_floor_model;segformer_floor_model"
+          "--collect-all=ultralytics"
+          "--collect-all=torch"
+          "--collect-all=torchvision"
+          "--collect-all=transformers"
+          "--collect-all=face_recognition_models"
+          "--collect-all=cv2"
+          "--collect-all=onvif"
+          "--distpath=dist"
+          "main.py"
+        )
+        # --- سیستم پلاک‌خوان: مدل پلاک (در صورت وجود در ریپو) + موتورهای OCR ---
+        # مدل plate_detector.pt اگر در ریشه‌ی ریپو باشد کنار exe بسته‌بندی
+        # می‌شود؛ وگرنه برنامه در اولین استفاده خودش آن را دانلود می‌کند
+        # (رجوع کنید به plate_detector.py) پس نبودش بیلد را نمی‌شکند.
+        if (Test-Path "plate_detector.pt") { $pyiArgs += "--add-data=plate_detector.pt;." }
+        # easyocr/rapidocr/ezdxf فقط اگر در محیط بیلد نصب باشند جمع‌آوری می‌شوند
+        # تا در صورت نبودشان بیلد خطا نگیرد؛ نبودشان در exe یعنی آن قابلیت
+        # (پلاک‌خوان / نقشه‌ی DXF) غیرفعال و برنامه بدون کرش کار می‌کند.
+        foreach ($pkg in @("easyocr", "rapidocr_onnxruntime", "ezdxf")) {
+          python -c "import $pkg" 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            $pyiArgs += "--collect-all=$pkg"
+            Write-Host "bundling $pkg."
+          } else {
+            Write-Host "WARNING: $pkg not installed in build env; its feature will be disabled in exe."
+          }
+        }
+        if ($wsdlDataArg) { $pyiArgs += $wsdlDataArg }
+        if (Test-Path "assets") { $pyiArgs += "--add-data=assets;assets" }
+        if (Test-Path "assets\app.ico") { $pyiArgs += "--icon=assets\app.ico" }
+
+        Write-Host "PyInstaller command: python -m PyInstaller $($pyiArgs -join ' ')"
+        python -m PyInstaller @pyiArgs
+
+        if ($LASTEXITCODE -ne 0) {
+          Write-Host "##[error] PyInstaller با کد خروج $LASTEXITCODE شکست خورد. متن بالای همین لاگ را ببینید."
+          throw "PyInstaller build failed with exit code $LASTEXITCODE"
+        }
+
+        # --- راستی‌آزمایی بیلد (رفع ارور No module named '_socket') ---
+        # اگر _socket.pyd داخل باندل نباشد، برنامه موقع اجرا با خطای
+        # «Failed to execute script 'pyi_rth_multiprocessing' ... No module
+        # named '_socket'» کرش می‌کند. پس بیلد را همین‌جا با پیام فارسی
+        # واضح fail می‌کنیم تا exe خراب دست کاربر نرسد.
+        $bundleDir = Join-Path "dist" "CCTV_CMS"
+        $socketPyd = Join-Path $bundleDir "_socket.pyd"
+        if (-not (Test-Path $socketPyd)) {
+          Write-Host "##[error] بیلد ناقص است: _socket.pyd در dist/CCTV_CMS پیدا نشد؛ exe با خطای No module named '_socket' کرش می‌کند."
+          throw "Build verification failed: _socket.pyd missing from bundle."
+        }
+        $bundleFiles = (Get-ChildItem -Path $bundleDir -File | Measure-Object).Count
+        Write-Host "Build verification OK: _socket.pyd present, $bundleFiles files in bundle."
+
+    # ساخت EXE سبک برای شبیه‌ساز پنل اعلام حریق (fire_panel_simulator.py):
+    # فقط به PyQt6 + کتابخانه‌ی استاندارد پایتون نیاز دارد، پس در یکی دو
+    # دقیقه ساخته می‌شود. کاربر نهایی بدون نصب پایتون آن را اجرا می‌کند و
+    # پنجره‌ی شبیه‌ساز باز می‌شود - برای تست اتصال IAS-CMS به سیستم حریق
+    # ساختمان بدون داشتن پنل واقعی (رجوع کنید به پکیج ias-cms-fire-building).
+    # اگر این فایل در ریپو نباشد، step با هشدار رد می‌شود و بیلد اصلی را
+    # متوقف نمی‌کند.
+    - name: Build Fire Panel Simulator EXE (PyInstaller onefile)
+      if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.quick_test == 'true') }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+
+        if (-not (Test-Path "fire_panel_simulator.py")) {
+          Write-Host "WARNING: fire_panel_simulator.py در ریپو پیدا نشد؛ ساخت شبیه‌ساز رد شد."
+          exit 0
+        }
+
+        $simArgs = @(
+          "--onefile"
+          "--noconfirm"
+          "--windowed"
+          "--name=FirePanelSimulator"
+          "--distpath=dist"
+          "fire_panel_simulator.py"
+        )
+        if (Test-Path "assets\app.ico") { $simArgs += "--icon=assets\app.ico" }
+
+        Write-Host "PyInstaller simulator command: python -m PyInstaller $($simArgs -join ' ')"
+        python -m PyInstaller @simArgs
+
+        if ($LASTEXITCODE -ne 0) {
+          Write-Host "##[error] PyInstaller (شبیه‌ساز) با کد خروج $LASTEXITCODE شکست خورد."
+          throw "PyInstaller build of fire_panel_simulator.py failed with exit code $LASTEXITCODE"
+        }
+        if (-not (Test-Path "dist\FirePanelSimulator.exe")) {
+          throw "dist\FirePanelSimulator.exe ساخته نشد."
+        }
+        Write-Host "FirePanelSimulator.exe آماده است: $((Get-Item dist\FirePanelSimulator.exe).Length) بایت"
+
+    - name: Build Executable with Nuitka (portable, compiled to machine code)
+      if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.quick_test != 'true' }}
+      shell: pwsh
+      run: |
+        # نکته‌ی مهم: بدون این خط، اگر یکی از دستورات زیر (pip install یا
+        # خودِ نویتکا) با کد خطا برگرده، pwsh پیش‌فرض به کارش ادامه می‌دهد
+        # و log ممکن است خالی/گمراه‌کننده به نظر برسد (دقیقاً چیزی که در
+        # اجرای قبلی دیدیم: annotation "Error:" بدون هیچ متنی). با این
+        # تنظیم، هر خطا فوراً و با پیام کامل متوقف‌کننده می‌شود.
+        $ErrorActionPreference = "Stop"
+
+        python -m pip install nuitka
+        if ($LASTEXITCODE -ne 0) { throw "نصب Nuitka با کد $LASTEXITCODE شکست خورد." }
+
+        $modeArgs = @("--onefile")
+
+        # رفع ریشه‌ی اصلیِ «بیلد به سقف ۶ ساعته‌ی گیت‌هاب می‌خورد»:
+        # ---------------------------------------------------------------
+        # قبلاً اینجا --low-memory بود که به‌طور ضمنی --jobs=1 را هم اعمال
+        # می‌کند (طبق مستندات خودِ Nuitka) - یعنی کامپایل تمام فایل‌های C
+        # حجم عظیم torch+torchvision+ultralytics+dlib+PyQt6 کاملاً
+        # سریالی/تک‌هسته‌ای انجام می‌شد. رانرهای windows-latest گیت‌هاب برای
+        # مخزن‌های عمومی واقعاً ۴ هسته‌ی پردازشی و ۱۶ گیگابایت رم دارند (نه
+        # ۲ هسته/۷ گیگابایتی که در مستندات قدیمی‌تر رایج بود) - یعنی
+        # --low-memory اینجا کاملاً بیش‌ازحد محافظه‌کارانه بود: هم رم کافی
+        # برای کامپایل موازی وجود دارد، هم سه‌چهارم ظرفیت CPU رانر
+        # بی‌استفاده می‌ماند. نتیجه‌ی این تک‌هسته‌ای بودن دقیقاً همان چیزی
+        # بود که در اجرای قبلی دیدیم: بعد از ۶ ساعت کامل هنوز تمام نشده
+        # بود و job با خطای «exceeded the maximum execution time» کنسل شد.
+        #
+        # اینجا به‌جای --low-memory، از --jobs متناسب با تعداد هسته‌های
+        # واقعیِ همین رانر استفاده می‌شود (پویا محاسبه می‌شود، نه عدد ثابت،
+        # چون این عدد بین نوع رانر گیت‌هاب - عمومی/خصوصی/self-hosted - فرق
+        # دارد) تا حداکثر استفاده از سخت‌افزار موجود انجام شود؛ یک هسته هم
+        # برای خودِ سیستم‌عامل/رانر کنار گذاشته می‌شود (نه همه‌ی هسته‌ها)
+        # تا کمی حاشیه‌ی امن باقی بماند.
+        $cpuCount = [int]$Env:NUMBER_OF_PROCESSORS
+        $jobCount = [Math]::Max($cpuCount - 1, 1)
+        Write-Host "CPU cores: $cpuCount -> using --jobs=$jobCount"
+
+        # به‌جای دستور تک‌خطیِ طولانی با ادامه‌خط بک‌تیک (`) - که با هر
+        # فاصله‌ی نامرئی بعدش کل خط بعدی را جدا می‌کند و همین می‌تواند
+        # باعث شود main.py اصلاً به نویتکا نرسد (که دقیقاً همان رفتاری
+        # است که دیدیم: نویتکا بدون هیچ فایل ورودی، فقط raw help چاپ کرده
+        # و با کد ۱ خارج می‌شود) - همه‌ی آرگومان‌ها را در یک آرایه می‌سازیم.
+        # داخل @() هر خط یک عنصر جداست، بدون نیاز به کاما یا بک‌تیک.
+        $nuitkaArgs = @(
+          $modeArgs
+          "--mingw64"
+          "--jobs=$jobCount"
+          "--enable-plugin=pyqt6"
+          "--windows-console-mode=disable"
+          "--windows-company-name=IAS"
+          "--windows-product-name=CCTV CMS"
+          "--windows-file-version=1.0.0.0"
+          "--windows-product-version=1.0.0.0"
+          "--include-package=face_recognition"
+          "--include-package-data=face_recognition_models"
+          "--include-data-dir=faces=faces"
+          "--include-package=ultralytics"
+          "--include-package-data=ultralytics"
+          "--include-package=torch"
+          "--include-package=torchvision"
+          "--include-package=transformers"
+          "--include-package-data=transformers"
+          # نقشه‌ی ساختمان (خوانش DXF اتوکد) - خالص‌پایتونی، بدون نیاز به نصب
+          # روی سیستم کاربر نهایی
+          "--include-package=ezdxf"
+          # نکته‌ی مهم - تاریخچه‌ی این تصمیم: قبلاً اینجا چند ماژول از torch/
+          # وابستگی‌هایش با --nofollow-import-to کنار گذاشته می‌شدند (sympy،
+          # torch.onnx، torch.distributed، torch.utils.tensorboard،
+          # torch.testing) با این فرض که چون این پروژه نه آموزش می‌دهد، نه
+          # صادرات ONNX دارد، نه چندGPU/توزیع‌شده است، این‌ها زائدند و فقط
+          # حجم exe را زیاد می‌کنند. این فرض غلط از آب درآمد: ultralytics
+          # همان لحظه‌ی اول import شدنش (نه فقط وقتی واقعاً از آن قابلیت‌ها
+          # استفاده شود) این ماژول‌ها را بدون قید-وشرط import می‌کند - و چون
+          # هر بار فقط یکی از آن‌ها exclude بود، حذف یکی («torch.distributed»
+          # در بیلد قبلی) فقط نوبت بعدی («torch.testing») را آشکار کرد - دقیقاً
+          # همان الگوی موش‌وگربه که با پیام «Module ... was actively excluded»
+          # هربار برای یک ماژول متفاوت روی UI ظاهر می‌شد. برای جلوگیری از
+          # تکرار همین چرخه به‌ازای ماژول بعدی، دیگر هیچ‌کدام از زیرماژول‌های
+          # torch/sympy را exclude نمی‌کنیم - بگذارید Nuitka هرچه واقعاً در
+          # مسیر import قرار دارد را کامپایل کند؛ تنها هزینه‌اش چند مگابایت
+          # بیشتر حجم exe است، نه یک ویژگی که برای کاربر نهایی بی‌سروصدا
+          # غیرفعال بماند.
+
+          "--include-data-files=yolov8n.pt=yolov8n.pt"
+          # رفع درخواست «تشخیص هوشمند زمین با AI»: پوشه‌ی وزن مدل SegFormer
+          # (دانلود‌شده در step «Download SegFormer floor-detection weights»
+          # بالاتر) هم مثل yolov8n.pt مستقیم داخل exe پرتابل بسته‌بندی
+          # می‌شود - روی سیستم کاربر نهایی نه دانلود و نه نصبی لازم است.
+          # floor_detector.py._resolve_model_dir همین پوشه‌ی بسته‌بندی‌شده
+          # را (کنار محل استخراج __nuitka_binary_dir__) در زمان اجرا پیدا
+          # می‌کند.
+          "--include-data-dir=segformer_floor_model=segformer_floor_model"
+
+          # نکته‌ی مهم: این سه ماژول جداگانه از exclude‌های قبلی (torch.onnx،
+          # torch.distributed و ...) هستند و به همان دلیل حذف نشدند - این‌ها
+          # فقط جدول‌های عددیِ خودکار-تولیدشده‌ی sympy برای حل معادلات درجه‌ی
+          # ۵ و محاسبه‌ی گروه‌های گالوا هستند (sympy خودش مستقیم در
+          # requirements.txt نیست؛ از طریق torch.fx وارد می‌شود). فایل
+          # polyquinticconst.py به‌تنهایی چند مگابایت کد تولیدی است و
+          # کامپایلش با gcc ساعت‌ها طول می‌کشد (همان چیزی که در لاگ با
+          # "Slow C compilation detected... scalability problem" روی
+          # module.sympy.polys.polyquinticconst.o دیده شد). این پروژه هرگز
+          # معادلات درجه‌بالا/گروه گالوا را در مسیر اینفرنس YOLO یا
+          # face_recognition صدا نمی‌زند، پس exclude کردن این زیرماژول‌های
+          # مشخص (نه کل sympy یا کل torch) ریسکی برای کارکرد برنامه ندارد
+          # و ساعت‌ها از زمان build کم می‌کند.
+          "--nofollow-import-to=sympy.polys.polyquinticconst"
+          "--nofollow-import-to=sympy.polys.numberfields.resolvent_lookup"
+          "--nofollow-import-to=sympy.polys.numberfields.galoisgroups"
+
+          "--output-dir=dist"
+          "--output-filename=CCTV_CMS.exe"
+          "--assume-yes-for-downloads"
+          "main.py"
+        )
+
+        Write-Host "Nuitka command: python -m nuitka $($nuitkaArgs -join ' ')"
+        python -m nuitka @nuitkaArgs
+
+        if ($LASTEXITCODE -ne 0) {
+          Write-Host "##[error] Nuitka با کد خروج $LASTEXITCODE شکست خورد. متن بالای همین لاگ را ببینید."
+          throw "Nuitka build failed with exit code $LASTEXITCODE"
+        }
+
+    # رفع ریشه‌ای مشکل «پر شدن سقف ۱۰ گیگابایتیِ کش گیت‌هاب»: چون کلید کش
+    # Nuitka بر اساس hashFiles('**/*.py') است، هر commit که حتی یک خط
+    # پایتون را عوض کند یک کش کاملاً جدید (و چندگیگابایتی، چون شامل خودِ
+    # کامپایلر MinGW64 + آبجکت‌های کامپایل‌شده‌ی torch/ultralytics/dlib
+    # است) می‌سازد. گیت‌هاب کش‌های قدیمی را خودکار پاک نمی‌کند، فقط وقتی
+    # سقف ۱۰ گیگابایتِ کل مخزن رد شود قدیمی‌ترین‌ها را حذف (LRU) می‌کند -
+    # همین باعث می‌شد گاهی build سریع (کش hit) و گاهی خیلی کند (کش evict
+    # شده) باشد.
+    #
+    # نکته‌ی مهم درباره‌ی ترتیب: این step عمداً *قبل* از «Save Nuitka cache»
+    # پایین‌تر قرار گرفته (نه بعدش) - چون حالا کلید هر اجرا یکتاست
+    # (``run_id``دار)، اگر پاک‌سازی *بعد* از ذخیره اجرا می‌شد، همین کش
+    # تازه‌ساخته‌شده را هم (چون با همان پیشوند مشترک match می‌کند) پاک
+    # می‌کرد - دقیقاً نقض هدف کل این تغییر. با این ترتیب (پاک‌سازیِ
+    # کش‌های *قدیمی* از اجراهای قبلی، سپس ذخیره‌ی کش *تازه* از همین اجرا)،
+    # همیشه فقط آخرین نسخه نگه داشته می‌شود.
+    - name: Clean up old caches (جلوگیری از پر شدن سقف ۱۰ گیگابایتی کش)
+      if: always()
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        for prefix in "nuitka-cache-windows-" "pip-wheels-windows-"; do
+          echo "Checking caches with prefix: $prefix"
+          gh cache list --repo "${{ github.repository }}" --ref "${{ github.ref }}" --limit 100 --json id,key \
+            --jq ".[] | select(.key | startswith(\"$prefix\")) | .id" \
+            | while read -r id; do
+                echo "Deleting old cache id=$id (prefix=$prefix)"
+                gh cache delete "$id" --repo "${{ github.repository }}" || true
+              done
+        done
+
+    # رفع ریشه‌ای مشکل «بیلد ناموفق/کنسل‌شده هیچ‌وقت کش را ذخیره نمی‌کند»:
+    # این step صراحتاً از actions/cache/save استفاده می‌کند (نه فاز خودکار
+    # "post" یک step ترکیبی restore+save) و شرط ``if: always()`` دارد -
+    # یعنی طبق مستندات رسمی گیت‌هاب، حتی اگر step ساخت با خطا شکست بخورد یا
+    # کل job کنسل شود (رسیدن به سقف ۶ ساعته)، این step هم در همان بازه‌ی
+    # ۵ دقیقه‌ای cancellation فرصت اجرا پیدا می‌کند - یعنی هرچقدر Nuitka
+    # واقعاً پیش رفته بود (حتی اگر کامل نشده) روی کش گیت‌هاب ذخیره می‌شود و
+    # اجرای بعدی از همان‌جا ادامه می‌دهد، نه از صفر. کلید شامل ``run_id``
+    # است تا هیچ‌وقت با کلید (immutable) یک کش قبلی برخورد نکند - رجوع کنید
+    # به توضیح داخل step «Restore Nuitka cache» بالاتر.
+    - name: Save Nuitka cache (حتی اگر ساخت ناموفق/کنسل شود)
+      # روی مسیر quick_test اصلاً Nuitka اجرا نشده، پس چیزی برای ذخیره نیست.
+      if: ${{ always() && github.event_name == 'workflow_dispatch' && github.event.inputs.quick_test != 'true' }}
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          ~\AppData\Local\Nuitka\Nuitka\Cache
+        key: nuitka-cache-windows-${{ hashFiles('requirements.txt') }}-${{ github.run_id }}
+
+    # پوشش هر سه حالت در یک آپلود: onefile فقط dist/CCTV_CMS.exe دارد،
+    # standalone قدیمی پوشه‌ی dist/main.dist، و PyInstaller (quick_test) هم
+    # پوشه‌ی dist/CCTV_CMS - هرکدام نبود، با if-no-files-found: ignore
+    # بدون خطا رد می‌شود. فایل FirePanelSimulator.exe هم (اگر ساخته شده
+    # باشد) در همین آرتیفکت کنار exe اصلی قرار می‌گیرد.
+    - name: Upload Build Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: CCTV_CMS_Windows_Portable
+        path: |
+          dist/CCTV_CMS.exe
+          dist/FirePanelSimulator.exe
+          dist/main.dist/**
+          dist/CCTV_CMS/**
+        if-no-files-found: ignore
