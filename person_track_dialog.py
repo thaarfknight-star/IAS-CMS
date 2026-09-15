@@ -30,7 +30,7 @@ from person_store import person_store
 class PersonTrackPage(QWidget):
     """صفحه‌ی «ردیابی اشخاص» داخل QStackedWidget پنجره‌ی اصلی."""
 
-    PERSON_COLUMNS = ["کد شخص", "اولین دیده‌شدن", "آخرین دیده‌شدن",
+    PERSON_COLUMNS = ["کد شخص", "چهره", "اولین دیده‌شدن", "آخرین دیده‌شدن",
                       "رنگ لباس", "رنگ شلوار", "رنگ مو", "بلندی مو",
                       "تعداد حضور", "دوربین‌ها", "یادداشت"]
     PATH_COLUMNS = ["ردیف", "دوربین (اتاق)", "تاریخ ورود (شمسی)",
@@ -256,7 +256,7 @@ class PersonTrackPage(QWidget):
         for p in persons:
             row = self.persons_table.rowCount()
             self.persons_table.insertRow(row)
-            vals = [p["id"], p["created_j"], p["last_seen_j"],
+            vals = [p["id"], p.get("face_name") or "—", p["created_j"], p["last_seen_j"],
                     p["shirt_color"] or "—", p["pants_color"] or "—",
                     p["hair_color"] or "—", p["hair_length"] or "—",
                     str(p["sightings_count"]), p["cameras"] or "—",

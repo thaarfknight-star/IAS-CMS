@@ -5,7 +5,8 @@
 - هر طبقه نقشه‌ی جداگانه (DXF خروجی اتوکد یا تصویر)
 - رندر دقیق DXF با لایه‌ها، رنگ‌ها و واحد واقعی (میلی‌متر/متر/...)
 - جای‌گذاری دوربین، NVR، رک، سوئیچ و... با درگ و زاویه‌ی دید (FOV)
-- کلیک روی دوربین نقشه = پخش زنده
+- کلیک ساده روی دوربین = انتخاب و تنظیم (زاویه/پهنای دید)؛
+  دابل‌کلیک روی دوربین نقشه = پخش زنده
 - نمایش مسیر تردد شخص (از ردیابی اشخاص) روی نقشه با پخش متحرک
 - شبکه‌ی مختصات متری + نمایش مختصات موس برای دقت جای‌گذاری
 """
@@ -197,9 +198,18 @@ class DeviceItem(QGraphicsItemGroup):
         self._label.setText(name)
 
     # -- کلیک در برابر درگ --
+    # کلیک ساده فقط «انتخاب» می‌کند (پنل مشخصات: زاویه/پهنای دید)؛
+    # پخش زنده با «دابل‌کلیک» باز می‌شود تا هنگام تنظیم زاویه، پنجره‌ی
+    # پیش‌نمایش مزاحم نشود.
     def mousePressEvent(self, event):
         self._press_scene = event.scenePos()
         super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        cb = self.cb.get("clicked")
+        if callable(cb):
+            cb(self)
+        super().mouseDoubleClickEvent(event)
 
     def mouseReleaseEvent(self, event):
         moved = True
@@ -209,11 +219,7 @@ class DeviceItem(QGraphicsItemGroup):
         except Exception:
             pass
         super().mouseReleaseEvent(event)
-        if not moved:
-            cb = self.cb.get("clicked")
-            if callable(cb):
-                cb(self)
-        else:
+        if moved:
             cbm = self.cb.get("moved")
             if callable(cbm):
                 p = self.pos()
@@ -1212,13 +1218,18 @@ class BuildingMapPage(QWidget):
         self.path_close_btn.setEnabled(False)
 
     # ============================ اشخاص زنده روی نقشه ============================
-    def set_live_person(self, cam_id, person_id, code, camera_name, present):
+    def set_live_person(self, cam_id, person_id, code, camera_name, present,
+                        kind="live"):
         """نمایش/حذف زنده‌ی موقعیت فعلی یک شخص روی نقشه.
 
         در همان لحظه‌ای که دوربینی یک شخص را شناسایی می‌کند (present=True)،
-        یک نشان سبز چشمک‌زن با کد شخص روی همان دوربینِ نقشه می‌نشیند؛ با
+        یک نشان چشمک‌زن با کد شخص روی همان دوربینِ نقشه می‌نشیند؛ با
         تمام شدن رد (present=False) نشان برداشته می‌شود. حتماً از ترد اصلی
         صدا زده شود.
+
+        kind: ‏"live" نشان سبز تأییدشده؛ "candidate" نشان زرد «در حال
+        شناسایی» که با اولین نشانه‌های رد (پیش از تأیید نهایی) نمایش داده
+        می‌شود تا ردیابی حس «در لحظه» داشته باشد.
         """
         key = (str(cam_id), str(person_id))
         self._remove_live_person(key)
@@ -1235,6 +1246,7 @@ class BuildingMapPage(QWidget):
                            for fl, dev in placements],
             "items": [], "rings": [],
             "code": code, "camera_name": camera_name,
+            "kind": kind if kind == "candidate" else "live",
         }
         self._apply_live_person(key)
 
@@ -1252,6 +1264,11 @@ class BuildingMapPage(QWidget):
         info["items"] = []
         info["rings"] = []
         code = info["code"]
+        cand = info.get("kind") == "candidate"
+        main_c = "#eab308" if cand else "#22c55e"   # زرد برای کاندیدا، سبز برای تأییدشده
+        fill_c = QColor(234, 179, 8, 40) if cand else QColor(34, 197, 94, 40)
+        text_c = "#fef9c3" if cand else "#bbf7d0"
+        emoji = "🟡" if cand else "🟢"
         for fid, x, y in info["placements"]:
             entry = self.scenes.get(fid)
             if not entry:
@@ -1259,8 +1276,8 @@ class BuildingMapPage(QWidget):
             sc = entry["scene"]
             ring = QGraphicsEllipseItem(-20, -20, 40, 40)
             ring.setPos(x, y)
-            ring.setPen(QPen(QColor("#22c55e"), 3))
-            ring.setBrush(QBrush(QColor(34, 197, 94, 40)))
+            ring.setPen(QPen(QColor(main_c), 3))
+            ring.setBrush(QBrush(fill_c))
             ring.setFlag(
                 QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
             ring.setZValue(25)
@@ -1269,18 +1286,18 @@ class BuildingMapPage(QWidget):
             dot = QGraphicsEllipseItem(-8, -8, 16, 16)
             dot.setPos(x, y)
             dot.setPen(QPen(QColor("#ffffff"), 2))
-            dot.setBrush(QBrush(QColor("#22c55e")))
+            dot.setBrush(QBrush(QColor(main_c)))
             dot.setFlag(
                 QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
             dot.setZValue(26)
             dot.setData(0, "person-live")
             sc.addItem(dot)
-            lab = QGraphicsSimpleTextItem(f"🟢 {code}")
+            lab = QGraphicsSimpleTextItem(f"{emoji} {code}")
             f = QFont()
             f.setPointSize(10)
             f.setBold(True)
             lab.setFont(f)
-            lab.setBrush(QBrush(QColor("#bbf7d0")))
+            lab.setBrush(QBrush(QColor(text_c)))
             lab.setPos(x + 24, y - 16)
             lab.setFlag(
                 QGraphicsSimpleTextItem.GraphicsItemFlag.ItemIgnoresTransformations)

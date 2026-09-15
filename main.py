@@ -1616,9 +1616,10 @@ class RegionManagerDialog(QDialog):
 
 
 class CameraPreviewDialog(QDialog):
-    """رفع درخواست: با کلیک روی دوربین در صفحه‌ی «نقشه ساختمان»، به‌جای
-    رفتن به صفحه‌ی اصلی، همین پنجره‌ی شناور باز می‌شود و پخش زنده‌ی همان
-    دوربین را نشان می‌دهد (بدون ترک نقشه). بستن پنجره، استریم را متوقف
+    """رفع درخواست: با «دابل‌کلیک» روی دوربین در صفحه‌ی «نقشه ساختمان»،
+    به‌جای رفتن به صفحه‌ی اصلی، همین پنجره‌ی شناور باز می‌شود و پخش زنده‌ی
+    همان دوربین را نشان می‌دهد (بدون ترک نقشه). کلیک ساده فقط دوربین را
+    انتخاب می‌کند (پنل تنظیم زاویه/پهنای دید). بستن پنجره، استریم را متوقف
     می‌کند. دکمه‌ی «نمایش در صفحه اصلی» همان رفتار قبلی (باز کردن در
     شبکه‌ی نمایش) را انجام می‌دهد."""
 
@@ -3558,8 +3559,8 @@ class MainWindow(QMainWindow):
             btn.setChecked(k == key)
 
     def _on_map_camera_click(self, cam):
-        """کلیک روی دوربین در صفحه‌ی «نقشه ساختمان»: باز شدن پنجره‌ی شناور
-        پخش زنده‌ی همان دوربین (بدون ترک صفحه‌ی نقشه)."""
+        """دابل‌کلیک روی دوربین در صفحه‌ی «نقشه ساختمان»: باز شدن پنجره‌ی
+        شناور پخش زنده‌ی همان دوربین (بدون ترک صفحه‌ی نقشه)."""
         if not self._ensure_password(cam):
             return  # کاربر از وارد کردن رمز صرف‌نظر کرد
         rtsp_url = self.camera_store.build_rtsp_url(cam)
@@ -3650,39 +3651,106 @@ class MainWindow(QMainWindow):
             print(f"خطا در اعمال پلاک‌خوان روی دوربین باز: {e}")
 
     def on_person_event(self, cam, data):
-        """برای هر رد تازه‌تأییدشده/تمام‌شده‌ی اشخاص که یکی از دوربین‌های
-        فعالِ ردیابی ببیند فراخوانی می‌شود. data دیکشنری {"type":
-        "confirmed"/"ended", "local_id", ...} است (رجوع کنید به
-        camera_stream.py). تطبیق بین دوربینی (ظاهری، بدون چهره) + ثبت
-        «حضور» (ورود/خروج با ساعت دقیق) در person_store همین‌جا — در ترد
-        اصلی — انجام می‌شود؛ اگر صفحه‌ی «ردیابی اشخاص» باز باشد، جدول‌هایش
-        هم زنده تازه می‌شوند."""
+        """برای هر رویداد ردیابی اشخاص که یکی از دوربین‌های فعالِ ردیابی
+        ببیند فراخوانی می‌شود. data دیکشنری {"type": "candidate" /
+        "candidate_ended" / "confirmed" / "ended", "local_id", ...} است
+        (رجوع کنید به camera_stream.py).
+
+        - candidate: نشان زرد «در حال شناسایی» روی نقشه — حس «در لحظه»،
+          بدون ثبت در دیتابیس.
+        - confirmed: تطبیق بین دوربینی (با کمک چهره: اگر چهره در بانک
+          چهره‌ها شناخته‌شده باشد، همان هویت قطعی است حتی با لباس متفاوت)
+          + ثبت «حضور» (ورود/خروج با ساعت دقیق) در person_store — در ترد
+          اصلی انجام می‌شود؛ اگر صفحه‌ی «ردیابی اشخاص» باز باشد، جدول‌هایش
+          هم زنده تازه می‌شوند."""
         try:
             etype = (data or {}).get("type")
             cam_id = cam.get("id") if isinstance(cam, dict) else None
             camera_name = (cam.get("name") or cam.get("ip") or "") \
                 if isinstance(cam, dict) else ""
             key = (cam_id, data.get("local_id"))
+            mp = getattr(self, "map_page", None)
+
+            if etype == "candidate":
+                # «در لحظه»: به‌محض دومین دیده‌شدن پیاپی، نشان زرد روی نقشه
+                try:
+                    if not hasattr(self, "_person_candidates"):
+                        self._person_candidates = set()
+                    self._person_candidates.add(key)
+                    if mp is not None:
+                        mp.set_live_person(cam_id, f"~{data.get('local_id')}",
+                                           "…", camera_name, True,
+                                           kind="candidate")
+                except Exception:
+                    pass
+                return
+
+            if etype == "candidate_ended":
+                try:
+                    if hasattr(self, "_person_candidates"):
+                        self._person_candidates.discard(key)
+                    if mp is not None:
+                        mp.set_live_person(cam_id, f"~{data.get('local_id')}",
+                                           "", "", False)
+                except Exception:
+                    pass
+                return
+
             if etype == "confirmed":
                 desc = data.get("descriptor") or {}
                 vector = desc.get("vector")
                 if vector is None:
                     return
                 ts = time.time()
-                person_id, _dist = self._person_matcher.find_match(
-                    vector, camera_name, ts)
+                face_pid = str(desc.get("face_person_id") or "")
+                face_name = str(desc.get("face_name") or "")
+                face_vector = desc.get("face_vector")
+                # کاندیدای همین رد (اگر بود) را بردار؛ نشان سبز جایش می‌نشیند
+                try:
+                    if hasattr(self, "_person_candidates"):
+                        self._person_candidates.discard(key)
+                    if mp is not None:
+                        mp.set_live_person(cam_id, f"~{data.get('local_id')}",
+                                           "", "", False)
+                except Exception:
+                    pass
+                person_id = None
+                # ۱) کمک چهره: اگر چهره در بانک چهره‌ها شناخته‌شده است، اول
+                # در دیتابیس دنبال همان هویت بگرد (قطعی، حتی با لباس عوض‌شده)
+                if face_pid:
+                    try:
+                        person_id = person_store.find_by_face(face_pid)
+                    except Exception:
+                        person_id = None
+                # ۲) تطبیق سراسری (ظاهر + امضای چهره)
+                if person_id is None:
+                    person_id, _dist = self._person_matcher.find_match(
+                        vector, camera_name, ts,
+                        face_vector=face_vector,
+                        face_person_id=face_pid or None)
                 is_new = person_id is None
                 if is_new:
                     person_id = person_store.add_person(
                         desc, thumb_bgr=data.get("crop"))
-                    self._person_matcher.register(
-                        person_id, vector, camera_name, ts)
+                elif face_pid:
+                    # شخص از مسیر دیگری (ظاهری) پیدا شد ولی چهره‌اش شناخته‌شده
+                    # است: هویت چهره را به او بچسبان تا دفعه‌ی بعد قطعی شود
+                    try:
+                        person_store.set_person_face(
+                            person_id, face_pid, face_name)
+                    except Exception:
+                        pass
+                self._person_matcher.register(
+                    person_id, vector, camera_name, ts,
+                    face_vector=face_vector,
+                    face_person_id=face_pid or None)
                 sighting_id = person_store.start_sighting(
                     person_id, camera_name,
                     nvr_id=(cam.get("nvr_id") or "") if isinstance(cam, dict) else "",
                     channel=(cam.get("channel") if isinstance(cam, dict) else None),
                     snapshot_bgr=data.get("crop"))
                 # کد یکتای شخص را روی باکس تصویر همان دوربین بنویس
+                # (لاتین می‌ماند چون cv2.putText فارسی رسم نمی‌کند)
                 for slot in self.camera_grid.slots:
                     if slot.cam is not None and slot.cam.get("id") == cam_id \
                             and slot.stream_thread is not None:
@@ -3694,11 +3762,13 @@ class MainWindow(QMainWindow):
                 # ردیابی «در لحظه»: همان ثانیه‌ی شناسایی، نشان زنده‌ی شخص
                 # روی دوربینِ نقشه‌ی ساختمان می‌نشیند و اگر مسیر همین شخص
                 # روی نقشه باز است، توقف جدید بی‌درنگ به آن اضافه می‌شود.
+                # اگر چهره شناخته‌شده باشد، نامش هم روی نشان نقشه می‌آید.
                 try:
-                    mp = getattr(self, "map_page", None)
                     if mp is not None:
-                        mp.set_live_person(cam_id, person_id, person_id,
-                                           camera_name, True)
+                        code = (f"{person_id} · {face_name}"
+                                if face_name else person_id)
+                        mp.set_live_person(cam_id, person_id, code,
+                                           camera_name, True, kind="live")
                         mp.append_live_stop(person_id)
                 except Exception:
                     pass
@@ -3707,12 +3777,17 @@ class MainWindow(QMainWindow):
                 if info is not None:
                     person_store.end_sighting(info["sighting_id"])
                     try:
-                        mp = getattr(self, "map_page", None)
                         if mp is not None:
                             mp.set_live_person(cam_id, info["person_id"],
                                                info["person_id"], "", False)
+                            # احتیاط: کاندیدای باقی‌مانده‌ی همین رد
+                            mp.set_live_person(
+                                cam_id, f"~{data.get('local_id')}",
+                                "", "", False)
                     except Exception:
                         pass
+                if hasattr(self, "_person_candidates"):
+                    self._person_candidates.discard(key)
             else:
                 return
             # اگر کاربر همین حالا صفحه‌ی «ردیابی اشخاص» را می‌بیند،
@@ -3751,6 +3826,18 @@ class MainWindow(QMainWindow):
                                         info["person_id"], "", False)
                             except Exception:
                                 pass
+                        # نشان‌های زرد «در حال شناسایی» این دوربین را هم بردار
+                        try:
+                            if hasattr(self, "_person_candidates"):
+                                for key in [k for k in self._person_candidates
+                                            if k[0] == cam_id]:
+                                    self._person_candidates.discard(key)
+                                    mp = getattr(self, "map_page", None)
+                                    if mp is not None:
+                                        mp.set_live_person(
+                                            cam_id, f"~{key[1]}", "", "", False)
+                        except Exception:
+                            pass
         except Exception as e:
             print(f"خطا در اعمال ردیابی اشخاص روی دوربین باز: {e}")
 

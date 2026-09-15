@@ -142,6 +142,14 @@ class PersonStore:
                 self._conn.execute(
                     "INSERT OR IGNORE INTO person_settings(key, value) VALUES(?, ?)",
                     (k, v))
+            # مهاجرت سبک: ستون‌های چهره (اگر دیتابیس قدیمی باشد)
+            for _col, _typ in (("face_person_id", "TEXT DEFAULT ''"),
+                               ("face_name", "TEXT DEFAULT ''")):
+                try:
+                    self._conn.execute(
+                        f"ALTER TABLE persons ADD COLUMN {_col} {_typ}")
+                except Exception:
+                    pass  # ستون از قبل وجود دارد
             self._conn.commit()
 
     def _close_stale_sightings(self):
@@ -228,14 +236,35 @@ class PersonStore:
             self._conn.execute(
                 """INSERT INTO persons(id, created_ts, last_seen_ts, shirt_color,
                                       pants_color, hair_color, hair_length,
-                                      thumb_path, sightings_count)
-                   VALUES(?,?,?,?,?,?,?,?,0)""",
+                                      thumb_path, sightings_count,
+                                      face_person_id, face_name)
+                   VALUES(?,?,?,?,?,?,?,?,0,?,?)""",
                 (pid, ts, ts,
                  attrs.get("shirt_color", ""), attrs.get("pants_color", ""),
                  attrs.get("hair_color", ""), attrs.get("hair_length", ""),
-                 thumb))
+                 thumb,
+                 str(attrs.get("face_person_id") or ""),
+                 str(attrs.get("face_name") or "")))
             self._conn.commit()
         return pid
+
+    def find_by_face(self, face_person_id):
+        """یافتن کد شخص از روی شناسه‌ی چهره‌ی بانک چهره‌ها (یا None)."""
+        if not face_person_id:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM persons WHERE face_person_id=? LIMIT 1",
+                (str(face_person_id),)).fetchone()
+        return row["id"] if row else None
+
+    def set_person_face(self, person_id, face_person_id, face_name):
+        """الصاق/به‌روزرسانی هویت چهره‌ی شناخته‌شده به یک شخص."""
+        with self._lock:
+            self._conn.execute(
+                "UPDATE persons SET face_person_id=?, face_name=? WHERE id=?",
+                (str(face_person_id or ""), str(face_name or ""), person_id))
+            self._conn.commit()
 
     def touch_person(self, person_id, ts=None):
         ts = time.time() if ts is None else ts

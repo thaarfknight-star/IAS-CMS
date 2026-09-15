@@ -734,13 +734,17 @@ class CameraStreamThread(QThread):
                 for number, name in self._region_tracker.update(self._last_person_boxes, regions, w, h):
                     self.region_entered.emit(number, name)
 
-            # --- ردیابی اشخاص بین دوربین‌ها (اختیاری، بدون چهره) ---
+            # --- ردیابی اشخاص بین دوربین‌ها (اختیاری، با کمک چهره) ---
             # دقیقاً همان الگوی تشخیص شخص/آتش: در همین ترد پس‌زمینه‌ی تشخیص
             # (نه ترد اصلی خواندن فریم) اجرا می‌شود تا پخش زنده هرگز منتظرش
             # نماند. باکس‌های PersonDetector از ردیاب محلی IoU عبور می‌کنند؛
-            # ردهای تأییدشده توصیف‌گر ظاهری (رنگ لباس/شلوار/مو) می‌گیرند و
-            # رویداد confirmed/ended به main.py می‌رود تا تطبیق بین دوربینی
+            # نتیجه‌ی FaceEngine همان دور تشخیص (self._last_results) هم به
+            # ردیاب داده می‌شود تا هویت چهره‌های شناخته‌شده به رد الصاق شود.
+            # ردهای تأییدشده توصیف‌گر ظاهری + چهره می‌گیرند و رویداد
+            # confirmed/ended به main.py می‌رود تا تطبیق بین دوربینی
             # و ثبت «حضور» در person_store همان‌جا (ترد اصلی) انجام شود.
+            # رویدادهای candidate/candidate_ended برای نشان «در حال شناسایی»
+            # (حس در لحظه بودن، پیش از تأیید نهایی) هستند.
             if self.person_tracking_enabled and self._person_detector_available:
                 try:
                     if self._person_local_tracker is None:
@@ -749,7 +753,9 @@ class CameraStreamThread(QThread):
                     if self._person_local_tracker is not None:
                         _trk_events, _trk_draw = \
                             self._person_local_tracker.update(
-                                self._last_person_boxes, frame)
+                                self._last_person_boxes, frame,
+                                face_results=getattr(
+                                    self, "_last_results", None))
                     self._person_draw_list = _trk_draw
                     for _etype, _trk in _trk_events:
                         if _etype == "confirmed":
@@ -760,6 +766,17 @@ class CameraStreamThread(QThread):
                                 "box": _trk["box"],
                                 "descriptor": _desc,
                                 "crop": _trk.get("crop"),
+                            })
+                        elif _etype == "candidate":
+                            self.person_event_signal.emit({
+                                "type": "candidate",
+                                "local_id": _trk["local_id"],
+                                "box": _trk.get("box"),
+                            })
+                        elif _etype == "candidate_ended":
+                            self.person_event_signal.emit({
+                                "type": "candidate_ended",
+                                "local_id": _trk["local_id"],
                             })
                         else:
                             self.person_event_signal.emit({
