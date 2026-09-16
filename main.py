@@ -678,6 +678,20 @@ class CameraSlotWidget(QWidget):
         # دارد (رجوع کنید به set_people_counting/on_people_count).
         self.people_count_label = QLabel("")
         self.people_count_label.setStyleSheet("color:#f39c12; font-size:11px; font-weight:bold;")
+        # رزولوشن واقعی استریم (مثلاً 2592×1944) — اگر دوربین ساب‌استریم
+        # کم‌کیفیت بدهد، همین‌جا معلوم می‌شود و زوم نمی‌تواند جزئیات بسازد.
+        self.res_label = QLabel("")
+        self.res_label.setStyleSheet("color:#777; font-size:9px;")
+        self._last_res_text = ""
+        # بج «زوم‌خوان پلاک»: وقتی زوم فعال و پلاک‌خوان این دوربین روشن است،
+        # یعنی پلاک‌خوان دارد همان ناحیه‌ی زوم‌شده را با رزولوشن کامل می‌خواند.
+        self.zoom_plate_badge = QLabel("🔍 پلاک")
+        self.zoom_plate_badge.setStyleSheet(
+            "color:#2ecc71; font-size:10px; font-weight:bold;")
+        self.zoom_plate_badge.setToolTip(
+            "پلاک‌خوان روی ناحیه‌ی زوم‌شده (با رزولوشن کامل دوربین) فعال است")
+        self.zoom_plate_badge.setVisible(False)
+        self._zoom_badge_visible = False
         self.close_btn = QPushButton("✕")
         self.close_btn.setFixedSize(18, 18)
         self.close_btn.setStyleSheet("QPushButton{color:#ccc; background:#333; border-radius:9px; padding:0px;}")
@@ -705,6 +719,8 @@ class CameraSlotWidget(QWidget):
         self.zoom_reset_btn.clicked.connect(lambda: self._reset_zoom())
         header.addWidget(self.name_label, 1)
         header.addWidget(self.people_count_label)
+        header.addWidget(self.res_label)
+        header.addWidget(self.zoom_plate_badge)
         header.addWidget(self.zoom_in_btn)
         header.addWidget(self.zoom_out_btn)
         header.addWidget(self.zoom_reset_btn)
@@ -1317,6 +1333,25 @@ class CameraSlotWidget(QWidget):
         if now - self._last_display_ts < 1.0 / 15.0:
             return
         self._last_display_ts = now
+        # رزولوشن واقعی استریم + بج «زوم‌خوان پلاک» (حداکثر ~۱۵ بار در ثانیه؛
+        # فقط هنگام تغییر، ویجت به‌روز می‌شود تا چیدمان تکان نخورد)
+        try:
+            _rh, _rw = raw_frame.shape[:2]
+            _rt = f"{_rw}×{_rh}"
+            if _rt != self._last_res_text:
+                self._last_res_text = _rt
+                self.res_label.setText(_rt)
+        except Exception:
+            pass
+        try:
+            _th = getattr(self, "stream_thread", None)
+            _zb = bool(_th is not None and self._zoom > 1.0
+                       and getattr(_th, "plate_detection_enabled", False))
+        except Exception:
+            _zb = False
+        if _zb != self._zoom_badge_visible:
+            self._zoom_badge_visible = _zb
+            self.zoom_plate_badge.setVisible(_zb)
         show_frame = display_frame
         if self._zoom > 1.0:
             show_frame = self._zoom_crop(display_frame)
@@ -1540,6 +1575,10 @@ class CameraSlotWidget(QWidget):
         self._stream_seq += 1
         # با توقف پخش، بزرگ‌نمایی هم به حالت عادی برمی‌گردد.
         self._reset_zoom()
+        self._zoom_badge_visible = False
+        self.zoom_plate_badge.setVisible(False)
+        self._last_res_text = ""
+        self.res_label.setText("")
         if self.stream_thread and self.stream_thread.isRunning():
             self.stream_thread.stop()
         self.stream_thread = None

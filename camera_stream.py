@@ -873,9 +873,14 @@ class CameraStreamThread(QThread):
             if roi == self._plate_roi:
                 return
             self._plate_roi = roi
-        # بازنشانی ترکر + پاک‌سازی باکس‌های نمایشیِ ناحیه‌ی قبلی
+        # بازنشانی ترکر + پاک‌سازی باکس‌های نمایشیِ ناحیه‌ی قبلی؛ در حالت
+        # زوم، ترکر مشتاق‌تر می‌شود (زوم‌بوست: آستانه‌ی کمتر، OCR زودتر،
+        # تأیید با رأی کمتر) چون کاربر عمداً همان ناحیه را نشانه گرفته است.
         if self.plate_detection_enabled:
-            self._plate_tracker = self._new_plate_tracker()
+            _trk = self._new_plate_tracker()
+            if _trk is not None:
+                _trk.zoom_boost = roi is not None
+            self._plate_tracker = _trk
         self._last_plate_detections = []
 
     def set_plate_detection(self, enabled: bool):
@@ -1112,7 +1117,12 @@ class CameraStreamThread(QThread):
                             _detect_frame = frame
                             _roi_ox, _roi_oy = 0, 0
                     try:
-                        _pboxes = _pld.detect(_detect_frame)
+                        # در حالت زوم، آستانه‌ی دتکتور کمتر می‌شود تا کاندیدای
+                        # بیشتری از ناحیه‌ی نشانه‌گرفته‌شده بگیریم؛ فیلتر نهایی
+                        # با OCR + رأی‌گیری چندفریمی است.
+                        _zoomed = _detect_frame is not frame
+                        _pboxes = _pld.detect(
+                            _detect_frame, conf=0.30 if _zoomed else None)
                         self._plate_detect_error = ""
                     except Exception as e:
                         _pboxes = []

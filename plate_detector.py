@@ -231,13 +231,17 @@ class PlateDetector:
         except Exception as e:
             self.load_error = f"خطا در بارگذاری مدل پلاک: {e}"
 
-    def detect(self, frame):
-        """خروجی: لیست [(x1, y1, x2, y2, conf), ...] به پیکسل (قالب xyxy)."""
+    def detect(self, frame, conf=None):
+        """خروجی: لیست [(x1, y1, x2, y2, conf), ...] به پیکسل (قالب xyxy).
+        conf: آستانه‌ی اختیاری برای این فراخوانی (مثلاً کمتر وقتی روی ناحیه‌ی
+        زوم کار می‌کنیم تا کاندیدای بیشتری بگیریم)؛ None یعنی self.conf."""
         self.diag["ticks"] += 1
         if not self.available:
             return []
         try:
-            results = self.model.predict(frame, conf=self.conf, verbose=False)
+            results = self.model.predict(
+                frame, conf=self.conf if conf is None else conf,
+                verbose=False)
             boxes = []
             for r in results:
                 if r.boxes is None:
@@ -721,6 +725,10 @@ class PlateTracker:
         self.ocr_interval_s = ocr_interval_s
         self.track_ttl_s = track_ttl_s
         self.cooldown_s = cooldown_s
+        # حالت «زوم‌بوست»: وقتی کاربر روی ناحیه‌ی پلاک زوم کرده، خوانش
+        # مشتاق‌تر می‌شود — OCR زودتر تکرار و تأیید با رأی کمتر صادر می‌شود،
+        # چون کاربر عمداً همان ناحیه را برای خواندن انتخاب کرده است.
+        self.zoom_boost = False
         self._tracks = []  # dict(box, reads, last_seen, last_ocr_ts, last_event_ts, ...)
         self._lock = threading.Lock()
         self.diag = {"ticks": 0, "detections_total": 0, "tracks_created": 0,
@@ -759,9 +767,11 @@ class PlateTracker:
             # ۳) حذف ترک‌های منقضی
             self._tracks = [t for t in self._tracks
                             if now - t["last_seen"] <= self.track_ttl_s]
-            # ۴) OCR تنبل + رأی‌گیری
+            # ۴) OCR تنبل + رأی‌گیری (در حالت زوم‌بوست مشتاق‌تر)
+            _ocr_gap = 0.4 if self.zoom_boost else self.ocr_interval_s
+            _need_votes = 2 if self.zoom_boost else self.confirm_reads
             for tr in self._tracks:
-                if now - tr["last_ocr_ts"] < self.ocr_interval_s:
+                if now - tr["last_ocr_ts"] < _ocr_gap:
                     continue
                 tr["last_ocr_ts"] = now
                 x1, y1, x2, y2 = _expand_box(tr["box"][:4], w, h)
@@ -791,7 +801,7 @@ class PlateTracker:
                     continue
                 self.diag["votes_cast"] += 1
                 tr["voted_text"] = voted
-                if votes >= self.confirm_reads:
+                if votes >= _need_votes:
                     if now - tr["last_event_ts"] >= self.cooldown_s:
                         tr["last_event_ts"] = now
                         tr["reads"] = []  # شروع تازه برای رأی بعدی
