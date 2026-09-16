@@ -20,7 +20,7 @@
        - easyocr با زبان فارسی ('fa') — مخصوص پلاک‌های ایرانی. مدل‌هایش در
          زمان بیلد پیش‌دانلود و داخل exe هستند (EASYOCR_MODULE_PATH)؛ پس
          در سیستم کاربر دانلودی انجام نمی‌شود.
-       - rapidocr_onnxruntime — سبک و سریع، fallback.
+       - rapidocr (پکیج جدید) + مدل عربی PP-OCRv5 — موتور اصلی، سبک و بدون torch.
      هر دو lazy-load می‌شوند و نبودشان باعث کرش نمی‌شود.
   ۴) پس‌پردازش متن:
      - نرمال‌سازی ارقام فارسی/عربی/لاتین (plate_store.normalize_plate_text)
@@ -84,6 +84,22 @@ def _bundle_dir():
     if meipass and os.path.isdir(meipass):
         return meipass
     return None
+
+
+def _plate_ocr_models_dir():
+    """پوشه‌ی مدل‌های RapidOCR عربی (plate_ocr_models).
+    در exe فریزشده: _internal/plate_ocr_models (با --add-data باندل شده)؛
+    در اجرای از سورس: پوشه‌ی plate_ocr_models کنار همین فایل."""
+    bundle = _bundle_dir()
+    if bundle:
+        p = os.path.join(bundle, "plate_ocr_models")
+        if os.path.isdir(p):
+            return p
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "plate_ocr_models")
+    if os.path.isdir(here):
+        return here
+    return ""
 
 
 def _configure_easyocr_bundled_models():
@@ -492,7 +508,7 @@ def ocr_install_status():
     خروجی (easyocr_installed, rapidocr_installed)."""
     import importlib.util
     return (importlib.util.find_spec("easyocr") is not None,
-            importlib.util.find_spec("rapidocr_onnxruntime") is not None)
+            importlib.util.find_spec("rapidocr") is not None)
 
 
 def easyocr_models_bundled():
@@ -527,10 +543,10 @@ class PlateOCR:
     @property
     def engine_name(self):
         """نام موتور OCR فعالی که واقعاً بارگذاری شده (برای نمایش/دیباگ)."""
+        if getattr(self, "_rapidocr", None) is not None:
+            return "rapidocr(ar)"
         if getattr(self, "_easyocr_reader", None) is not None:
             return "easyocr(fa)"
-        if getattr(self, "_rapidocr", None) is not None:
-            return "rapidocr"
         return "none"
 
     def _get_easyocr(self):
@@ -593,6 +609,10 @@ class PlateOCR:
 
     # ----------------------------------------------------------- rapidocr -
     def _get_rapidocr(self):
+        """موتور اصلی پلاک‌خوان: RapidOCR (پکیج جدید) + مدل عربی PP-OCRv5
+        که ارقام و حروف فارسی پلاک ایرانی را می‌خواند. کاملاً ONNX و بدون
+        torch؛ مدل‌ها از پوشه‌ی plate_ocr_models داخل باندل لود می‌شوند و
+        هیچ‌وقت چیزی روی سیستم کاربر دانلود نمی‌شود."""
         with self._lock:
             if self._rapidocr is not None:
                 return self._rapidocr
@@ -601,9 +621,37 @@ class PlateOCR:
                 return None
             self._rapidocr_next_retry = now + 120.0
             try:
-                from rapidocr_onnxruntime import RapidOCR
-                self._rapidocr = RapidOCR()
+                from rapidocr import RapidOCR
+            except Exception as e:
+                self._rapidocr_error = ("پکیج rapidocr نصب/باندل نیست: %s" % e)[:300]
+                self._rapidocr = None
+                return None
+            try:
+                base = _plate_ocr_models_dir()
+                need = {
+                    "det": "PP-OCRv6_det_small.onnx",
+                    "cls": "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+                    "rec": "arabic_PP-OCRv5_rec_mobile.onnx",
+                    "dict": "ppocrv5_arabic_dict.txt",
+                }
+                paths, missing = {}, []
+                for k, fn in need.items():
+                    p = os.path.join(base, fn) if base else ""
+                    if p and os.path.isfile(p):
+                        paths[k] = p
+                    else:
+                        missing.append(fn)
+                if missing:
+                    raise FileNotFoundError(
+                        "مدل‌های RapidOCR عربی در باندل نیست: " + ", ".join(missing))
+                self._rapidocr = RapidOCR(params={
+                    "Det.model_path": paths["det"],
+                    "Cls.model_path": paths["cls"],
+                    "Rec.model_path": paths["rec"],
+                    "Rec.rec_keys_path": paths["dict"],
+                })
                 self._rapidocr_error = ""
+                print("[plate_ocr] rapidocr عربی (PP-OCRv5) لود شد.")
             except Exception as e:
                 err = "%s: %s" % (type(e).__name__, e)
                 self._rapidocr_error = err[:300]
@@ -616,13 +664,45 @@ class PlateOCR:
         if engine is None:
             return []
         try:
-            result, _elapse = engine(crop)
+            # API پکیج جدید rapidocr: خروجی شیء با txts/scores/boxes است
+            # (ورودی: تصویر BGR مثل خروجی cv2)
+            res = engine(crop)
+            txts = list(getattr(res, "txts", None) or [])
+            scores = list(getattr(res, "scores", None) or [])
+            # توجه: boxes آرایه‌ی numpy است؛ «or []» رویش خطا می‌دهد
+            _boxes = getattr(res, "boxes", None)
+            boxes = list(_boxes) if _boxes is not None else []
+            # مرتب‌سازی راست‌به‌چپ (ترتیب خوانش پلاک ایرانی) بر اساس مرکز x
+            frags = []
+            for i, text in enumerate(txts):
+                cx = 0.0
+                if i < len(boxes):
+                    try:
+                        cx = sum(float(p[0]) for p in boxes[i]) / max(1, len(boxes[i]))
+                    except Exception:
+                        cx = 0.0
+                conf = float(scores[i]) if i < len(scores) else 0.5
+                frags.append((text, conf, cx))
+            frags.sort(key=lambda f: f[2], reverse=True)
             out = []
-            if result:
-                for _box, text, conf in result:
-                    t = canonicalize_ocr_text(text)
-                    if t:
-                        out.append((t, float(conf), "rapidocr"))
+            raws = []  # تکه‌های نرمال‌شده (بدون اعتبارسنجی قالب) برای چسباندن
+            for text, conf, _cx in frags:
+                t = normalize_plate_text(text)
+                t = "".join(ch for ch in t
+                            if ch.isdigit() or "\u0600" <= ch <= "\u06FF")
+                if t:
+                    raws.append((t, conf))
+                    c = canonicalize_ocr_text(t)
+                    if c:
+                        out.append((c, conf, "rapidocr-ar"))
+            # دتکتور معمولاً پلاک را چند تکه می‌خواند (ارقام و حرف جدا)؛
+            # چسباندن همه‌ی تکه‌های خام به ترتیب راست‌به‌چپ هم یک کاندیدا
+            # می‌شود (اعتبارسنجی قالب روی متن چسبیده انجام می‌شود)
+            if len(raws) > 1:
+                joined = canonicalize_ocr_text("".join(t for t, _ in raws))
+                if joined:
+                    avg = sum(c for _, c in raws) / len(raws)
+                    out.append((joined, avg * 0.95, "rapidocr-ar"))
             return out
         except Exception:
             return []
@@ -658,11 +738,12 @@ class PlateOCR:
             self.diag["ocr_skipped_blur"] += 1
             return []
         candidates = []
-        # اولویت با easyocr فارسی (پلاک ایرانی) است
-        candidates.extend(self._read_easyocr(crop))
-        # اگر easyocr چیزی نداد، rapidocr هم امتحان می‌شود
+        # اولویت با rapidocr عربی (PP-OCRv5) است — موتور اصلی پلاک ایرانی،
+        # سبک و بدون torch
+        candidates.extend(self._read_rapidocr(crop))
+        # اگر چیزی نداد، easyocr فارسی هم امتحان می‌شود
         if not candidates:
-            candidates.extend(self._read_rapidocr(crop))
+            candidates.extend(self._read_easyocr(crop))
         # حذف تکراری‌ها (نگه‌داشتن بالاترین اطمینان برای هر متن)
         best = {}
         for text, conf, engine in candidates:
