@@ -53,10 +53,10 @@ jobs:
         pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
         pip install -r requirements.txt
         # --- موتور OCR پلاک‌خوان (اجباری برای خوانش متن پلاک) ---
-        # easyocr موتور اصلی خوانش پلاک فارسی است؛ rapidocr سبک و کمکی.
-        # هر دو lazy-load می‌شوند (فقط وقتی پلاک‌خوان یک دوربین فعال شود)
-        # و مدل‌های easyocr در اولین استفاده‌ی واقعی دانلود می‌شوند.
-        pip install easyocr rapidocr-onnxruntime
+        # hezarai/crnn-fa-license-plate-recognition-v2 به‌صورت ONNX (موتور اصلی،
+        # مخصوص پلاک فارسی؛ بدون torch). lazy-load می‌شود (فقط وقتی پلاک‌خوان
+        # یک دوربین فعال شود). مدل داخل ریپو است و باندل می‌شود.
+        pip install onnxruntime
         # --- کتابخانه‌ی خوانش نقشه‌های اتوکد (DXF) برای «نقشه ساختمان» ---
         # ezdxf خالص‌پایتونی و سبک است؛ PyInstaller آن را داخل exe می‌بندد
         # تا روی سیستم کاربر نهایی هیچ نصبی لازم نباشد.
@@ -108,17 +108,16 @@ jobs:
         Write-Host "segformer_floor_model آماده‌ی بسته‌بندی است."
 
     - name: Cache plate-reader assets (model + EasyOCR models)
-      # مدل پلاک (~۶MB) + مدل‌های EasyOCR فارسی/انگلیسی (~۱۰۰-۲۰۰MB)؛
-      # روی کش hit بودن، step آماده‌سازی فقط نبودها را پر می‌کند.
+      # مدل پلاک (~۶MB)؛ روی کش hit بودن، step آماده‌سازی فقط نبودها را پر می‌کند.
+      # (مدل OCR هزار داخل ریپو و پوشه‌ی plate_ocr_models است و کش جدا نمی‌خواهد.)
       id: plate-assets-cache
       uses: actions/cache@v4
       with:
         path: |
           plate_detector.pt
-          easyocr_models
-        key: plate-assets-v3
+        key: plate-assets-v4
 
-    - name: Prepare plate-reader assets (model + EasyOCR models)
+    - name: Prepare plate-reader assets (model + OCR models)
       # اجباری: این‌ها باید حتماً داخل exe باشند تا روی سیستم کاربر
       # هیچ دانلودی لازم نباشد (شرط سخت). نبود/ناقص بودن هرکدام → بیلد fail.
       # نکته‌ی فنی: منطق پایتون در ci/prepare_plate_assets.py است، نه heredoc
@@ -256,14 +255,16 @@ jobs:
         }
         $pyiArgs += "--add-data=plate_detector.pt;."
         Write-Host "plate_detector.pt bundled ($plateModelSize بایت)."
-        if (-not (Test-Path "easyocr_models\model\craft_mlt_25k.pth")) {
-          throw "easyocr_models\model آماده نیست؛ step «Prepare plate-reader assets» را بررسی کنید."
+        # مدل OCR هزار (CRNN مخصوص پلاک فارسی) از داخل ریپو باندل می‌شود؛
+        # روی سیستم کاربر هیچ دانلودی انجام نمی‌شود.
+        if (-not (Test-Path "plate_ocr_models\\hezar_plate_v2.onnx")) {
+          throw "plate_ocr_models آماده نیست؛ مدل hezar_plate_v2.onnx در ریپو نیست."
         }
-        $pyiArgs += "--add-data=easyocr_models;easyocr_models"
-        Write-Host "easyocr_models bundled."
+        $pyiArgs += "--add-data=plate_ocr_models;plate_ocr_models"
+        Write-Host "plate_ocr_models bundled."
         # موتورهای OCR: اجباری‌اند؛ نبودشان در محیط بیلد = خطای صریح، نه
         # بیلدِ بی‌صدا-ناقص.
-        foreach ($pkg in @("easyocr", "rapidocr_onnxruntime")) {
+        foreach ($pkg in @("onnxruntime")) {
           python -c "import $pkg" 2>$null
           if ($LASTEXITCODE -ne 0) {
             throw "پکیج $pkg در محیط بیلد نصب نیست؛ بیلد پلاک‌خوان ناقص می‌ماند."
@@ -318,12 +319,12 @@ jobs:
           Write-Host "##[error] بیلد ناقص است: plate_detector.pt در dist/CCTV_CMS پیدا نشد؛ پلاک‌خوان در exe کار نمی‌کند."
           throw "Build verification failed: plate_detector.pt missing from bundle."
         }
-        if (-not (Find-Bundled (Join-Path "easyocr_models" "model" "craft_mlt_25k.pth"))) {
-          Write-Host "##[error] بیلد ناقص است: مدل‌های EasyOCR در dist/CCTV_CMS/easyocr_models پیدا نشد؛ خوانش متن پلاک در exe کار نمی‌کند."
-          throw "Build verification failed: EasyOCR models missing from bundle."
+        if (-not (Find-Bundled (Join-Path "plate_ocr_models" "hezar_plate_v2.onnx"))) {
+          Write-Host "##[error] بیلد ناقص است: مدل hezar_plate_v2.onnx در dist/CCTV_CMS/plate_ocr_models پیدا نشد؛ خوانش متن پلاک در exe کار نمی‌کند."
+          throw "Build verification failed: hezar OCR model missing from bundle."
         }
         $bundleFiles = (Get-ChildItem -Path $bundleDir -Recurse -File | Measure-Object).Count
-        Write-Host "Build verification OK: _socket.pyd + plate_detector.pt + easyocr_models present, $bundleFiles files in bundle."
+        Write-Host "Build verification OK: _socket.pyd + plate_detector.pt + plate_ocr_models present, $bundleFiles files in bundle."
 
 
     - name: Build Executable with Nuitka (portable, compiled to machine code)
@@ -425,13 +426,12 @@ jobs:
           # رفع درخواست «سیستم پلاک‌خوان»: مدل پلاک و مدل‌های EasyOCR هم
           # مثل بقیه داخل exe پرتابل بسته‌بندی می‌شوند - روی سیستم کاربر
           # نهایی نه دانلود و نه نصبی لازم است (رجوع کنید به
-          # plate_detector.py: _find_plate_model / EASYOCR_MODULE_PATH).
+          # plate_detector.py: _find_plate_model / _plate_ocr_models_dir).
           "--include-data-files=plate_detector.pt=plate_detector.pt"
-          "--include-data-dir=easyocr_models=easyocr_models"
-          # این دو فقط با import تنبل (داخل تابع) صدا زده می‌شوند؛ نویتکا
-          # خودش آن‌ها را پیدا نمی‌کند، پس صراحتاً include می‌شوند.
-          "--include-package=easyocr"
-          "--include-package=rapidocr_onnxruntime"
+          "--include-data-dir=plate_ocr_models=plate_ocr_models"
+          # این فقط با import تنبل (داخل تابع) صدا زده می‌شود؛ نویتکا
+          # خودش آن را پیدا نمی‌کند، پس صراحتاً include می‌شود.
+          "--include-package=onnxruntime"
 
           # نکته‌ی مهم: این سه ماژول جداگانه از exclude‌های قبلی (torch.onnx،
           # torch.distributed و ...) هستند و به همان دلیل حذف نشدند - این‌ها

@@ -17,10 +17,10 @@
        warp به مستطیل روبه‌رو؛ در صورت شکست، همان کراپ ساده
      - حاشیه‌ی سفید دور کراپ
   ۳) PlateOCR: خوانش متن با دو موتور (به ترتیب اولویت):
-       - easyocr با زبان فارسی ('fa') — مخصوص پلاک‌های ایرانی. مدل‌هایش در
-         زمان بیلد پیش‌دانلود و داخل exe هستند (EASYOCR_MODULE_PATH)؛ پس
-         در سیستم کاربر دانلودی انجام نمی‌شود.
-       - rapidocr_onnxruntime — سبک و سریع، fallback.
+       - hezarai/crnn-fa-license-plate-recognition-v2 به‌صورت ONNX
+         (موتور اصلی — مخصوص پلاک فارسی آموزش دیده؛ بدون torch، فقط
+         onnxruntime؛ فایل hezar_plate_v2.onnx داخل باندل برنامه است و
+         روی سیستم کاربر هیچ دانلودی انجام نمی‌شود)
      هر دو lazy-load می‌شوند و نبودشان باعث کرش نمی‌شود.
   ۴) پس‌پردازش متن:
      - نرمال‌سازی ارقام فارسی/عربی/لاتین (plate_store.normalize_plate_text)
@@ -37,7 +37,7 @@
      می‌کند مسیر detection → OCR → vote → event دقیقاً کجا می‌ایستد.
 
 نکته‌ی مهم درباره‌ی import: هیچ‌کدام از کتابخانه‌های سنگین (ultralytics،
-torch، easyocr، rapidocr) در سطح ماژول import نمی‌شوند؛ همه داخل توابع و
+onnxruntime) در سطح ماژول import نمی‌شود؛ فقط داخل تابع و
 فقط در اولین استفاده‌ی واقعی بارگذاری می‌شوند تا بالا آمدن برنامه کند نشود.
 """
 
@@ -78,7 +78,7 @@ def _bundle_dir():
     """پوشه‌ی فایل‌های فقط‌خواندنیِ باندل‌شده (مدل‌ها).
     در exe ساخته‌شده با PyInstaller این sys._MEIPASS است؛ در حالت onedirِ
     نسخه‌ی ۶ به بعد همان زیرپوشه‌ی _internal کنار فایل اجرایی است که
-    --add-dataها (مثل plate_detector.pt و easyocr_models) داخلش قرار
+    --add-dataها (مثل plate_detector.pt و plate_ocr_models) داخلش قرار
     می‌گیرند. در اجرای از سورس None برمی‌گرداند."""
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass and os.path.isdir(meipass):
@@ -86,30 +86,31 @@ def _bundle_dir():
     return None
 
 
-def _configure_easyocr_bundled_models():
-    """اگر مدل‌های EasyOCR داخل باندل برنامه باشند (easyocr_models/model)،
-    متغیر EASYOCR_MODULE_PATH را طوری تنظیم می‌کند که Reader همان‌ها را لود
-    کند و در سیستم کاربر هیچ دانلودی انجام نشود."""
-    if os.environ.get("EASYOCR_MODULE_PATH"):
-        return
-    app = _app_dir()
-    cands = []
+def _plate_ocr_models_dir():
+    """پوشه‌ی مدل‌های OCR پلاک (plate_ocr_models).
+    در exe فریزشده: _internal/plate_ocr_models (با --add-data باندل شده)؛
+    در اجرای از سورس: پوشه‌ی plate_ocr_models کنار همین فایل."""
     bundle = _bundle_dir()
     if bundle:
-        # exe فریزشده: مدل‌ها با --add-data داخل _internal باندل شده‌اند
-        cands.append(os.path.join(bundle, "easyocr_models"))
-    cands.extend((os.path.join(app, "easyocr_models"),
-                  os.path.join(app, "plate_data", "easyocr_models")))
-    for cand in cands:
-        try:
-            if os.path.isdir(os.path.join(cand, "model")):
-                os.environ["EASYOCR_MODULE_PATH"] = cand
-                break
-        except Exception:
-            pass
+        p = os.path.join(bundle, "plate_ocr_models")
+        if os.path.isdir(p):
+            return p
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "plate_ocr_models")
+    if os.path.isdir(here):
+        return here
+    return ""
 
 
-_configure_easyocr_bundled_models()
+def hezar_model_bundled():
+    """True اگر فایل ONNX مدل هزار (hezar_plate_v2.onnx) داخل باندل برنامه
+    باشد (بدون نیاز به دانلود روی سیستم کاربر)."""
+    base = _plate_ocr_models_dir()
+    try:
+        return bool(base) and os.path.isfile(
+            os.path.join(base, "hezar_plate_v2.onnx"))
+    except Exception:
+        return False
 
 
 # --------------------------------------------------------------------------
@@ -120,7 +121,7 @@ _configure_easyocr_bundled_models()
 # روی دیتاست تشخیص پلاک خودرو؛ ~۶ مگابایت (سبک، مناسب CPU و ۴GB RAM)، فرمت
 # ‎.pt‎ سازگار با ultralytics، دقت mAP50 ≈ ۰٫۹۸۳.
 # نکته‌ی فنی: تشخیص «کادر» پلاک مستقل از کشور است و روی پلاک ایرانی هم جواب
-# می‌دهد؛ خوانش حروف فارسی با OCR فارسی (EasyOCR fa) در همین ماژول انجام می‌شود.
+# می‌دهد؛ خوانش حروف فارسی با OCR فارسی (مدل هزار CRNN) در همین ماژول انجام می‌شود.
 _PLATE_MODEL_REPO = "joker5914/yolov8n-license-plate"
 _PLATE_MODEL_SOURCES = [
     f"https://huggingface.co/{_PLATE_MODEL_REPO}/resolve/main/best.pt",
@@ -231,13 +232,17 @@ class PlateDetector:
         except Exception as e:
             self.load_error = f"خطا در بارگذاری مدل پلاک: {e}"
 
-    def detect(self, frame):
-        """خروجی: لیست [(x1, y1, x2, y2, conf), ...] به پیکسل (قالب xyxy)."""
+    def detect(self, frame, conf=None):
+        """خروجی: لیست [(x1, y1, x2, y2, conf), ...] به پیکسل (قالب xyxy).
+        conf: آستانه‌ی اختیاری برای این فراخوانی (مثلاً کمتر وقتی روی ناحیه‌ی
+        زوم کار می‌کنیم تا کاندیدای بیشتری بگیریم)؛ None یعنی self.conf."""
         self.diag["ticks"] += 1
         if not self.available:
             return []
         try:
-            results = self.model.predict(frame, conf=self.conf, verbose=False)
+            results = self.model.predict(
+                frame, conf=self.conf if conf is None else conf,
+                verbose=False)
             boxes = []
             for r in results:
                 if r.boxes is None:
@@ -254,24 +259,41 @@ class PlateDetector:
 
 # نمونه‌ی مشترک بین دوربین‌ها (مثل person_detector) + کش خطا
 _PLATE_DETECTOR = None
-_PLATE_DETECTOR_TRIED = False
+_PLATE_DETECTOR_NEXT_RETRY = 0.0
+# شکست لود مدل دائمی نیست: هر ۱۸۰ ثانیه یک‌بار دوباره تلاش می‌شود تا
+# خطای گذرا (مثلاً فشار حافظه موقع استارت) کل سشن را از کار نیندازد.
+_PLATE_DETECTOR_RETRY_S = 180.0
 _PLATE_DETECTOR_LOCK = threading.Lock()
 
 
 def get_shared_plate_detector():
-    """نمونه‌ی مشترک؛ اگر مدل در دسترس نباشد None برمی‌گرداند (نه نمونه‌ی خراب)."""
-    global _PLATE_DETECTOR, _PLATE_DETECTOR_TRIED
+    """نمونه‌ی مشترک؛ اگر مدل در دسترس نباشد None برمی‌گرداند (نه نمونه‌ی خراب).
+    نمونه‌ی ناموفق هم کش می‌شود تا load_error آن برای دیاگ در دسترس باشد."""
+    global _PLATE_DETECTOR, _PLATE_DETECTOR_NEXT_RETRY
     with _PLATE_DETECTOR_LOCK:
-        if _PLATE_DETECTOR_TRIED:
-            d = _PLATE_DETECTOR
-            return d if (d is not None and d.available) else None
-        _PLATE_DETECTOR_TRIED = True
+        d = _PLATE_DETECTOR
+        if d is not None and d.available:
+            return d
+        now = time.monotonic()
+        if now < _PLATE_DETECTOR_NEXT_RETRY:
+            return None
+        _PLATE_DETECTOR_NEXT_RETRY = now + _PLATE_DETECTOR_RETRY_S
         try:
             d = PlateDetector()
-            _PLATE_DETECTOR = d if d.available else None
+            _PLATE_DETECTOR = d
         except Exception:
             _PLATE_DETECTOR = None
-        return _PLATE_DETECTOR
+            return None
+        return d if d.available else None
+
+
+def get_plate_detector_load_error():
+    """متن خطای آخرین تلاش لود مدل YOLO (برای دیاگ)؛ خالی یعنی خطایی ثبت نشده."""
+    try:
+        d = _PLATE_DETECTOR
+        return (getattr(d, "load_error", "") or "")
+    except Exception:
+        return ""
 
 
 # --------------------------------------------------------------------------
@@ -403,13 +425,62 @@ def _preprocess_for_ocr(crop):
 
 
 # --------------------------------------------------------------------------
-# ۳) پس‌پردازش متن: اصلاح اشتباه‌های OCR + اعتبارسنجی قالب ایرانی
+# ۳-الف) موتور هزار: hezarai/crnn-fa-license-plate-recognition-v2 (ONNX)
 # --------------------------------------------------------------------------
+# مدل CRNN مخصوص پلاک فارسی؛ نسخه‌ی ONNX از روی وزن‌های PyTorch با معماری
+# دقیقاً یکسان ساخته شده (بدون torch در زمان اجرا — فقط onnxruntime).
+# پیش‌پردازش و پس‌پردازش دقیقاً مطابق image processor خود مدل است:
+# خاکستری → آینه‌ی افقی → تغییراندازه به ‎(384, 32)‎ → نرمال‌سازی،
+# و دیکد CTC حریصانه + برگرداندن سگمنت‌های رقمی (reverse_string_digits).
 
-# حروف مجاز پلاک ایرانی + ارقام فارسی/عربی/لاتین؛ برای محدود کردن خروجی
-# easyocr و کم شدن خروجی‌های بی‌ربط.
-_PLATE_ALLOWLIST = ("ابپتثجچحخدرزژسشصضطظعغفقکگلمنوهی"
-                    "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩0123456789")
+_HEZAR_ID2LABEL = [
+    "", "آ", "ا", "ب", "پ", "ت", "ث", "ج", "چ", "ه", "خ", "د", "ذ",
+    "ر", "ز", "ژ", "س", "ش", "ص", "ض", "ط", "ظ", "ع", "غ", "ف",
+    "ق", "ک", "گ", "ل", "م", "ن", "و", "ه", "ی", " ",
+    "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹", "۰",
+]
+_HEZAR_BLANK_ID = 0
+_HEZAR_IMG_W, _HEZAR_IMG_H = 384, 32
+_HEZAR_MEAN, _HEZAR_STD = 0.6595, 0.1501
+
+
+def _hezar_preprocess(crop_bgr):
+    """کراپ BGR → تنسور (1,1,32,384) دقیقاً مطابق پیش‌پردازش مدل هزار."""
+    gray = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2GRAY)
+    gray = cv2.flip(gray, 1)  # mirror افقی (مثل image processor هزار)
+    gray = cv2.resize(gray, (_HEZAR_IMG_W, _HEZAR_IMG_H),
+                      interpolation=cv2.INTER_LINEAR)
+    arr = gray.astype(np.float32) * (1.0 / 255.0)
+    arr = (arr - _HEZAR_MEAN) / _HEZAR_STD
+    return arr[None, None, :, :].astype(np.float32)
+
+
+def _hezar_ctc_decode(logits):
+    """دیکد حریصانه‌ی CTC روی خروجی (T,B,C)؛ خروجی: لیست لیست شناسه‌ها."""
+    labels = np.argmax(logits, axis=-1)  # (T, B)
+    out = []
+    for b in range(labels.shape[1]):
+        col = labels[:, b]
+        merged, prev = [], -1
+        for v in col:
+            v = int(v)
+            if v != prev:
+                merged.append(v)
+                prev = v
+        out.append([v for v in merged if v != _HEZAR_BLANK_ID])
+    return out
+
+
+def _reverse_string_digits(text):
+    r"""برگرداندن سگمنت‌های رقمی — دقیقاً معادل reverse_string_digits هزار.
+    (در re پایتون، ‎\d‎ ارقام یونیکد مثل ۱۲۳ را هم می‌گیرد.)"""
+    import re
+    return re.sub(r"(\d+(?:\D\d+)*)", lambda m: m.group(1)[::-1], text)
+
+
+# --------------------------------------------------------------------------
+# ۳-ب) پس‌پردازش متن: اصلاح اشتباه‌های OCR + اعتبارسنجی قالب ایرانی
+# --------------------------------------------------------------------------
 
 # اشتباه‌های رایج OCR در «جایگاه رقم» (وقتی حرف لاتین به‌جای رقم خوانده شده)
 _DIGIT_CONFUSIONS = {
@@ -467,137 +538,109 @@ def canonicalize_ocr_text(raw):
 # --------------------------------------------------------------------------
 
 def ocr_install_status():
-    """وضعیت نصب موتورهای OCR *بدون* بارگذاری سنگین:
-    خروجی (easyocr_installed, rapidocr_installed)."""
+    """وضعیت نصب موتور OCR *بدون* بارگذاری سنگین: خروجی (hezar_installed,)
+    که یعنی onnxruntime نصب است و فایل مدل هزار هم در دسترس است."""
     import importlib.util
-    return (importlib.util.find_spec("easyocr") is not None,
-            importlib.util.find_spec("rapidocr_onnxruntime") is not None)
-
-
-def easyocr_models_bundled():
-    """True اگر مدل‌های EasyOCR داخل باندل برنامه باشند (بدون نیاز به دانلود)."""
-    mp = os.environ.get("EASYOCR_MODULE_PATH", "")
-    try:
-        return bool(mp) and os.path.isdir(os.path.join(mp, "model"))
-    except Exception:
-        return False
+    hezar = (importlib.util.find_spec("onnxruntime") is not None
+             and hezar_model_bundled())
+    return (hezar,)
 
 
 class PlateOCR:
-    """خوانش متن پلاک از تصویر کراپ‌شده. موتورها به ترتیب اولویت:
-    easyocr-fa (پلاک ایرانی) بعد rapidocr (سبک). هر موتور فقط یک‌بار و
-    تنبل بارگذاری می‌شود."""
+    """خوانش متن پلاک از تصویر کراپ‌شده با موتور hezar-crnn-fa
+    (مخصوص پلاک ایرانی، ONNX). موتور فقط یک‌بار و تنبل بارگذاری می‌شود."""
 
     def __init__(self):
-        self._easyocr_reader = None
-        self._easyocr_tried = False
-        self._rapidocr = None
-        self._rapidocr_tried = False
+        self._hezar_session = None
+        self._hezar_error = ""
+        # شکست لود دائمی نیست: اگر بالا نیامد، هر ۱۲۰ ثانیه یک‌بار دوباره
+        # تلاش می‌شود (روی سیستم ضعیف، تلاش اول ممکن است به‌خاطر فشار حافظه
+        # موقع استارت برنامه شکست بخورد و نباید کل سشن را از کار بیندازد).
+        self._hezar_next_retry = 0.0
         self._lock = threading.Lock()
         self.diag = {"ocr_calls": 0, "ocr_empty": 0, "ocr_skipped_blur": 0,
                      "rectified": 0, "rect_fallback": 0}
 
-    # ------------------------------------------------------------ easyocr -
+    # --------------------------------------------------------------- hezar -
     @property
     def engine_name(self):
         """نام موتور OCR فعالی که واقعاً بارگذاری شده (برای نمایش/دیباگ)."""
-        if getattr(self, "_easyocr_reader", None) is not None:
-            return "easyocr(fa)"
-        if getattr(self, "_rapidocr", None) is not None:
-            return "rapidocr"
+        if getattr(self, "_hezar_session", None) is not None:
+            return "hezar(crnn-fa)"
         return "none"
 
-    def _get_easyocr(self):
+    def _get_hezar(self):
+        """موتور اصلی پلاک‌خوان: hezarai/crnn-fa-license-plate-recognition-v2
+        به‌صورت ONNX (تبدیل‌شده از مدل PyTorch؛ معماری و وزن‌ها دقیقاً همان).
+        فقط onnxruntime لازم دارد (بدون torch)؛ فایل مدل از پوشه‌ی
+        plate_ocr_models داخل باندل لود می‌شود و هیچ‌وقت چیزی روی سیستم
+        کاربر دانلود نمی‌شود."""
         with self._lock:
-            if self._easyocr_tried:
-                return self._easyocr_reader
-            self._easyocr_tried = True
+            if self._hezar_session is not None:
+                return self._hezar_session
+            now = time.monotonic()
+            if now < self._hezar_next_retry:
+                return None
+            self._hezar_next_retry = now + 120.0
             try:
-                import easyocr
-                # مدل‌ها از EASYOCR_MODULE_PATH خوانده می‌شوند؛ در بیلد رسمی
-                # این مسیر به easyocr_models داخل exe اشاره می‌کند و هیچ
-                # دانلودی در سیستم کاربر انجام نمی‌شود.
-                kwargs = {"verbose": False}
-                mp = os.environ.get("EASYOCR_MODULE_PATH", "")
-                if mp and os.path.isdir(mp):
-                    kwargs["model_storage_directory"] = mp
-                # فقط تشخیص متن (recognizer) روی کراپ کوچک؛ detector روی کراپ
-                # لازم نیست ولی easyocr همیشه هر دو را لود می‌کند - برای همین
-                # lazy است و فقط وقتی پلاک‌خوان فعال باشد.
-                self._easyocr_reader = easyocr.Reader(["fa", "en"], gpu=False,
-                                                      **kwargs)
+                import onnxruntime as ort
             except Exception as e:
-                print(f"[plate_ocr] easyocr در دسترس نیست: {e}")
-                self._easyocr_reader = None
-            return self._easyocr_reader
+                self._hezar_error = ("onnxruntime نصب/باندل نیست: %s" % e)[:300]
+                self._hezar_session = None
+                return None
+            try:
+                base = _plate_ocr_models_dir()
+                p = os.path.join(base, "hezar_plate_v2.onnx") if base else ""
+                if not p or not os.path.isfile(p):
+                    raise FileNotFoundError(
+                        "فایل hezar_plate_v2.onnx در plate_ocr_models باندل نیست.")
+                opts = ort.SessionOptions()
+                try:
+                    opts.intra_op_num_threads = 2
+                    opts.inter_op_num_threads = 1
+                except Exception:
+                    pass
+                self._hezar_session = ort.InferenceSession(
+                    p, sess_options=opts, providers=["CPUExecutionProvider"])
+                self._hezar_error = ""
+                print("[plate_ocr] hezar CRNN فارسی (ONNX) لود شد.")
+            except Exception as e:
+                err = "%s: %s" % (type(e).__name__, e)
+                self._hezar_error = err[:300]
+                print(f"[plate_ocr] موتور هزار در دسترس نیست: {err}")
+                self._hezar_session = None
+            return self._hezar_session
 
-    def _read_easyocr(self, crop):
-        reader = self._get_easyocr()
-        if reader is None:
+    def _read_hezar(self, crop):
+        sess = self._get_hezar()
+        if sess is None or cv2 is None:
             return []
         try:
-            # detail=1 -> [(box, text, conf)]؛ allowlist خروجی بی‌ربط را کم می‌کند
-            results = reader.readtext(crop, detail=1, allowlist=_PLATE_ALLOWLIST)
-            frags = []
-            for _box, text, conf in results:
-                t = canonicalize_ocr_text(text)
-                if t:
-                    frags.append((t, float(conf)))
-            out = []
-            for t, conf in frags:
-                out.append((t, conf, "easyocr-fa"))
-            # گاهی پلاک به چند تکه شکسته می‌شود؛ ترکیب همه‌ی تکه‌ها هم به‌عنوان
-            # یک کاندیدا اضافه می‌شود (رأی‌گیری چندفریمی داوری نهایی را می‌کند)
-            if len(frags) > 1:
-                joined = canonicalize_ocr_text("".join(t for t, _ in frags))
-                if joined:
-                    avg = sum(c for _, c in frags) / len(frags)
-                    out.append((joined, avg * 0.95, "easyocr-fa"))
-            return out
+            x = _hezar_preprocess(crop)
+            logits = sess.run(None, {"pixel_values": x})[0]  # (T,1,45)
+            ids = _hezar_ctc_decode(logits)[0]
+            text = "".join(_HEZAR_ID2LABEL[i] for i in ids)
+            text = _reverse_string_digits(text)
+            try:
+                conf = float(np.exp(logits).max(axis=-1)[:, 0].mean())
+            except Exception:
+                conf = 0.5
+            c = canonicalize_ocr_text(text)
+            if c:
+                return [(c, conf, "hezar-crnn-fa")]
+            return []
         except Exception:
             return []
 
-    # ----------------------------------------------------------- rapidocr -
-    def _get_rapidocr(self):
-        with self._lock:
-            if self._rapidocr_tried:
-                return self._rapidocr
-            self._rapidocr_tried = True
-            try:
-                from rapidocr_onnxruntime import RapidOCR
-                self._rapidocr = RapidOCR()
-            except Exception as e:
-                print(f"[plate_ocr] rapidocr در دسترس نیست: {e}")
-                self._rapidocr = None
-            return self._rapidocr
-
-    def _read_rapidocr(self, crop):
-        engine = self._get_rapidocr()
-        if engine is None:
-            return []
-        try:
-            result, _elapse = engine(crop)
-            out = []
-            if result:
-                for _box, text, conf in result:
-                    t = canonicalize_ocr_text(text)
-                    if t:
-                        out.append((t, float(conf), "rapidocr"))
-            return out
-        except Exception:
-            return []
-
-    # -------------------------------------------------------------- عمومی -
-    @property
     def available(self):
-        """True اگر حداقل یک موتور OCR آماده باشد."""
-        return (self._get_easyocr() is not None) or (self._get_rapidocr() is not None)
+        """True اگر موتور OCR هزار آماده باشد."""
+        return self._get_hezar() is not None
 
     def engines_status(self):
         return {
-            "easyocr_fa": self._get_easyocr() is not None,
-            "rapidocr": self._get_rapidocr() is not None,
-            "models_bundled": easyocr_models_bundled(),
+            "hezar_crnn_fa": self._get_hezar() is not None,
+            "model_bundled": hezar_model_bundled(),
+            "hezar_error": self._hezar_error,
         }
 
     def read(self, crop_bgr):
@@ -616,11 +659,9 @@ class PlateOCR:
             self.diag["ocr_skipped_blur"] += 1
             return []
         candidates = []
-        # اولویت با easyocr فارسی (پلاک ایرانی) است
-        candidates.extend(self._read_easyocr(crop))
-        # اگر easyocr چیزی نداد، rapidocr هم امتحان می‌شود
-        if not candidates:
-            candidates.extend(self._read_rapidocr(crop))
+        # موتور هزار (CRNN مخصوص پلاک فارسی)؛ کراپ خام (بدون حاشیه/CLAHE)
+        # می‌گیرد چون دقیقاً با همان پیش‌پردازش آموزش دیده است
+        candidates.extend(self._read_hezar(crop_bgr))
         # حذف تکراری‌ها (نگه‌داشتن بالاترین اطمینان برای هر متن)
         best = {}
         for text, conf, engine in candidates:
@@ -632,6 +673,32 @@ class PlateOCR:
         if not ranked:
             self.diag["ocr_empty"] += 1
         return ranked
+
+    def read_plate_from_view(self, crop_bgr, max_width=640):
+        """خوانش فوری پلاک از کل نما (مسیر جایگزین وقتی دتکتور YOLO پلاکی
+        پیدا نکرد؛ مثلاً وقتی کاربر روی پلاک زوم کرده و کل نما عملاً خود
+        پلاک است). برای سرعت، نما تا max_width کوچک می‌شود (متن پلاک در
+        حالت زوم به‌اندازه‌ی کافی بزرگ است)، بعد یک‌جا OCR می‌شود و اولین
+        متنی که قالب پلاک ایرانی داشته باشد برگردانده می‌شود.
+        خروجی: (text, conf) یا None."""
+        if crop_bgr is None or crop_bgr.size == 0:
+            return None
+        try:
+            h, w = crop_bgr.shape[:2]
+            if w > max_width and cv2 is not None:
+                _s = max_width / float(w)
+                crop_bgr = cv2.resize(crop_bgr, (max_width, max(1, int(h * _s))))
+        except Exception:
+            pass
+        try:
+            reads = self.read(crop_bgr)
+        except Exception:
+            return None
+        for text, conf, _engine in reads:
+            if _looks_like_plate(text):
+                self.diag["fallback_hits"] = self.diag.get("fallback_hits", 0) + 1
+                return text, float(conf)
+        return None
 
 
 _OCR_SINGLETON = None
@@ -716,11 +783,15 @@ class PlateTracker:
     """
 
     def __init__(self, confirm_reads=3, ocr_interval_s=1.0,
-                 track_ttl_s=4.0, cooldown_s=45.0):
+                 track_ttl_s=25.0, cooldown_s=45.0):
         self.confirm_reads = max(2, int(confirm_reads))
         self.ocr_interval_s = ocr_interval_s
         self.track_ttl_s = track_ttl_s
         self.cooldown_s = cooldown_s
+        # حالت «زوم‌بوست»: وقتی کاربر روی ناحیه‌ی پلاک زوم کرده، خوانش
+        # مشتاق‌تر می‌شود — OCR زودتر تکرار و تأیید با رأی کمتر صادر می‌شود،
+        # چون کاربر عمداً همان ناحیه را برای خواندن انتخاب کرده است.
+        self.zoom_boost = False
         self._tracks = []  # dict(box, reads, last_seen, last_ocr_ts, last_event_ts, ...)
         self._lock = threading.Lock()
         self.diag = {"ticks": 0, "detections_total": 0, "tracks_created": 0,
@@ -759,9 +830,11 @@ class PlateTracker:
             # ۳) حذف ترک‌های منقضی
             self._tracks = [t for t in self._tracks
                             if now - t["last_seen"] <= self.track_ttl_s]
-            # ۴) OCR تنبل + رأی‌گیری
+            # ۴) OCR تنبل + رأی‌گیری (در حالت زوم‌بوست مشتاق‌تر)
+            _ocr_gap = 0.4 if self.zoom_boost else self.ocr_interval_s
+            _need_votes = 2 if self.zoom_boost else self.confirm_reads
             for tr in self._tracks:
-                if now - tr["last_ocr_ts"] < self.ocr_interval_s:
+                if now - tr["last_ocr_ts"] < _ocr_gap:
                     continue
                 tr["last_ocr_ts"] = now
                 x1, y1, x2, y2 = _expand_box(tr["box"][:4], w, h)
@@ -791,7 +864,7 @@ class PlateTracker:
                     continue
                 self.diag["votes_cast"] += 1
                 tr["voted_text"] = voted
-                if votes >= self.confirm_reads:
+                if votes >= _need_votes:
                     if now - tr["last_event_ts"] >= self.cooldown_s:
                         tr["last_event_ts"] = now
                         tr["reads"] = []  # شروع تازه برای رأی بعدی
@@ -823,7 +896,7 @@ class PlateTracker:
 
 def reset_shared_plate_detector():
     """برای تست: کش نمونه‌ی مشترک را پاک می‌کند."""
-    global _PLATE_DETECTOR, _PLATE_DETECTOR_TRIED
+    global _PLATE_DETECTOR, _PLATE_DETECTOR_NEXT_RETRY
     with _PLATE_DETECTOR_LOCK:
         _PLATE_DETECTOR = None
-        _PLATE_DETECTOR_TRIED = False
+        _PLATE_DETECTOR_NEXT_RETRY = 0.0

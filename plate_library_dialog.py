@@ -811,22 +811,18 @@ class PlateLibraryPage(QWidget):
 
     def _ocr_status_text(self):
         """متن وضعیت موتور OCR برای نمایش در هدر صفحه (سبک؛ چیزی لود نمی‌کند).
-        نکته: در بیلد رسمی EasyOCR و مدل‌های فارسی‌اش داخل exe هستند؛ هیچ
-        دانلود/نصبی روی سیستم کاربر لازم نیست."""
+        نکته: در بیلد رسمی مدل هزار (CRNN مخصوص پلاک فارسی) داخل exe است؛
+        هیچ دانلود/نصبی روی سیستم کاربر لازم نیست."""
         try:
-            from plate_detector import ocr_install_status, easyocr_models_bundled
-            easy, rapid = ocr_install_status()
-            bundled = easyocr_models_bundled()
+            from plate_detector import ocr_install_status, hezar_model_bundled
+            (hezar_ok,) = ocr_install_status()
+            bundled = hezar_model_bundled()
         except Exception:
-            easy, rapid, bundled = False, False, False
-        if easy and bundled:
-            return "موتور خوانش متن: EasyOCR فارسی ✅ (مدل‌ها داخل برنامه‌اند؛ خوانش پلاک ایرانی فعال است)"
-        if easy:
-            return "موتور خوانش متن: EasyOCR ✅ (مدل فارسی‌اش در این بیلد نیست؛ با بیلد جدید درست می‌شود)"
-        if rapid:
-            return ("موتور خوانش متن: RapidOCR ⚠️ (برای پلاک فارسی ضعیف است؛ "
-                    "با بیلد جدید برنامه که EasyOCR داخلش است درست می‌شود؛ "
-                    "چیزی نصب نکنید)")
+            hezar_ok, bundled = False, False
+        if hezar_ok and bundled:
+            return "موتور خوانش متن: مدل هزار (CRNN مخصوص پلاک فارسی) ✅ (داخل برنامه است؛ خوانش پلاک ایرانی فعال است)"
+        if hezar_ok:
+            return "موتور خوانش متن: هزار ✅ (مدلش در این بیلد نیست؛ با بیلد جدید درست می‌شود)"
         return ("موتور خوانش متن: ⚠️ در این بیلد نیست — پلاک پیدا می‌شود ولی "
                 "متنی خوانده نمی‌شود. با بیلد جدید برنامه درست می‌شود؛ "
                 "چیزی روی سیستم نصب نکنید.")

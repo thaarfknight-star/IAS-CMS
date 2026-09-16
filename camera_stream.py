@@ -740,7 +740,7 @@ class CameraStreamThread(QThread):
         try:
             from plate_detector import (get_shared_plate_detector,
                                         get_shared_plate_ocr,
-                                        easyocr_models_bundled)
+                                        hezar_model_bundled)
             d = get_shared_plate_detector()
             if d is not None:
                 try:
@@ -757,7 +757,7 @@ class CameraStreamThread(QThread):
                     info.update(ocr.diag)
                 except Exception:
                     pass
-            info["ocr_models_bundled"] = bool(easyocr_models_bundled())
+            info["ocr_models_bundled"] = bool(hezar_model_bundled())
         except Exception:
             pass
         try:

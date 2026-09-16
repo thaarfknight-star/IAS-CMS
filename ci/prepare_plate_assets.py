@@ -1,11 +1,12 @@
-"""CI helper: prepare plate-reader assets (model + EasyOCR models).
+"""CI helper: prepare plate-reader assets (model + OCR models).
 
 Runs on the GitHub Actions Windows runner BEFORE PyInstaller, so the exe
 bundles everything and no download happens on the user's PC.
 
 Steps:
   1) Download plate_detector.pt (HuggingFace -> hf-mirror fallback), >= 1MB.
-  2) Pre-download EasyOCR fa/en models into easyocr_models/.
+  2) Verify the vendored OCR models in plate_ocr_models/ (hezar CRNN ONNX +
+     RapidOCR Arabic) — they live in the repo, no download needed.
   3) Smoke test: really load the model with plate_detector.PlateDetector.
 
 Fails loudly (exit 1, Persian message) if anything is missing or broken.
@@ -82,56 +83,23 @@ if os.path.getsize(MODEL) < 1024 * 1024:
     fail("plate_detector.pt ناقص است (%d بایت)." % os.path.getsize(MODEL))
 print("plate_detector.pt ready: %d bytes" % os.path.getsize(MODEL), flush=True)
 
-# ------------------------------------------------------- 2) EasyOCR models
-# نکته‌ی مهم درباره‌ی چیدمان پوشه‌ها: وقتی به easyocr.Reader پارامتر
-# model_storage_directory داده می‌شود، ایزی‌اوسی‌آر فایل‌ها را «تخت»
-# (بدون زیرپوشه) داخل همان مسیر می‌ریزد؛ ولی در زمان اجرا، ما متغیر
-# EASYOCR_MODULE_PATH را به پوشه‌ی easyocr_models می‌دهیم و خودِ
-# ایزی‌اوسی‌آر دنبال زیرپوشه‌ی model/ می‌گردد
-# (پیش‌فرض: os.path.join(MODULE_PATH, 'model')). پس باید دانلود را
-# مستقیم داخل easyocr_models/model انجام دهیم تا چیدمان باندل با
-# چیدمان زمان اجرا یکی باشد. (این باگ قبلاً باعث fail مرحله‌ی
-# PyInstaller می‌شد: فایل‌ها تخت دانلود شده بودند و چک
-# easyocr_models\model\text_detection.pt رد می‌شد.)
-MODEL_DIR = os.path.join(REPO, "easyocr_models", "model")
-# نام واقعی فایل مدل تشخیص ناحیه‌ی متن در EasyOCR نسخه‌ی ۱٫۷:
-# config.py -> detection_models['craft']['filename'] == 'craft_mlt_25k.pth'
-# («text_detection.pt» نام قدیمی/اشتباه است و هیچ‌وقت ساخته نمی‌شود.)
-DET = os.path.join(MODEL_DIR, "craft_mlt_25k.pth")
-if not os.path.isfile(DET):
-    import shutil
-
-    # پاک‌سازی چیدمان قدیمی/اشتباه (کش خراب یا دانلود تخت قبلی) تا
-    # باندل دو نسخه از مدل‌ها را با هم نداشته باشد.
-    stale = os.path.join(REPO, "easyocr_models")
-    if os.path.isdir(stale):
-        shutil.rmtree(stale, ignore_errors=True)
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    try:
-        import easyocr  # noqa: E402
-
-        easyocr.Reader(
-            ["fa", "en"],
-            gpu=False,
-            model_storage_directory=MODEL_DIR,
-            verbose=False,
-        )
-        print("EasyOCR models pre-downloaded OK", flush=True)
-    except Exception as e:  # noqa: BLE001
-        fail("پیش‌دانلود مدل‌های EasyOCR شکست خورد: %s" % e)
-    # راستی‌آزمایی واقعیِ چیدمان بعد از دانلود (نه فقط «خطا نداد»):
-    if not os.path.isfile(DET):
-        fail("بعد از پیش‌دانلود، فایل %s ساخته نشد." % DET)
-    pths = [f for f in os.listdir(MODEL_DIR) if f.endswith(".pth")]
-    # انتظار: حداقل مدل تشخیص ناحیه + یک مدل تشخیص کاراکتر (fa/en)
-    if len(pths) < 2:
-        fail("بعد از پیش‌دانلود، مدل‌های کافی در %s نیست (فقط %d فایل pth)."
-             % (MODEL_DIR, len(pths)))
-    print("EasyOCR layout OK: craft_mlt_25k.pth + %d recognizer model(s)"
-          % len(pths), flush=True)
-else:
-    print("easyocr_models exists, skip pre-download", flush=True)
-print("easyocr_models ready.", flush=True)
+# ------------------------------------------- 2) vendored OCR models check
+# موتور خوانش پلاک: hezarai/crnn-fa-license-plate-recognition-v2 به‌صورت ONNX
+# (موتور اصلی) + RapidOCR عربی (fallback). هر دو داخل ریپو و پوشه‌ی
+# plate_ocr_models هستند؛ دانلودی لازم نیست — فقط راستی‌آزمایی حضورشان.
+# (EasyOCR قبلاً حذف شده و دیگر نه نصب می‌شود نه باندل.)
+_OCR_MODELS = (
+    "hezar_plate_v2.onnx",               # موتور OCR پلاک: CRNN مخصوص پلاک فارسی
+)
+_ocr_dir = os.path.join(REPO, "plate_ocr_models")
+for _name in _OCR_MODELS:
+    _p = os.path.join(_ocr_dir, _name)
+    if not os.path.isfile(_p):
+        fail("مدل OCR «%s» در plate_ocr_models نیست؛ فایل را به ریپو اضافه کنید."
+             % _name)
+    print("ocr model OK: %s (%d bytes)" % (_name, os.path.getsize(_p)),
+          flush=True)
+print("plate_ocr_models ready.", flush=True)
 
 # ------------------------------------------------------------ 3) smoke test
 os.environ["IAS_PLATE_MODEL"] = os.path.abspath(MODEL)
