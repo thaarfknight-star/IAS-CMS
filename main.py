@@ -1205,6 +1205,8 @@ class CameraSlotWidget(QWidget):
         self.video_label.setText("در انتظار تصویر...")
 
         self.stream_thread = CameraStreamThread(rtsp_url, face_engine, process_every_n=_PROCESS_EVERY_N)
+        # ناحیه‌ی زوم فعلی (اگر هست) به پلاک‌خوان ترد تازه اعلام می‌شود
+        self._sync_plate_roi()
         # همه‌ی اتصال‌ها محافظت‌شده با نسل استریم‌اند تا رویدادهای جامانده‌ی
         # استریم قبلی همین خانه (در صف GUI) به اشتباه روی دوربین جدید اعمال
         # نشوند - رجوع کنید به _guarded_connect/_stream_seq.
@@ -1352,6 +1354,7 @@ class CameraSlotWidget(QWidget):
         self._panning = False
         self._pan_button = None
         self._refresh_zoom_buttons()
+        self._sync_plate_roi()
 
     def _clamp_zoom_center(self):
         half = 0.5 / self._zoom
@@ -1403,12 +1406,34 @@ class CameraSlotWidget(QWidget):
         self._zoom = new_zoom
         self._clamp_zoom_center()
         self._refresh_zoom_buttons()
+        self._sync_plate_roi()
 
     def zoom_in(self):
         self._zoom_at((self._zoom_cx, self._zoom_cy), self._ZOOM_STEP)
 
     def zoom_out(self):
         self._zoom_at((self._zoom_cx, self._zoom_cy), 1.0 / self._ZOOM_STEP)
+
+    def _plate_roi_norm(self):
+        """ناحیه‌ی نمایشیِ زوم به‌صورت نرمال 0..1 نسبت به فریم کامل؛
+        None یعنی کل فریم (بدون زوم). ریاضیات دقیقاً آینه‌ی _zoom_crop است."""
+        if self._zoom <= self._ZOOM_MIN + 1e-9:
+            return None
+        cw_n = ch_n = 1.0 / self._zoom
+        cx = min(max(self._zoom_cx, cw_n / 2.0), 1.0 - cw_n / 2.0)
+        cy = min(max(self._zoom_cy, ch_n / 2.0), 1.0 - ch_n / 2.0)
+        return (cx - cw_n / 2.0, cy - ch_n / 2.0,
+                cx + cw_n / 2.0, cy + ch_n / 2.0)
+
+    def _sync_plate_roi(self):
+        """اعلام ناحیه‌ی زوم به ترد استریم تا پلاک‌خوان همان ناحیه را با
+        رزولوشن کامل سنسور تشخیص/OCR بدهد (نه فقط نمایش بزرگ‌شده)."""
+        try:
+            th = getattr(self, "stream_thread", None)
+            if th is not None and hasattr(th, "set_plate_roi"):
+                th.set_plate_roi(self._plate_roi_norm())
+        except Exception:
+            pass
 
     def _refresh_zoom_buttons(self):
         has_cam = self.cam is not None
@@ -1477,6 +1502,9 @@ class CameraSlotWidget(QWidget):
                     self._pan_start_label_pos = None
                     self._pan_start_center = None
                     self.video_label.setCursor(Qt.CursorShape.ArrowCursor)
+                    # پایان پن: ناحیه‌ی نهایی به پلاک‌خوان اعلام می‌شود
+                    # (نه حین درگ، تا ترکر مدام بازنشانی نشود)
+                    self._sync_plate_roi()
                     return True
         return super().eventFilter(obj, event)
 

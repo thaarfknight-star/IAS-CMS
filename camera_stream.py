@@ -571,6 +571,13 @@ class CameraStreamThread(QThread):
         # مشترک‌اند (lazy singleton در plate_detector.py).
         self.plate_detection_enabled = False
         self._plate_tracker = None
+        # ناحیه‌ی تشخیص پلاک (ROI) — وقتی کاربر روی کادر دوربین زوم می‌کند،
+        # پلاک‌خوان به‌جای کل فریم فقط همان ناحیه را (با رزولوشن کامل سنسور)
+        # می‌بیند تا پلاک‌های دور خوانده شوند. (x0,y0,x1,y1) نرمال 0..1 نسبت
+        # به فریم کامل، یا None یعنی کل فریم. از ترد GUI نوشته و از ترد
+        # تشخیص خوانده می‌شود؛ قفل فقط برای خواندن/نوشتن اتمیک است.
+        self._plate_roi = None
+        self._plate_roi_lock = threading.Lock()
         self._plate_ocr = None
         self._last_plate_detections = []  # [(box, text, is_defined)] برای رسم روی تصویر
         self._plate_detector_available = False
@@ -730,11 +737,17 @@ class CameraStreamThread(QThread):
             "tracks_created": 0, "tracks_active": 0, "ocr_runs": 0,
             "reads_total": 0, "reads_rejected": 0, "votes_cast": 0,
             "events": 0, "cooldown_skips": 0,
+            "zoom_roi": False,  # True یعنی پلاک‌خوان روی ناحیه‌ی زوم کار می‌کند
         }
         try:
             cam = getattr(self, "cam", None)
             if isinstance(cam, dict):
                 info["camera"] = cam.get("name") or cam.get("ip") or ""
+        except Exception:
+            pass
+        try:
+            with self._plate_roi_lock:
+                info["zoom_roi"] = self._plate_roi is not None
         except Exception:
             pass
         try:
@@ -833,24 +846,45 @@ class CameraStreamThread(QThread):
         except Exception:
             pass
 
+    def _new_plate_tracker(self):
+        """ساخت ترکر تازه‌ی پلاک (کول‌داون از تنظیمات plate_store)."""
+        try:
+            from plate_detector import PlateTracker
+            # کول‌داون از تنظیمات plate_store خوانده می‌شود (پیش‌فرض ۴۵ ثانیه)
+            cooldown = 45.0
+            try:
+                from plate_store import plate_store as _ps
+                cooldown = float(_ps.cooldown_seconds)
+            except Exception:
+                pass
+            return PlateTracker(cooldown_s=cooldown)
+        except Exception:
+            return None
+
+    def set_plate_roi(self, roi):
+        """تنظیم ناحیه‌ی تشخیص پلاک از روی زوم کاربر.
+
+        roi: تاپل (x0, y0, x1, y1) نرمال 0..1 نسبت به فریم کامل، یا None
+        برای بازگشت به کل فریم. با هر تغییر واقعی ناحیه، ترکر بازنشانی
+        می‌شود چون مختصات ترک‌های قبلی نسبت به ناحیه‌ی قبلی بوده است.
+        از ترد GUI صدا زده می‌شود؛ امن برای ترد است.
+        """
+        with self._plate_roi_lock:
+            if roi == self._plate_roi:
+                return
+            self._plate_roi = roi
+        # بازنشانی ترکر + پاک‌سازی باکس‌های نمایشیِ ناحیه‌ی قبلی
+        if self.plate_detection_enabled:
+            self._plate_tracker = self._new_plate_tracker()
+        self._last_plate_detections = []
+
     def set_plate_detection(self, enabled: bool):
         """روشن/خاموش کردن پلاک‌خوان برای این دوربین (از صفحه‌ی پلاک‌خوان یا
         شروع پخش با cam["plate_detection"])."""
         self.plate_detection_enabled = bool(enabled)
         if self.plate_detection_enabled and self._plate_tracker is None:
             self._plate_ocr_warning_emitted = False  # بررسی مجدد وضعیت OCR
-            try:
-                from plate_detector import PlateTracker
-                # کول‌داون از تنظیمات plate_store خوانده می‌شود (پیش‌فرض ۴۵ ثانیه)
-                cooldown = 45.0
-                try:
-                    from plate_store import plate_store as _ps
-                    cooldown = float(_ps.cooldown_seconds)
-                except Exception:
-                    pass
-                self._plate_tracker = PlateTracker(cooldown_s=cooldown)
-            except Exception:
-                self._plate_tracker = None
+            self._plate_tracker = self._new_plate_tracker()
         if not self.plate_detection_enabled:
             self._last_plate_detections = []
 
@@ -1053,8 +1087,32 @@ class CameraStreamThread(QThread):
                         self._plate_detector_available,
                         (_pld.load_error if _pld else "") or "")
                 if self._plate_detector_available:
+                    # ناحیه‌ی تشخیص پلاک (ROI) از روی زوم کاربر: اگر کاربر
+                    # زوم کرده باشد، فقط همان ناحیه — با رزولوشن کامل سنسور
+                    # (مثلاً ۵ مگاپیکسل) — به دتکتور و OCR داده می‌شود تا
+                    # پلاکِ داخل ناحیه‌ی زوم‌شده خوانده شود. ترکر، رأی‌گیری و
+                    # OCR همگی در مختصات همین فریمِ تشخیص کار می‌کنند؛ فقط
+                    # برای رسم روی تصویر و رویدادها، باکس‌ها به مختصات فریم
+                    # کامل برمی‌گردند.
+                    with self._plate_roi_lock:
+                        _roi = self._plate_roi
+                    _detect_frame = frame
+                    _roi_ox, _roi_oy = 0, 0
+                    if _roi is not None:
+                        try:
+                            _fh, _fw = frame.shape[:2]
+                            _rx0 = max(0, min(_fw - 1, int(_roi[0] * _fw)))
+                            _ry0 = max(0, min(_fh - 1, int(_roi[1] * _fh)))
+                            _rx1 = max(_rx0 + 1, min(_fw, int(_roi[2] * _fw)))
+                            _ry1 = max(_ry0 + 1, min(_fh, int(_roi[3] * _fh)))
+                            if _rx1 > _rx0 and _ry1 > _ry0:
+                                _detect_frame = frame[_ry0:_ry1, _rx0:_rx1]
+                                _roi_ox, _roi_oy = _rx0, _ry0
+                        except Exception:
+                            _detect_frame = frame
+                            _roi_ox, _roi_oy = 0, 0
                     try:
-                        _pboxes = _pld.detect(frame)
+                        _pboxes = _pld.detect(_detect_frame)
                         self._plate_detect_error = ""
                     except Exception as e:
                         _pboxes = []
@@ -1077,12 +1135,17 @@ class CameraStreamThread(QThread):
                                 "روی سیستم نصب نکنید.")
                         self._plate_ocr_error = "" if _ocr_ok else "ocr-unavailable"
                         _pevents = self._plate_tracker.update(
-                            _pboxes, frame, self._plate_ocr)
+                            _pboxes, _detect_frame, self._plate_ocr)
                         self._plate_update_error = ""
                     except Exception as e:
                         _pevents = []
                         if not getattr(self, "_plate_update_error", ""):
                             self._plate_update_error = str(e)[:200]
+                    # نگاشت باکس‌ها از مختصات فریمِ تشخیص به فریم کامل
+                    # (برای رسم روی تصویر و رویدادها) با آفست ناحیه‌ی زوم.
+                    def _to_full_frame(_b):
+                        return (int(_b[0]) + _roi_ox, int(_b[1]) + _roi_oy,
+                                int(_b[2]) + _roi_ox, int(_b[3]) + _roi_oy)
                     # وضعیت فعلی ترک‌ها برای رسم (با تطبیق تعریف‌شده/نشده)
                     _draw_list = []
                     try:
@@ -1090,7 +1153,7 @@ class CameraStreamThread(QThread):
                         _tracks = self._plate_tracker.current_tracks()
                         for _box, _text, _conf in _tracks:
                             _m, _s, _k = _ps2.find_match(_text) if _text else (None, 0.0, "none")
-                            _draw_list.append((_box, _text, bool(_m)))
+                            _draw_list.append((_to_full_frame(_box), _text, bool(_m)))
                     except Exception:
                         _draw_list = []
                     self._last_plate_detections = _draw_list
@@ -1099,17 +1162,21 @@ class CameraStreamThread(QThread):
                         try:
                             from plate_store import prettify_plate as _pretty
                             _x1, _y1, _x2, _y2 = (int(v) for v in _box)
-                            _crop = frame[max(0, _y1):_y2, max(0, _x1):_x2].copy()
+                            # برش پلاک از فریمِ تشخیص (ناحیه‌ی زوم‌شده با
+                            # رزولوشن کامل) تا تصویر گزارش هم واضح باشد
+                            _crop = _detect_frame[max(0, _y1):_y2,
+                                                  max(0, _x1):_x2].copy()
                         except Exception:
                             _crop = None
+                        _fbox = _to_full_frame(_box)
                         self.plate_event_signal.emit({
-                            "box": _box,
+                            "box": _fbox,
                             "plate_text": _text,
                             "plate_display": _pretty(_text),
                             "conf": float(_conf),
                             "crop": _crop,
                         })
-                        self._append_plate_event_log(_text, _conf, _box)
+                        self._append_plate_event_log(_text, _conf, _fbox)
                     self._log_plate_diag()  # هر ۶۰ ثانیه: شمارنده‌ها در plate_debug.log
 
             if unknown_event is not None:
