@@ -774,12 +774,15 @@ class CameraStreamThread(QThread):
                     info.update(ocr.diag)
                 except Exception:
                     pass
-                # علت لود نشدن موتور OCR (متن واقعی خطا، نه فقط none)
+                # علت لود نشدن موتور OCR — فقط وضعیت کش‌شده خوانده می‌شود.
+                # این تابع روی ترد UI (دکمه‌ی «وضعیت زنده») هم اجرا می‌شود،
+                # پس عمداً هیچ موتوری اینجا لود نمی‌شود: لود موتور (به‌خصوص
+                # تلاش دانلود روی اینترنت فیلترشده) روی ترد UI باعث فریز/کرش
+                # ظاهری برنامه می‌شد. لود واقعی فقط در ترد تشخیص انجام می‌شود.
                 try:
-                    _st = ocr.engines_status()
                     info["ocr_init_error"] = (
-                        _st.get("easyocr_error", "") or
-                        _st.get("rapidocr_error", "") or "")
+                        getattr(ocr, "_easyocr_error", "") or
+                        getattr(ocr, "_rapidocr_error", "") or "")
                 except Exception:
                     pass
             info["ocr_models_bundled"] = bool(easyocr_models_bundled())
