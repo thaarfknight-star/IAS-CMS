@@ -139,6 +139,7 @@ class PersonTrackPage(QWidget):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_persons_tab(), "👥 اشخاص ردیابی‌شده")
         self.tabs.addTab(self._build_path_tab(), "🗺 گزارش مسیر حرکت")
+        self.tabs.addTab(self._build_access_tab(), "🚨 کنترل تردد طبقاتی")
         layout.addWidget(self.tabs, 1)
 
         self.status_label = QLabel("")
@@ -155,6 +156,10 @@ class PersonTrackPage(QWidget):
         self._reload_path_camera_combo()
         self.run_path_search()
         self._update_stats()
+        try:
+            self._reload_access_tab()
+        except Exception:
+            pass
 
     def set_detector_status(self, state, detail=""):
         """به‌روزرسانی بنر وضعیت موتور تشخیص شخص (از main.py صدا زده
@@ -688,3 +693,283 @@ class PersonTrackPage(QWidget):
                                     f"فایل با موفقیت ذخیره شد:\n{path}")
         except Exception as e:
             QMessageBox.warning(self, "خطا", f"ذخیره‌ی CSV ناموفق بود:\n{e}")
+
+    # ============ تب کنترل تردد طبقاتی ============
+    def _build_access_tab(self):
+        from PyQt6.QtWidgets import QCheckBox, QScrollArea
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        # --- ۱) قانون سراسری: افراد تعریف‌نشده
+        undef_group = QGroupBox("🌍 افراد تعریف‌نشده — مجاز به تردد در کدام طبقات؟")
+        undef_layout = QVBoxLayout()
+        undef_hint = QLabel(
+            "این قانون برای همه‌ی اشخاصی است که چهره‌شان در «بانک چهره‌ها» "
+            "تعریف نشده و قانون تکی هم ندارند. اگر شخصی در طبقه‌ای خارج از "
+            "این لیست دیده شود، «تخلف تردد» ثبت و هشدار داده می‌شود.")
+        undef_hint.setStyleSheet("color: #9e9e9e; font-size: 11px;")
+        undef_hint.setWordWrap(True)
+        undef_layout.addWidget(undef_hint)
+        self.undef_all_chk = QCheckBox("✅ همه‌ی طبقات (بدون محدودیت)")
+        self.undef_all_chk.toggled.connect(self._on_undef_all_toggled)
+        undef_layout.addWidget(self.undef_all_chk)
+        self.undef_floor_box = QWidget()
+        self.undef_floor_layout = QVBoxLayout(self.undef_floor_box)
+        self.undef_floor_layout.setContentsMargins(20, 0, 0, 0)
+        undef_layout.addWidget(self.undef_floor_box)
+        self.undef_floor_checks = []
+        undef_btn_row = QHBoxLayout()
+        undef_save = QPushButton("💾 ذخیره‌ی قانون افراد تعریف‌نشده")
+        undef_save.clicked.connect(self._save_undefined_rule)
+        undef_btn_row.addWidget(undef_save)
+        undef_btn_row.addStretch()
+        undef_layout.addLayout(undef_btn_row)
+        undef_group.setLayout(undef_layout)
+        layout.addWidget(undef_group)
+
+        # --- ۲) قانون تکی: افراد تعریف‌شده (چهره‌محور)
+        person_group = QGroupBox("🧑 افراد تعریف‌شده — طبقات مجاز هر شخص (جداگانه)")
+        person_layout = QVBoxLayout()
+        person_hint = QLabel(
+            "شخصی که چهره‌اش در «بانک چهره‌ها» تعریف شده، حتی با عوض کردن "
+            "لباس هم شناسایی می‌شود؛ برای هر کدام جداگانه مشخص کنید در چه "
+            "طبقاتی اجازه‌ی تردد دارد. اگر برای شخصی قانونی ثبت نشود، آزاد است.")
+        person_hint.setStyleSheet("color: #9e9e9e; font-size: 11px;")
+        person_hint.setWordWrap(True)
+        person_layout.addWidget(person_hint)
+        sel_row = QHBoxLayout()
+        sel_row.addWidget(QLabel("شخص:"))
+        self.access_person_combo = QComboBox()
+        self.access_person_combo.setMinimumWidth(200)
+        self.access_person_combo.currentIndexChanged.connect(
+            self._on_access_person_changed)
+        sel_row.addWidget(self.access_person_combo)
+        sel_row.addStretch()
+        person_layout.addLayout(sel_row)
+        self.person_floor_box = QWidget()
+        self.person_floor_layout = QVBoxLayout(self.person_floor_box)
+        self.person_floor_layout.setContentsMargins(20, 0, 0, 0)
+        person_layout.addWidget(self.person_floor_box)
+        self.person_floor_checks = []
+        self.person_rule_status = QLabel("")
+        self.person_rule_status.setStyleSheet("color: #9e9e9e; font-size: 11px;")
+        person_layout.addWidget(self.person_rule_status)
+        person_btn_row = QHBoxLayout()
+        person_save = QPushButton("💾 ذخیره‌ی قانون این شخص")
+        person_save.clicked.connect(self._save_person_rule)
+        person_clear = QPushButton("🗑 حذف قانون (آزاد)")
+        person_clear.clicked.connect(self._clear_person_rule)
+        person_btn_row.addWidget(person_save)
+        person_btn_row.addWidget(person_clear)
+        person_btn_row.addStretch()
+        person_layout.addLayout(person_btn_row)
+        person_group.setLayout(person_layout)
+        layout.addWidget(person_group)
+
+        # --- ۳) تخلفات ثبت‌شده
+        viol_group = QGroupBox("🚨 تخلفات تردد غیرمجاز")
+        viol_layout = QVBoxLayout()
+        viol_btn_row = QHBoxLayout()
+        self.viol_sound_chk = QCheckBox("🔊 هشدار صوتی تخلف")
+        try:
+            self.viol_sound_chk.setChecked(
+                str(person_store.get_setting("floor_violation_sound", "1")) == "1")
+        except Exception:
+            pass
+        self.viol_sound_chk.toggled.connect(self._on_violation_sound_toggled)
+        viol_btn_row.addWidget(self.viol_sound_chk)
+        viol_btn_row.addStretch()
+        viol_refresh = QPushButton("🔄 به‌روزرسانی")
+        viol_refresh.clicked.connect(self.refresh_violations)
+        viol_btn_row.addWidget(viol_refresh)
+        viol_ack = QPushButton("✔ تأیید تخلف انتخاب‌شده")
+        viol_ack.clicked.connect(self._acknowledge_violation)
+        viol_btn_row.addWidget(viol_ack)
+        viol_layout.addLayout(viol_btn_row)
+        self.violations_table = QTableWidget(0, 6)
+        self.violations_table.setHorizontalHeaderLabels(
+            ["زمان (شمسی)", "شخص", "دوربین", "طبقه", "وضعیت", "شناسه"])
+        self.violations_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents)
+        self.violations_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows)
+        self.violations_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.violations_table.setMaximumHeight(220)
+        viol_layout.addWidget(self.violations_table)
+        viol_group.setLayout(viol_layout)
+        layout.addWidget(viol_group)
+
+        layout.addStretch()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(tab)
+        return scroll
+
+    def _floor_checkboxes(self, layout, checks_list):
+        """چک‌باکس طبقات را داخل layout می‌سازد؛ خروجی: لیست (QCheckBox, floor_id)."""
+        from PyQt6.QtWidgets import QCheckBox
+        from floor_access import get_floor_list
+        while layout.count():
+            item = layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        checks_list.clear()
+        floors = get_floor_list()
+        if not floors:
+            lbl = QLabel("⚠ هنوز هیچ طبقه‌ای در «نقشه‌ی ساختمان» تعریف نشده است.")
+            lbl.setStyleSheet("color: #fbbf24; font-size: 11px;")
+            layout.addWidget(lbl)
+            return checks_list
+        for fid, fname in floors:
+            chk = QCheckBox(fname)
+            layout.addWidget(chk)
+            checks_list.append((chk, fid))
+        return checks_list
+
+    def _reload_access_tab(self):
+        """بارگذاری قوانین و تخلفات در تب کنترل تردد."""
+        from floor_access import ALL_FLOORS
+        # چک‌باکس‌های طبقات
+        self._floor_checkboxes(self.undef_floor_layout, self.undef_floor_checks)
+        self._floor_checkboxes(self.person_floor_layout, self.person_floor_checks)
+        # قانون سراسری تعریف‌نشده
+        try:
+            allowed = person_store.get_undefined_allowed_floors()
+        except Exception:
+            allowed = ALL_FLOORS
+        is_all = (allowed == ALL_FLOORS)
+        self.undef_all_chk.blockSignals(True)
+        self.undef_all_chk.setChecked(is_all)
+        self.undef_all_chk.blockSignals(False)
+        for chk, fid in self.undef_floor_checks:
+            chk.blockSignals(True)
+            chk.setChecked(True if is_all else (fid in (allowed or [])))
+            chk.setEnabled(not is_all)
+            chk.blockSignals(False)
+        # لیست اشخاص (اولویت با چهره‌دارها)
+        try:
+            persons = person_store.get_persons()
+        except Exception:
+            persons = []
+        self.access_person_combo.blockSignals(True)
+        self.access_person_combo.clear()
+        for p in persons:
+            label = p.get("id", "")
+            if p.get("face_name"):
+                label += f" · {p['face_name']}"
+            elif p.get("face_person_id"):
+                label += f" · {p['face_person_id']}"
+            self.access_person_combo.addItem(label, p.get("id"))
+        self.access_person_combo.blockSignals(False)
+        self._on_access_person_changed()
+        self.refresh_violations()
+
+    def _on_undef_all_toggled(self, checked):
+        for chk, _fid in self.undef_floor_checks:
+            chk.setEnabled(not checked)
+            if checked:
+                chk.setChecked(True)
+
+    def _save_undefined_rule(self):
+        from floor_access import ALL_FLOORS
+        if self.undef_all_chk.isChecked():
+            person_store.set_undefined_allowed_floors(ALL_FLOORS)
+        else:
+            floors = [fid for chk, fid in self.undef_floor_checks if chk.isChecked()]
+            person_store.set_undefined_allowed_floors(floors)
+        QMessageBox.information(self, "ذخیره شد",
+                                "قانون تردد افراد تعریف‌نشده ذخیره شد.")
+        self._reload_access_tab()
+
+    def _on_access_person_changed(self):
+        from floor_access import ALL_FLOORS
+        pid = self.access_person_combo.currentData()
+        if not pid:
+            self.person_rule_status.setText("هنوز هیچ شخصی ردیابی نشده است.")
+            return
+        try:
+            rule = person_store.get_person_allowed_floors(pid)
+        except Exception:
+            rule = None
+        if rule is None:
+            self.person_rule_status.setText(
+                "برای این شخص قانونی ثبت نشده — در همه‌ی طبقات آزاد است.")
+            for chk, _fid in self.person_floor_checks:
+                chk.setChecked(True)
+        elif rule == ALL_FLOORS:
+            self.person_rule_status.setText("قانون: همه‌ی طبقات (بدون محدودیت).")
+            for chk, _fid in self.person_floor_checks:
+                chk.setChecked(True)
+        else:
+            self.person_rule_status.setText(
+                f"قانون فعلی: {len(rule)} طبقه مجاز.")
+            for chk, fid in self.person_floor_checks:
+                chk.setChecked(fid in rule)
+
+    def _save_person_rule(self):
+        from floor_access import ALL_FLOORS
+        pid = self.access_person_combo.currentData()
+        if not pid:
+            return
+        floors = [fid for chk, fid in self.person_floor_checks if chk.isChecked()]
+        from floor_access import get_floor_list
+        all_floors = [fid for fid, _n in get_floor_list()]
+        if set(floors) == set(all_floors) and all_floors:
+            person_store.set_person_allowed_floors(pid, ALL_FLOORS)
+        else:
+            person_store.set_person_allowed_floors(pid, floors)
+        QMessageBox.information(self, "ذخیره شد",
+                                f"قانون تردد {pid} ذخیره شد.")
+        self._on_access_person_changed()
+
+    def _clear_person_rule(self):
+        pid = self.access_person_combo.currentData()
+        if not pid:
+            return
+        person_store.set_person_allowed_floors(pid, None)
+        QMessageBox.information(self, "حذف شد",
+                                f"قانون تردد {pid} حذف شد (آزاد).")
+        self._on_access_person_changed()
+
+    def _on_violation_sound_toggled(self, checked):
+        person_store.set_setting("floor_violation_sound", "1" if checked else "0")
+
+    def refresh_violations(self):
+        """به‌روزرسانی جدول تخلفات (از main.py هم هنگام تخلف تازه صدا زده می‌شود)."""
+        if not hasattr(self, "violations_table"):
+            return
+        try:
+            viols = person_store.list_floor_violations(limit=200)
+        except Exception:
+            viols = []
+        self.violations_table.setRowCount(0)
+        for v in viols:
+            row = self.violations_table.rowCount()
+            self.violations_table.insertRow(row)
+            who = v.get("person_id", "")
+            if v.get("face_name"):
+                who += f" · {v['face_name']}"
+            status = "✔ تأییدشده" if v.get("acknowledged") else "⚠ تازه"
+            vals = [v.get("date_j", ""), who, v.get("camera_name", ""),
+                    v.get("floor_name", ""), status, v.get("id", "")]
+            for col, val in enumerate(vals):
+                self.violations_table.setItem(
+                    row, col, QTableWidgetItem(str(val)))
+            if not v.get("acknowledged"):
+                for col in range(6):
+                    it = self.violations_table.item(row, col)
+                    if it:
+                        it.setBackground(Qt.GlobalColor.darkRed)
+
+    def _acknowledge_violation(self):
+        row = self.violations_table.currentRow()
+        if row < 0:
+            return
+        vid_item = self.violations_table.item(row, 5)
+        if not vid_item:
+            return
+        person_store.acknowledge_violation(vid_item.text())
+        self.refresh_violations()
+

@@ -86,6 +86,13 @@ _DEFAULT_SETTINGS = {
     "match_threshold": "0.45",
     "link_window_min": "10",     # پنجره‌ی زمانی اتصال ردها بین دوربین‌ها (دقیقه)
     "confirm_frames": "3",       # تیک پیاپی لازم برای تأیید یک رد محلی
+    # کنترل تردد طبقاتی — طبقات مجاز افراد تعریف‌نشده (JSON لیست floor_id؛
+    # "*": همه‌ی طبقات مجاز = بدون محدودیت)
+    "undefined_allowed_floors": "\"*\"",
+    # آژیر تخلف تردد غیرمجاز (۱=روشن)
+    "floor_violation_sound": "1",
+    # حداقل فاصله‌ی بین دو تخلف ثبت‌شده برای یک شخص در یک طبقه (دقیقه)
+    "floor_violation_cooldown_min": "15",
 }
 
 
@@ -140,6 +147,30 @@ class PersonStore:
                 CREATE TABLE IF NOT EXISTS person_settings (
                     key TEXT PRIMARY KEY, value TEXT
                 );
+                -- کنترل تردد طبقاتی: طبقات مجاز هر شخص (JSON لیست floor_id)
+                CREATE TABLE IF NOT EXISTS person_floor_access (
+                    person_id TEXT PRIMARY KEY,
+                    allowed_floors TEXT DEFAULT ''
+                );
+                -- تخلفات تردد غیرمجاز در طبقات
+                CREATE TABLE IF NOT EXISTS floor_violations (
+                    id TEXT PRIMARY KEY,
+                    ts REAL NOT NULL,
+                    person_id TEXT DEFAULT '',
+                    face_person_id TEXT DEFAULT '',
+                    face_name TEXT DEFAULT '',
+                    camera_id TEXT DEFAULT '',
+                    camera_name TEXT DEFAULT '',
+                    floor_id TEXT DEFAULT '',
+                    floor_name TEXT DEFAULT '',
+                    snapshot_path TEXT DEFAULT '',
+                    acknowledged INTEGER DEFAULT 0,
+                    date_j TEXT DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_viol_person
+                    ON floor_violations(person_id, ts);
+                CREATE INDEX IF NOT EXISTS idx_viol_floor
+                    ON floor_violations(floor_id, ts);
             """)
             for k, v in _DEFAULT_SETTINGS.items():
                 self._conn.execute(
@@ -182,6 +213,136 @@ class PersonStore:
                 "INSERT OR REPLACE INTO person_settings(key, value) VALUES(?, ?)",
                 (key, str(value)))
             self._conn.commit()
+
+    # -- کنترل تردد طبقاتی --
+    @staticmethod
+    def _parse_floor_list(raw):
+        """رشته‌ی JSON تنظیمات → لیست floor_id؛ «"*"» یعنی همه."""
+        import json as _json
+        if raw is None:
+            return None
+        try:
+            val = _json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            return None
+        if val == "*":
+            return "*"
+        if isinstance(val, list):
+            return [str(x) for x in val]
+        return None
+
+    @staticmethod
+    def _dump_floor_list(val):
+        import json as _json
+        return _json.dumps(val, ensure_ascii=False)
+
+    def get_undefined_allowed_floors(self):
+        """طبقات مجاز افراد تعریف‌نشده: لیست floor_id یا «*» (همه)."""
+        parsed = self._parse_floor_list(self.get_setting("undefined_allowed_floors"))
+        return "*" if parsed is None else parsed
+
+    def set_undefined_allowed_floors(self, floors):
+        """floors: لیست floor_id یا «*» برای همه."""
+        self.set_setting("undefined_allowed_floors",
+                         self._dump_floor_list(floors))
+
+    def get_person_allowed_floors(self, person_id):
+        """طبقات مجاز یک شخص تعریف‌شده؛ None یعنی قانونی تعریف نشده (آزاد)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT allowed_floors FROM person_floor_access WHERE person_id=?",
+                (person_id,)).fetchone()
+        if row is None:
+            return None
+        return self._parse_floor_list(row["allowed_floors"])
+
+    def set_person_allowed_floors(self, person_id, floors):
+        """floors: لیست floor_id یا «*»؛ None یعنی حذف قانون (آزاد)."""
+        with self._lock:
+            if floors is None:
+                self._conn.execute(
+                    "DELETE FROM person_floor_access WHERE person_id=?",
+                    (person_id,))
+            else:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO person_floor_access(person_id, allowed_floors)"
+                    " VALUES(?, ?)",
+                    (person_id, self._dump_floor_list(floors)))
+            self._conn.commit()
+
+    def get_person(self, person_id):
+        """یک رکورد شخص (برای خواندن face_person_id و ...)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM persons WHERE id=?", (person_id,)).fetchone()
+        return dict(row) if row else None
+
+    def record_floor_violation(self, person_id, face_person_id, face_name,
+                               camera_id, camera_name, floor_id, floor_name,
+                               snapshot_bgr=None, snapshot_path=""):
+        """ثبت تخلف تردد غیرمجاز (با cooldown). خروجی: dict تخلف یا None
+        اگر داخل پنجره‌ی cooldown تخلف مشابهی ثبت شده باشد."""
+        import time as _time, uuid as _uuid, os as _os
+        now = _time.time()
+        try:
+            cooldown_min = float(self.get_setting("floor_violation_cooldown_min", "15"))
+        except Exception:
+            cooldown_min = 15.0
+        with self._lock:
+            dup = self._conn.execute(
+                """SELECT id FROM floor_violations
+                   WHERE person_id=? AND floor_id=? AND ts > ?
+                   ORDER BY ts DESC LIMIT 1""",
+                (person_id, floor_id, now - cooldown_min * 60)).fetchone()
+            if dup:
+                return None
+            vid = _uuid.uuid4().hex[:12]
+            snap = snapshot_path or ""
+            if snapshot_bgr is not None and not snap:
+                try:
+                    snap = self._save_image(snapshot_bgr, f"viol_{vid}", now)
+                except Exception:
+                    snap = ""
+            date_j = jalali_now_str(now)
+            self._conn.execute(
+                """INSERT INTO floor_violations(id, ts, person_id, face_person_id,
+                   face_name, camera_id, camera_name, floor_id, floor_name,
+                   snapshot_path, acknowledged, date_j)
+                   VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)""",
+                (vid, now, person_id, face_person_id or "", face_name or "",
+                 camera_id or "", camera_name or "", floor_id or "",
+                 floor_name or "", snap, date_j))
+            self._conn.commit()
+            return {"id": vid, "ts": now, "person_id": person_id,
+                    "face_person_id": face_person_id or "",
+                    "face_name": face_name or "", "camera_id": camera_id or "",
+                    "camera_name": camera_name or "", "floor_id": floor_id or "",
+                    "floor_name": floor_name or "", "snapshot_path": snap,
+                    "acknowledged": 0, "date_j": date_j}
+
+    def list_floor_violations(self, limit=200, only_unacked=False):
+        with self._lock:
+            q = "SELECT * FROM floor_violations"
+            if only_unacked:
+                q += " WHERE acknowledged=0"
+            q += " ORDER BY ts DESC LIMIT ?"
+            rows = self._conn.execute(q, (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def acknowledge_violation(self, viol_id):
+        with self._lock:
+            self._conn.execute(
+                "UPDATE floor_violations SET acknowledged=1 WHERE id=?",
+                (viol_id,))
+            self._conn.commit()
+
+    def count_unacked_violations(self):
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) c FROM floor_violations WHERE acknowledged=0"
+            ).fetchone()
+        return int(row["c"]) if row else 0
+
 
     @property
     def match_threshold(self):

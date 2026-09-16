@@ -93,7 +93,7 @@ class CameraStore:
     # ------------------------------------------------------------ cameras --
 
     def add_camera(self, name, ip, port, user, pwd, path, nvr_id=None, channel=None, full_url=None,
-                   camera_ip=None):
+                   camera_ip=None, floor_id=""):
         cam = {
             "id": str(uuid.uuid4()),
             "name": name or ip,
@@ -105,6 +105,9 @@ class CameraStore:
             "nvr_id": nvr_id,
             "channel": channel,
             "full_url": full_url,
+            # طبقه‌ی دوربین (کنترل تردد طبقاتی) — از نقشه‌ی ساختمان سینک
+            # می‌شود یا دستی در تنظیمات دوربین ست می‌شود.
+            "floor_id": floor_id or "",
             # رفع درخواست: برای کانال‌های NVR که از پشت آن‌ها یک دوربین شبکه‌ای
             # واقعی شناسایی شده، IP خودِ آن دوربین (متفاوت از "ip" که برای
             # دوربین‌های زیر NVR همان IP خود NVR است و برای اتصال RTSP از طریق
@@ -133,6 +136,13 @@ class CameraStore:
             if cam["id"] == cam_id:
                 return cam
         return None
+
+    def get_camera_floor_id(self, cam_id):
+        """floor_id دوربین (کنترل تردد طبقاتی)؛ «» یعنی تعریف نشده."""
+        cam = self.get_camera(cam_id)
+        if not cam:
+            return ""
+        return str(cam.get("floor_id") or "")
 
     def cameras_for_nvr(self, nvr_id):
         return [c for c in self.cameras if c.get("nvr_id") == nvr_id]

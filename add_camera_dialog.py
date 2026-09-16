@@ -1,7 +1,7 @@
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QLineEdit, QCheckBox, QLabel,
-    QDialogButtonBox, QMessageBox
+    QDialogButtonBox, QMessageBox, QComboBox
 )
 
 from rtsp_utils import build_rtsp_url, probe_stream
@@ -95,6 +95,20 @@ class AddCameraDialog(QDialog):
         self.path_input.setPlaceholderText("مسیر دستی استریم")
         self.path_input.setEnabled(False)
 
+        # طبقه‌ی دوربین (کنترل تردد طبقاتی) — لیست از نقشه‌ی ساختمان
+        self.floor_combo = QComboBox()
+        self.floor_combo.addItem("— (تعریف نشده)", "")
+        try:
+            from floor_access import get_floor_list
+            for fid, fname in get_floor_list():
+                self.floor_combo.addItem(fname, fid)
+        except Exception:
+            pass
+        self.floor_combo.setToolTip(
+            "طبقه‌ای که این دوربین در آن قرار دارد.\n"
+            "اگر دوربین روی «نقشه‌ی ساختمان» در طبقه‌ای قرار گیرد،\n"
+            "خودکار همین‌جا سینک می‌شود.")
+
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: #aaaaaa; font-size: 11px;")
 
@@ -107,6 +121,12 @@ class AddCameraDialog(QDialog):
             self.auto_detect_chk.setChecked(False)
             self.path_input.setText(existing_cam.get("path", ""))
             self.path_input.setEnabled(True)
+            # طبقه‌ی ذخیره‌شده را انتخاب کن
+            _ef = str(existing_cam.get("floor_id") or "")
+            if _ef:
+                _idx = self.floor_combo.findData(_ef)
+                if _idx >= 0:
+                    self.floor_combo.setCurrentIndex(_idx)
 
         form = QFormLayout()
         form.addRow("نام دوربین:", self.name_input)
@@ -114,6 +134,7 @@ class AddCameraDialog(QDialog):
         form.addRow("پورت:", self.port_input)
         form.addRow("نام کاربری:", self.user_input)
         form.addRow("رمز عبور:", self.pass_input)
+        form.addRow("🏢 طبقه:", self.floor_combo)
         form.addRow(self.auto_detect_chk)
         form.addRow("مسیر دستی:", self.path_input)
         form.addRow(self.status_label)
@@ -201,4 +222,5 @@ class AddCameraDialog(QDialog):
                 self.detected_path if self.detected_path is not None else self.path_input.text().strip()
             ),
             "full_url": self.detected_full_url,
+            "floor_id": self.floor_combo.currentData() or "",
         }

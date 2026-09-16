@@ -114,6 +114,17 @@ class MapStore:
                 return fl
         return None
 
+    def find_camera_floor(self, ref_id):
+        """طبقه‌ای که دوربین (kind=camera, ref_id) روی نقشه در آن قرار دارد؛
+        برای fallback طبقه‌ی دوربین وقتی floor_id دستی ست نشده."""
+        if not ref_id:
+            return None
+        for fl in self.data.get("floors", []):
+            for dev in fl.get("devices", []):
+                if dev.get("kind") == "camera" and dev.get("ref_id") == ref_id:
+                    return fl.get("id")
+        return None
+
     def add_floor(self, name):
         fl = {
             "id": uuid.uuid4().hex[:12],

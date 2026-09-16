@@ -918,6 +918,21 @@ class BuildingMapPage(QWidget):
             return
         super().keyPressEvent(event)
 
+    def _sync_camera_floor(self, cam_id, floor_id):
+        """سینک طبقه‌ی دوربین با نقشه‌ی ساختمان (کنترل تردد طبقاتی).
+        floor_id خالی یعنی پاک کردن — فقط اگر مقدار فعلی همان طبقه باشد."""
+        if not cam_id or self.camera_store is None:
+            return
+        try:
+            if floor_id:
+                self.camera_store.update_camera(cam_id, floor_id=floor_id)
+            else:
+                cur = self.camera_store.get_camera_floor_id(cam_id)
+                if cur == self.current_floor:
+                    self.camera_store.update_camera(cam_id, floor_id="")
+        except Exception:
+            pass
+
     def _on_place_clicked(self, scene_pos):
         kind = self._placing_kind
         if not kind or not self.current_floor:
@@ -942,6 +957,9 @@ class BuildingMapPage(QWidget):
             entry["scene"].addItem(item)
             entry["items"][dev["id"]] = item
             item.setSelected(True)
+        # سینک طبقه‌ی دوربین (کنترل تردد طبقاتی)
+        if dev and dev.get("kind") == "camera" and dev.get("ref_id"):
+            self._sync_camera_floor(dev["ref_id"], self.current_floor)
         # در حالت جای‌گذاری می‌مانیم تا چند تجهیز پشت سر هم بگذاریم
         self._update_zoom_label()
 
@@ -1035,6 +1053,7 @@ class BuildingMapPage(QWidget):
         if not item:
             return
         dev = item.device
+        old_ref = dev.get("ref_id") or ""
         name = self.prop_name.text().strip() or dev.get("name", "")
         ref_id = self.prop_link.currentData() or ""
         angle = float(self.prop_angle.value())
@@ -1051,6 +1070,12 @@ class BuildingMapPage(QWidget):
         dev["view_distance"] = view_distance
         item.set_name(name)
         item.refresh()
+        # سینک طبقه‌ی دوربین (کنترل تردد طبقاتی)
+        if dev.get("kind") == "camera":
+            if old_ref and old_ref != ref_id:
+                self._sync_camera_floor(old_ref, "")
+            if ref_id:
+                self._sync_camera_floor(ref_id, self.current_floor)
 
     def _prop_angle_changed(self, value):
         # سینک اسلایدر و اسپین‌باکس + به‌روزرسانی زنده‌ی قطاع دید.
@@ -1095,6 +1120,10 @@ class BuildingMapPage(QWidget):
                 ) != QMessageBox.StandardButton.Yes:
             return
         self.store.remove_device(self.current_floor, item.device["id"])
+        # اگر تجهیز دوربین لینک‌شده بود، سینک طبقه را پاک کن
+        _dev = item.device
+        if _dev.get("kind") == "camera" and _dev.get("ref_id"):
+            self._sync_camera_floor(_dev["ref_id"], "")
         entry = self.scenes.get(self.current_floor)
         if entry:
             entry["scene"].removeItem(item)

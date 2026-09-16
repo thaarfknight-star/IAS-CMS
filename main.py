@@ -2999,6 +2999,7 @@ class MainWindow(QMainWindow):
             cam = self.camera_store.add_camera(
                 data["name"], data["ip"], data["port"], data["user"], data["pass"], data["path"],
                 full_url=data.get("full_url"),
+                floor_id=data.get("floor_id", ""),
             )
             self.reload_camera_list()
             # رفع درخواست: دوربین تازه‌اضافه‌شده اتوماتیک به پنجره‌ی نمایش اضافه شود.
@@ -3804,6 +3805,14 @@ class MainWindow(QMainWindow):
                     nvr_id=(cam.get("nvr_id") or "") if isinstance(cam, dict) else "",
                     channel=(cam.get("channel") if isinstance(cam, dict) else None),
                     snapshot_bgr=data.get("crop"))
+                # کنترل تردد طبقاتی: اگر شخص در طبقه‌ی غیرمجاز دیده شد،
+                # تخلف ثبت و هشدار داده می‌شود (هرگز نباید ردیابی را بشکند).
+                try:
+                    self._check_person_floor_access(
+                        person_id, face_pid, face_name, cam_id, camera_name,
+                        snapshot_bgr=data.get("crop"))
+                except Exception:
+                    pass
                 # کد یکتای شخص را روی باکس تصویر همان دوربین بنویس
                 # (لاتین می‌ماند چون cv2.putText فارسی رسم نمی‌کند)
                 for slot in self.camera_grid.slots:
@@ -3895,6 +3904,42 @@ class MainWindow(QMainWindow):
                             pass
         except Exception as e:
             print(f"خطا در اعمال ردیابی اشخاص روی دوربین باز: {e}")
+
+    def _check_person_floor_access(self, person_id, face_person_id, face_name,
+                                     cam_id, camera_name, snapshot_bgr=None):
+        """کنترل تردد طبقاتی: اگر شخص در طبقه‌ی غیرمجاز دیده شد، تخلف ثبت
+        و هشدار داده می‌شود. هیچ‌وقت نباید ردیابی را بشکند."""
+        from floor_access import (resolve_camera_floor, evaluate_floor_access,
+                                  get_floor_name)
+        floor_id = resolve_camera_floor(
+            cam_id, camera_store=getattr(self, "camera_store", None))
+        if not floor_id:
+            return  # طبقه‌ی دوربین نامشخص؛ چک نمی‌شود
+        allowed, _reason, _is_defined = evaluate_floor_access(
+            person_id, face_person_id, floor_id, person_store)
+        if allowed:
+            return
+        floor_name = get_floor_name(floor_id)
+        viol = person_store.record_floor_violation(
+            person_id, face_person_id or "", face_name or "",
+            cam_id or "", camera_name or "", floor_id, floor_name,
+            snapshot_bgr=snapshot_bgr)
+        if viol is None:
+            return  # داخل cooldown؛ قبلاً ثبت شده
+        # هشدار صوتی (تک‌بوق؛ آژیر ممتد آتش جداست)
+        try:
+            if str(person_store.get_setting("floor_violation_sound", "1")) == "1":
+                if getattr(self, "alarm_player", None) is not None:
+                    self.alarm_player.play_once()
+        except Exception:
+            pass
+        # به‌روزرسانی زنده‌ی تب تخلفات (اگر صفحه باز است)
+        try:
+            page = getattr(self, "person_page", None)
+            if page is not None and hasattr(page, "refresh_violations"):
+                page.refresh_violations()
+        except Exception:
+            pass
 
     def _refresh_person_detector_status(self):
         """به‌روزرسانی بنر وضعیت موتور تشخیص شخص در صفحه‌ی «ردیابی اشخاص».
