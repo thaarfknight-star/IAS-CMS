@@ -583,6 +583,7 @@ class CameraStreamThread(QThread):
         self._plate_detector_available = False
         self._plate_detector_status_emitted = False
         self._plate_ocr_warning_emitted = False
+        self._plate_fast_seen = {}  # text -> آخرین زمان ثبت فوری (ضدتکرار ۱۵ ثانیه‌ای)
         self._plate_detect_error = ""
         self._plate_ocr_error = ""
         self._plate_update_error = ""
@@ -1011,24 +1012,39 @@ class CameraStreamThread(QThread):
                             "جدید برنامه (شامل EasyOCR) درست می‌شود؛ چیزی "
                             "روی سیستم نصب نکنید.")
                     self._plate_ocr_error = "" if _ocr_ok else "ocr-unavailable"
-                    # --- مسیر جایگزین «خوانش متن» (درخواست کاربر): اگر دتکتور
-                    # YOLO هیچ پلاکی پیدا نکرد ولی روی ناحیه‌ی زوم هستیم، کل
-                    # نمای زوم‌شده یک‌جا OCR می‌شود؛ اگر متنی با قالب پلاک
-                    # ایرانی خوانده شد، کل نما به‌عنوان باکس پلاک وارد ترکر
-                    # می‌شود و رأی‌گیری چندفریمی همان مسیر همیشگی را می‌رود.
-                    # این مسیر حتی اگر مدل YOLO خراب/ناسازگار باشد هم کار می‌کند.
+                    # --- مسیر فوری «خوانش متن» (درخواست کاربر: بدون چند ثانیه
+                    # انتظار): اگر دتکتور YOLO هیچ پلاکی پیدا نکرد ولی روی
+                    # ناحیه‌ی زوم هستیم، کل نمای زوم‌شده یک‌جا و سریع OCR
+                    # می‌شود؛ اگر متنی با قالب پلاک ایرانی خوانده شد، همان
+                    # لحظه رویداد ثبت می‌شود — بدون رأی‌گیری چندفریمی. این
+                    # مسیر حتی اگر مدل YOLO خراب/ناسازگار باشد هم کار می‌کند.
+                    _fast_plate = None
                     if not _pboxes and _zoomed and _ocr_ok:
                         try:
-                            _fb = self._plate_ocr.read_plate_from_view(_detect_frame)
+                            _fb = self._plate_ocr.read_plate_from_view(
+                                _detect_frame, max_width=640)
                             if _fb is not None:
                                 _ftext, _fconf = _fb
-                                _fh2, _fw2 = _detect_frame.shape[:2]
-                                _pboxes = [(0, 0, _fw2, _fh2,
-                                            max(0.55, float(_fconf)))]
+                                # ضدتکرار: همان پلاک تا ۱۵ ثانیه دوباره ثبت نشود
+                                _now0 = time.time()
+                                if _now0 - self._plate_fast_seen.get(_ftext, 0) >= 15:
+                                    self._plate_fast_seen[_ftext] = _now0
+                                    _fh2, _fw2 = _detect_frame.shape[:2]
+                                    _fast_plate = ((0, 0, _fw2, _fh2),
+                                                   _ftext, float(_fconf))
                         except Exception:
                             pass
-                    _pevents = self._plate_tracker.update(
-                        _pboxes, _detect_frame, self._plate_ocr)
+                    if _fast_plate is not None:
+                        # رویداد فوری؛ ترکر ریست می‌شود تا از همین نما رویداد
+                        # تکراری (با تأخیر) تولید نکند.
+                        _pevents = [_fast_plate]
+                        try:
+                            self._plate_tracker.reset()
+                        except Exception:
+                            pass
+                    else:
+                        _pevents = self._plate_tracker.update(
+                            _pboxes, _detect_frame, self._plate_ocr)
                     self._plate_update_error = ""
                 except Exception as e:
                     _pevents = []
@@ -1047,6 +1063,11 @@ class CameraStreamThread(QThread):
                     for _box, _text, _conf in _tracks:
                         _m, _s, _k = _ps2.find_match(_text) if _text else (None, 0.0, "none")
                         _draw_list.append((_to_full_frame(_box), _text, bool(_m)))
+                    # نتیجه‌ی فوری هم رسم شود (ترکر در این حالت ریست شده است)
+                    if _fast_plate is not None:
+                        _fxbox, _fxtext, _fxconf = _fast_plate
+                        _m3, _s3, _k3 = _ps2.find_match(_fxtext) if _fxtext else (None, 0.0, "none")
+                        _draw_list.append((_to_full_frame(_fxbox), _fxtext, bool(_m3)))
                 except Exception:
                     _draw_list = []
                 self._last_plate_detections = _draw_list

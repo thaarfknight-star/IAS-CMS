@@ -637,13 +637,22 @@ class PlateOCR:
             self.diag["ocr_empty"] += 1
         return ranked
 
-    def read_plate_from_view(self, crop_bgr):
-        """خوانش پلاک از کل نما (مسیر جایگزین وقتی دتکتور YOLO پلاکی پیدا
-        نکرد؛ مثلاً وقتی کاربر روی پلاک زوم کرده و کل نما عملاً خود پلاک
-        است). کل کراپ یک‌جا OCR می‌شود و اولین متنی که قالب پلاک ایرانی
-        داشته باشد برگردانده می‌شود. خروجی: (text, conf) یا None."""
+    def read_plate_from_view(self, crop_bgr, max_width=640):
+        """خوانش فوری پلاک از کل نما (مسیر جایگزین وقتی دتکتور YOLO پلاکی
+        پیدا نکرد؛ مثلاً وقتی کاربر روی پلاک زوم کرده و کل نما عملاً خود
+        پلاک است). برای سرعت، نما تا max_width کوچک می‌شود (متن پلاک در
+        حالت زوم به‌اندازه‌ی کافی بزرگ است)، بعد یک‌جا OCR می‌شود و اولین
+        متنی که قالب پلاک ایرانی داشته باشد برگردانده می‌شود.
+        خروجی: (text, conf) یا None."""
         if crop_bgr is None or crop_bgr.size == 0:
             return None
+        try:
+            h, w = crop_bgr.shape[:2]
+            if w > max_width and cv2 is not None:
+                _s = max_width / float(w)
+                crop_bgr = cv2.resize(crop_bgr, (max_width, max(1, int(h * _s))))
+        except Exception:
+            pass
         try:
             reads = self.read(crop_bgr)
         except Exception:
