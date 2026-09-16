@@ -720,7 +720,7 @@ class PlateTracker:
     """
 
     def __init__(self, confirm_reads=3, ocr_interval_s=1.0,
-                 track_ttl_s=4.0, cooldown_s=45.0):
+                 track_ttl_s=25.0, cooldown_s=45.0):
         self.confirm_reads = max(2, int(confirm_reads))
         self.ocr_interval_s = ocr_interval_s
         self.track_ttl_s = track_ttl_s
