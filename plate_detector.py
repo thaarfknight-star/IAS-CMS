@@ -20,7 +20,7 @@
        - easyocr با زبان فارسی ('fa') — مخصوص پلاک‌های ایرانی. مدل‌هایش در
          زمان بیلد پیش‌دانلود و داخل exe هستند (EASYOCR_MODULE_PATH)؛ پس
          در سیستم کاربر دانلودی انجام نمی‌شود.
-       - rapidocr (پکیج جدید) + مدل عربی PP-OCRv5 — موتور اصلی، سبک و بدون torch.
+       - rapidocr_onnxruntime — سبک و سریع، fallback.
      هر دو lazy-load می‌شوند و نبودشان باعث کرش نمی‌شود.
   ۴) پس‌پردازش متن:
      - نرمال‌سازی ارقام فارسی/عربی/لاتین (plate_store.normalize_plate_text)
@@ -84,22 +84,6 @@ def _bundle_dir():
     if meipass and os.path.isdir(meipass):
         return meipass
     return None
-
-
-def _plate_ocr_models_dir():
-    """پوشه‌ی مدل‌های RapidOCR عربی (plate_ocr_models).
-    در exe فریزشده: _internal/plate_ocr_models (با --add-data باندل شده)؛
-    در اجرای از سورس: پوشه‌ی plate_ocr_models کنار همین فایل."""
-    bundle = _bundle_dir()
-    if bundle:
-        p = os.path.join(bundle, "plate_ocr_models")
-        if os.path.isdir(p):
-            return p
-    here = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "plate_ocr_models")
-    if os.path.isdir(here):
-        return here
-    return ""
 
 
 def _configure_easyocr_bundled_models():
@@ -247,17 +231,13 @@ class PlateDetector:
         except Exception as e:
             self.load_error = f"خطا در بارگذاری مدل پلاک: {e}"
 
-    def detect(self, frame, conf=None):
-        """خروجی: لیست [(x1, y1, x2, y2, conf), ...] به پیکسل (قالب xyxy).
-        conf: آستانه‌ی اختیاری برای این فراخوانی (مثلاً کمتر وقتی روی ناحیه‌ی
-        زوم کار می‌کنیم تا کاندیدای بیشتری بگیریم)؛ None یعنی self.conf."""
+    def detect(self, frame):
+        """خروجی: لیست [(x1, y1, x2, y2, conf), ...] به پیکسل (قالب xyxy)."""
         self.diag["ticks"] += 1
         if not self.available:
             return []
         try:
-            results = self.model.predict(
-                frame, conf=self.conf if conf is None else conf,
-                verbose=False)
+            results = self.model.predict(frame, conf=self.conf, verbose=False)
             boxes = []
             for r in results:
                 if r.boxes is None:
@@ -274,41 +254,24 @@ class PlateDetector:
 
 # نمونه‌ی مشترک بین دوربین‌ها (مثل person_detector) + کش خطا
 _PLATE_DETECTOR = None
-_PLATE_DETECTOR_NEXT_RETRY = 0.0
-# شکست لود مدل دائمی نیست: هر ۱۸۰ ثانیه یک‌بار دوباره تلاش می‌شود تا
-# خطای گذرا (مثلاً فشار حافظه موقع استارت) کل سشن را از کار نیندازد.
-_PLATE_DETECTOR_RETRY_S = 180.0
+_PLATE_DETECTOR_TRIED = False
 _PLATE_DETECTOR_LOCK = threading.Lock()
 
 
 def get_shared_plate_detector():
-    """نمونه‌ی مشترک؛ اگر مدل در دسترس نباشد None برمی‌گرداند (نه نمونه‌ی خراب).
-    نمونه‌ی ناموفق هم کش می‌شود تا load_error آن برای دیاگ در دسترس باشد."""
-    global _PLATE_DETECTOR, _PLATE_DETECTOR_NEXT_RETRY
+    """نمونه‌ی مشترک؛ اگر مدل در دسترس نباشد None برمی‌گرداند (نه نمونه‌ی خراب)."""
+    global _PLATE_DETECTOR, _PLATE_DETECTOR_TRIED
     with _PLATE_DETECTOR_LOCK:
-        d = _PLATE_DETECTOR
-        if d is not None and d.available:
-            return d
-        now = time.monotonic()
-        if now < _PLATE_DETECTOR_NEXT_RETRY:
-            return None
-        _PLATE_DETECTOR_NEXT_RETRY = now + _PLATE_DETECTOR_RETRY_S
+        if _PLATE_DETECTOR_TRIED:
+            d = _PLATE_DETECTOR
+            return d if (d is not None and d.available) else None
+        _PLATE_DETECTOR_TRIED = True
         try:
             d = PlateDetector()
-            _PLATE_DETECTOR = d
+            _PLATE_DETECTOR = d if d.available else None
         except Exception:
             _PLATE_DETECTOR = None
-            return None
-        return d if d.available else None
-
-
-def get_plate_detector_load_error():
-    """متن خطای آخرین تلاش لود مدل YOLO (برای دیاگ)؛ خالی یعنی خطایی ثبت نشده."""
-    try:
-        d = _PLATE_DETECTOR
-        return (getattr(d, "load_error", "") or "")
-    except Exception:
-        return ""
+        return _PLATE_DETECTOR
 
 
 # --------------------------------------------------------------------------
@@ -508,7 +471,7 @@ def ocr_install_status():
     خروجی (easyocr_installed, rapidocr_installed)."""
     import importlib.util
     return (importlib.util.find_spec("easyocr") is not None,
-            importlib.util.find_spec("rapidocr") is not None)
+            importlib.util.find_spec("rapidocr_onnxruntime") is not None)
 
 
 def easyocr_models_bundled():
@@ -527,14 +490,9 @@ class PlateOCR:
 
     def __init__(self):
         self._easyocr_reader = None
-        self._easyocr_error = ""
-        # شکست لود دائمی نیست: اگر بالا نیامد، هر ۱۲۰ ثانیه یک‌بار دوباره
-        # تلاش می‌شود (روی سیستم ضعیف، تلاش اول ممکن است به‌خاطر فشار حافظه
-        # موقع استارت برنامه شکست بخورد و نباید کل سشن را از کار بیندازد).
-        self._easyocr_next_retry = 0.0
+        self._easyocr_tried = False
         self._rapidocr = None
-        self._rapidocr_error = ""
-        self._rapidocr_next_retry = 0.0
+        self._rapidocr_tried = False
         self._lock = threading.Lock()
         self.diag = {"ocr_calls": 0, "ocr_empty": 0, "ocr_skipped_blur": 0,
                      "rectified": 0, "rect_fallback": 0}
@@ -543,20 +501,17 @@ class PlateOCR:
     @property
     def engine_name(self):
         """نام موتور OCR فعالی که واقعاً بارگذاری شده (برای نمایش/دیباگ)."""
-        if getattr(self, "_rapidocr", None) is not None:
-            return "rapidocr(ar)"
         if getattr(self, "_easyocr_reader", None) is not None:
             return "easyocr(fa)"
+        if getattr(self, "_rapidocr", None) is not None:
+            return "rapidocr"
         return "none"
 
     def _get_easyocr(self):
         with self._lock:
-            if self._easyocr_reader is not None:
+            if self._easyocr_tried:
                 return self._easyocr_reader
-            now = time.monotonic()
-            if now < self._easyocr_next_retry:
-                return None
-            self._easyocr_next_retry = now + 120.0
+            self._easyocr_tried = True
             try:
                 import easyocr
                 # مدل‌ها از EASYOCR_MODULE_PATH خوانده می‌شوند؛ در بیلد رسمی
@@ -569,15 +524,10 @@ class PlateOCR:
                 # فقط تشخیص متن (recognizer) روی کراپ کوچک؛ detector روی کراپ
                 # لازم نیست ولی easyocr همیشه هر دو را لود می‌کند - برای همین
                 # lazy است و فقط وقتی پلاک‌خوان فعال باشد.
-                # فقط «fa»: allowlist فقط فارسی است و مدل انگلیسی فقط حافظه‌ی
-                # اضافه می‌گیرد (مهم برای سیستم‌های ۴ گیگ).
-                self._easyocr_reader = easyocr.Reader(["fa"], gpu=False,
+                self._easyocr_reader = easyocr.Reader(["fa", "en"], gpu=False,
                                                       **kwargs)
-                self._easyocr_error = ""
             except Exception as e:
-                err = "%s: %s" % (type(e).__name__, e)
-                self._easyocr_error = err[:300]
-                print(f"[plate_ocr] easyocr در دسترس نیست: {err}")
+                print(f"[plate_ocr] easyocr در دسترس نیست: {e}")
                 self._easyocr_reader = None
             return self._easyocr_reader
 
@@ -609,53 +559,15 @@ class PlateOCR:
 
     # ----------------------------------------------------------- rapidocr -
     def _get_rapidocr(self):
-        """موتور اصلی پلاک‌خوان: RapidOCR (پکیج جدید) + مدل عربی PP-OCRv5
-        که ارقام و حروف فارسی پلاک ایرانی را می‌خواند. کاملاً ONNX و بدون
-        torch؛ مدل‌ها از پوشه‌ی plate_ocr_models داخل باندل لود می‌شوند و
-        هیچ‌وقت چیزی روی سیستم کاربر دانلود نمی‌شود."""
         with self._lock:
-            if self._rapidocr is not None:
+            if self._rapidocr_tried:
                 return self._rapidocr
-            now = time.monotonic()
-            if now < self._rapidocr_next_retry:
-                return None
-            self._rapidocr_next_retry = now + 120.0
+            self._rapidocr_tried = True
             try:
-                from rapidocr import RapidOCR
+                from rapidocr_onnxruntime import RapidOCR
+                self._rapidocr = RapidOCR()
             except Exception as e:
-                self._rapidocr_error = ("پکیج rapidocr نصب/باندل نیست: %s" % e)[:300]
-                self._rapidocr = None
-                return None
-            try:
-                base = _plate_ocr_models_dir()
-                need = {
-                    "det": "PP-OCRv6_det_small.onnx",
-                    "cls": "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
-                    "rec": "arabic_PP-OCRv5_rec_mobile.onnx",
-                    "dict": "ppocrv5_arabic_dict.txt",
-                }
-                paths, missing = {}, []
-                for k, fn in need.items():
-                    p = os.path.join(base, fn) if base else ""
-                    if p and os.path.isfile(p):
-                        paths[k] = p
-                    else:
-                        missing.append(fn)
-                if missing:
-                    raise FileNotFoundError(
-                        "مدل‌های RapidOCR عربی در باندل نیست: " + ", ".join(missing))
-                self._rapidocr = RapidOCR(params={
-                    "Det.model_path": paths["det"],
-                    "Cls.model_path": paths["cls"],
-                    "Rec.model_path": paths["rec"],
-                    "Rec.rec_keys_path": paths["dict"],
-                })
-                self._rapidocr_error = ""
-                print("[plate_ocr] rapidocr عربی (PP-OCRv5) لود شد.")
-            except Exception as e:
-                err = "%s: %s" % (type(e).__name__, e)
-                self._rapidocr_error = err[:300]
-                print(f"[plate_ocr] rapidocr در دسترس نیست: {err}")
+                print(f"[plate_ocr] rapidocr در دسترس نیست: {e}")
                 self._rapidocr = None
             return self._rapidocr
 
@@ -664,45 +576,13 @@ class PlateOCR:
         if engine is None:
             return []
         try:
-            # API پکیج جدید rapidocr: خروجی شیء با txts/scores/boxes است
-            # (ورودی: تصویر BGR مثل خروجی cv2)
-            res = engine(crop)
-            txts = list(getattr(res, "txts", None) or [])
-            scores = list(getattr(res, "scores", None) or [])
-            # توجه: boxes آرایه‌ی numpy است؛ «or []» رویش خطا می‌دهد
-            _boxes = getattr(res, "boxes", None)
-            boxes = list(_boxes) if _boxes is not None else []
-            # مرتب‌سازی راست‌به‌چپ (ترتیب خوانش پلاک ایرانی) بر اساس مرکز x
-            frags = []
-            for i, text in enumerate(txts):
-                cx = 0.0
-                if i < len(boxes):
-                    try:
-                        cx = sum(float(p[0]) for p in boxes[i]) / max(1, len(boxes[i]))
-                    except Exception:
-                        cx = 0.0
-                conf = float(scores[i]) if i < len(scores) else 0.5
-                frags.append((text, conf, cx))
-            frags.sort(key=lambda f: f[2], reverse=True)
+            result, _elapse = engine(crop)
             out = []
-            raws = []  # تکه‌های نرمال‌شده (بدون اعتبارسنجی قالب) برای چسباندن
-            for text, conf, _cx in frags:
-                t = normalize_plate_text(text)
-                t = "".join(ch for ch in t
-                            if ch.isdigit() or "\u0600" <= ch <= "\u06FF")
-                if t:
-                    raws.append((t, conf))
-                    c = canonicalize_ocr_text(t)
-                    if c:
-                        out.append((c, conf, "rapidocr-ar"))
-            # دتکتور معمولاً پلاک را چند تکه می‌خواند (ارقام و حرف جدا)؛
-            # چسباندن همه‌ی تکه‌های خام به ترتیب راست‌به‌چپ هم یک کاندیدا
-            # می‌شود (اعتبارسنجی قالب روی متن چسبیده انجام می‌شود)
-            if len(raws) > 1:
-                joined = canonicalize_ocr_text("".join(t for t, _ in raws))
-                if joined:
-                    avg = sum(c for _, c in raws) / len(raws)
-                    out.append((joined, avg * 0.95, "rapidocr-ar"))
+            if result:
+                for _box, text, conf in result:
+                    t = canonicalize_ocr_text(text)
+                    if t:
+                        out.append((t, float(conf), "rapidocr"))
             return out
         except Exception:
             return []
@@ -718,8 +598,6 @@ class PlateOCR:
             "easyocr_fa": self._get_easyocr() is not None,
             "rapidocr": self._get_rapidocr() is not None,
             "models_bundled": easyocr_models_bundled(),
-            "easyocr_error": self._easyocr_error,
-            "rapidocr_error": self._rapidocr_error,
         }
 
     def read(self, crop_bgr):
@@ -738,12 +616,11 @@ class PlateOCR:
             self.diag["ocr_skipped_blur"] += 1
             return []
         candidates = []
-        # اولویت با rapidocr عربی (PP-OCRv5) است — موتور اصلی پلاک ایرانی،
-        # سبک و بدون torch
-        candidates.extend(self._read_rapidocr(crop))
-        # اگر چیزی نداد، easyocr فارسی هم امتحان می‌شود
+        # اولویت با easyocr فارسی (پلاک ایرانی) است
+        candidates.extend(self._read_easyocr(crop))
+        # اگر easyocr چیزی نداد، rapidocr هم امتحان می‌شود
         if not candidates:
-            candidates.extend(self._read_easyocr(crop))
+            candidates.extend(self._read_rapidocr(crop))
         # حذف تکراری‌ها (نگه‌داشتن بالاترین اطمینان برای هر متن)
         best = {}
         for text, conf, engine in candidates:
@@ -755,32 +632,6 @@ class PlateOCR:
         if not ranked:
             self.diag["ocr_empty"] += 1
         return ranked
-
-    def read_plate_from_view(self, crop_bgr, max_width=640):
-        """خوانش فوری پلاک از کل نما (مسیر جایگزین وقتی دتکتور YOLO پلاکی
-        پیدا نکرد؛ مثلاً وقتی کاربر روی پلاک زوم کرده و کل نما عملاً خود
-        پلاک است). برای سرعت، نما تا max_width کوچک می‌شود (متن پلاک در
-        حالت زوم به‌اندازه‌ی کافی بزرگ است)، بعد یک‌جا OCR می‌شود و اولین
-        متنی که قالب پلاک ایرانی داشته باشد برگردانده می‌شود.
-        خروجی: (text, conf) یا None."""
-        if crop_bgr is None or crop_bgr.size == 0:
-            return None
-        try:
-            h, w = crop_bgr.shape[:2]
-            if w > max_width and cv2 is not None:
-                _s = max_width / float(w)
-                crop_bgr = cv2.resize(crop_bgr, (max_width, max(1, int(h * _s))))
-        except Exception:
-            pass
-        try:
-            reads = self.read(crop_bgr)
-        except Exception:
-            return None
-        for text, conf, _engine in reads:
-            if _looks_like_plate(text):
-                self.diag["fallback_hits"] = self.diag.get("fallback_hits", 0) + 1
-                return text, float(conf)
-        return None
 
 
 _OCR_SINGLETON = None
@@ -865,15 +716,11 @@ class PlateTracker:
     """
 
     def __init__(self, confirm_reads=3, ocr_interval_s=1.0,
-                 track_ttl_s=25.0, cooldown_s=45.0):
+                 track_ttl_s=4.0, cooldown_s=45.0):
         self.confirm_reads = max(2, int(confirm_reads))
         self.ocr_interval_s = ocr_interval_s
         self.track_ttl_s = track_ttl_s
         self.cooldown_s = cooldown_s
-        # حالت «زوم‌بوست»: وقتی کاربر روی ناحیه‌ی پلاک زوم کرده، خوانش
-        # مشتاق‌تر می‌شود — OCR زودتر تکرار و تأیید با رأی کمتر صادر می‌شود،
-        # چون کاربر عمداً همان ناحیه را برای خواندن انتخاب کرده است.
-        self.zoom_boost = False
         self._tracks = []  # dict(box, reads, last_seen, last_ocr_ts, last_event_ts, ...)
         self._lock = threading.Lock()
         self.diag = {"ticks": 0, "detections_total": 0, "tracks_created": 0,
@@ -912,11 +759,9 @@ class PlateTracker:
             # ۳) حذف ترک‌های منقضی
             self._tracks = [t for t in self._tracks
                             if now - t["last_seen"] <= self.track_ttl_s]
-            # ۴) OCR تنبل + رأی‌گیری (در حالت زوم‌بوست مشتاق‌تر)
-            _ocr_gap = 0.4 if self.zoom_boost else self.ocr_interval_s
-            _need_votes = 2 if self.zoom_boost else self.confirm_reads
+            # ۴) OCR تنبل + رأی‌گیری
             for tr in self._tracks:
-                if now - tr["last_ocr_ts"] < _ocr_gap:
+                if now - tr["last_ocr_ts"] < self.ocr_interval_s:
                     continue
                 tr["last_ocr_ts"] = now
                 x1, y1, x2, y2 = _expand_box(tr["box"][:4], w, h)
@@ -946,7 +791,7 @@ class PlateTracker:
                     continue
                 self.diag["votes_cast"] += 1
                 tr["voted_text"] = voted
-                if votes >= _need_votes:
+                if votes >= self.confirm_reads:
                     if now - tr["last_event_ts"] >= self.cooldown_s:
                         tr["last_event_ts"] = now
                         tr["reads"] = []  # شروع تازه برای رأی بعدی
@@ -978,7 +823,7 @@ class PlateTracker:
 
 def reset_shared_plate_detector():
     """برای تست: کش نمونه‌ی مشترک را پاک می‌کند."""
-    global _PLATE_DETECTOR, _PLATE_DETECTOR_NEXT_RETRY
+    global _PLATE_DETECTOR, _PLATE_DETECTOR_TRIED
     with _PLATE_DETECTOR_LOCK:
         _PLATE_DETECTOR = None
-        _PLATE_DETECTOR_NEXT_RETRY = 0.0
+        _PLATE_DETECTOR_TRIED = False

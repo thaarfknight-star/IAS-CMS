@@ -53,10 +53,10 @@ jobs:
         pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
         pip install -r requirements.txt
         # --- موتور OCR پلاک‌خوان (اجباری برای خوانش متن پلاک) ---
-        # rapidocr (پکیج جدید) + مدل عربی PP-OCRv5 موتور اصلی خوانش پلاک
-        # فارسی است (سبک، ONNX، بدون torch)؛ easyocr فقط fallback.
-        # هر دو lazy-load می‌شوند (فقط وقتی پلاک‌خوان یک دوربین فعال شود).
-        pip install easyocr rapidocr
+        # easyocr موتور اصلی خوانش پلاک فارسی است؛ rapidocr سبک و کمکی.
+        # هر دو lazy-load می‌شوند (فقط وقتی پلاک‌خوان یک دوربین فعال شود)
+        # و مدل‌های easyocr در اولین استفاده‌ی واقعی دانلود می‌شوند.
+        pip install easyocr rapidocr-onnxruntime
         # --- کتابخانه‌ی خوانش نقشه‌های اتوکد (DXF) برای «نقشه ساختمان» ---
         # ezdxf خالص‌پایتونی و سبک است؛ PyInstaller آن را داخل exe می‌بندد
         # تا روی سیستم کاربر نهایی هیچ نصبی لازم نباشد.
@@ -261,16 +261,9 @@ jobs:
         }
         $pyiArgs += "--add-data=easyocr_models;easyocr_models"
         Write-Host "easyocr_models bundled."
-        # مدل‌های RapidOCR عربی (موتور اصلی پلاک‌خوان) از داخل ریپو باندل
-        # می‌شوند؛ روی سیستم کاربر هیچ دانلودی انجام نمی‌شود.
-        if (-not (Test-Path "plate_ocr_models\arabic_PP-OCRv5_rec_mobile.onnx")) {
-          throw "plate_ocr_models آماده نیست؛ مدل‌های RapidOCR عربی در ریپو نیستند."
-        }
-        $pyiArgs += "--add-data=plate_ocr_models;plate_ocr_models"
-        Write-Host "plate_ocr_models bundled."
         # موتورهای OCR: اجباری‌اند؛ نبودشان در محیط بیلد = خطای صریح، نه
         # بیلدِ بی‌صدا-ناقص.
-        foreach ($pkg in @("easyocr", "rapidocr")) {
+        foreach ($pkg in @("easyocr", "rapidocr_onnxruntime")) {
           python -c "import $pkg" 2>$null
           if ($LASTEXITCODE -ne 0) {
             throw "پکیج $pkg در محیط بیلد نصب نیست؛ بیلد پلاک‌خوان ناقص می‌ماند."
@@ -435,11 +428,10 @@ jobs:
           # plate_detector.py: _find_plate_model / EASYOCR_MODULE_PATH).
           "--include-data-files=plate_detector.pt=plate_detector.pt"
           "--include-data-dir=easyocr_models=easyocr_models"
-          "--include-data-dir=plate_ocr_models=plate_ocr_models"
           # این دو فقط با import تنبل (داخل تابع) صدا زده می‌شوند؛ نویتکا
           # خودش آن‌ها را پیدا نمی‌کند، پس صراحتاً include می‌شوند.
           "--include-package=easyocr"
-          "--include-package=rapidocr"
+          "--include-package=rapidocr_onnxruntime"
 
           # نکته‌ی مهم: این سه ماژول جداگانه از exclude‌های قبلی (torch.onnx،
           # torch.distributed و ...) هستند و به همان دلیل حذف نشدند - این‌ها
