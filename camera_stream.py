@@ -1011,6 +1011,22 @@ class CameraStreamThread(QThread):
                             "جدید برنامه (شامل EasyOCR) درست می‌شود؛ چیزی "
                             "روی سیستم نصب نکنید.")
                     self._plate_ocr_error = "" if _ocr_ok else "ocr-unavailable"
+                    # --- مسیر جایگزین «خوانش متن» (درخواست کاربر): اگر دتکتور
+                    # YOLO هیچ پلاکی پیدا نکرد ولی روی ناحیه‌ی زوم هستیم، کل
+                    # نمای زوم‌شده یک‌جا OCR می‌شود؛ اگر متنی با قالب پلاک
+                    # ایرانی خوانده شد، کل نما به‌عنوان باکس پلاک وارد ترکر
+                    # می‌شود و رأی‌گیری چندفریمی همان مسیر همیشگی را می‌رود.
+                    # این مسیر حتی اگر مدل YOLO خراب/ناسازگار باشد هم کار می‌کند.
+                    if not _pboxes and _zoomed and _ocr_ok:
+                        try:
+                            _fb = self._plate_ocr.read_plate_from_view(_detect_frame)
+                            if _fb is not None:
+                                _ftext, _fconf = _fb
+                                _fh2, _fw2 = _detect_frame.shape[:2]
+                                _pboxes = [(0, 0, _fw2, _fh2,
+                                            max(0.55, float(_fconf)))]
+                        except Exception:
+                            pass
                     _pevents = self._plate_tracker.update(
                         _pboxes, _detect_frame, self._plate_ocr)
                     self._plate_update_error = ""

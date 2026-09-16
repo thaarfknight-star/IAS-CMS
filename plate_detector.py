@@ -637,6 +637,23 @@ class PlateOCR:
             self.diag["ocr_empty"] += 1
         return ranked
 
+    def read_plate_from_view(self, crop_bgr):
+        """خوانش پلاک از کل نما (مسیر جایگزین وقتی دتکتور YOLO پلاکی پیدا
+        نکرد؛ مثلاً وقتی کاربر روی پلاک زوم کرده و کل نما عملاً خود پلاک
+        است). کل کراپ یک‌جا OCR می‌شود و اولین متنی که قالب پلاک ایرانی
+        داشته باشد برگردانده می‌شود. خروجی: (text, conf) یا None."""
+        if crop_bgr is None or crop_bgr.size == 0:
+            return None
+        try:
+            reads = self.read(crop_bgr)
+        except Exception:
+            return None
+        for text, conf, _engine in reads:
+            if _looks_like_plate(text):
+                self.diag["fallback_hits"] = self.diag.get("fallback_hits", 0) + 1
+                return text, float(conf)
+        return None
+
 
 _OCR_SINGLETON = None
 _OCR_LOCK = threading.Lock()
