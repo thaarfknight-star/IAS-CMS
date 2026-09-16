@@ -59,8 +59,10 @@ def normalize_plate_text(text):
 
 
 def prettify_plate(canonical):
-    """فرم کانونیکال را برای نمایش قشنگ می‌کند.
-    - پلاک خودروی ایرانی (۲ رقم + حرف + ۵ رقم): «۱۲ ب ۳۴۵ ۶۷»
+    """فرم کانونیکال را برای نمایش قشنگ می‌کند — دقیقاً به ترتیب دیداری
+    پلاک فیزیکی (از چپ‌به‌راست: ۲ رقم، حرف، ۳ رقم، کد ایران).
+    - پلاک خودروی ایرانی: «۴۰ ۶۲۹ ن ۴۳» (logical؛ در UI راست‌به‌چپ به‌صورت
+      «۴۳ ن ۶۲۹ ۴۰» دیده می‌شود، دقیقاً مثل پلاک واقعی)
     - پلاک موتورسیکلت ایرانی (۳ رقم بالا + ۱ رقم و حرف پایین): «۱۲۳ ۴ب»
     در غیر این صورت همان متن را برمی‌گرداند."""
     if not canonical:
@@ -70,13 +72,39 @@ def prettify_plate(canonical):
     fa = str.maketrans(_EN_DIGITS, _FA_DIGITS)
     if m:
         d1, letter, d2, code = m.groups()
-        return f"{d1.translate(fa)} {letter} {d2.translate(fa)} {code.translate(fa)}"
+        # ترتیب نمایشی معکوس کانونیکال است تا در UI راست‌به‌چپ،
+        # دقیقاً مثل پلاک فیزیکی دیده شود (کد ایران سمت راست).
+        return (f"{code.translate(fa)} {d2.translate(fa)} "
+                f"{letter} {d1.translate(fa)}")
     m2 = re.match(r"^([0-9]{3})([0-9])([^0-9]{1,2})$", canonical)
     if m2:
         top, bottom_digit, letter = m2.groups()
         return (f"{top.translate(fa)} "
                 f"{bottom_digit.translate(fa)}{letter}")
     return canonical
+
+
+def prettify_plate_html(canonical):
+    """نسخه‌ی HTML پلاک خودرو برای نمایش در جدول/لیبل (راست‌به‌چپ)؛
+    کد ایران داخل یک کادر مربعی می‌آید، دقیقاً مثل پلاک فیزیکی.
+    برای موتورسیکلت همان prettify_plate برمی‌گردد."""
+    if not canonical:
+        return ""
+    import re
+    m = re.match(r"^([0-9]{2})([^0-9]{1,2})([0-9]{3})([0-9]{2})$", canonical)
+    fa = str.maketrans(_EN_DIGITS, _FA_DIGITS)
+    if m:
+        d1, letter, d2, code = m.groups()
+        code_fa = code.translate(fa)
+        d2_fa = d2.translate(fa)
+        d1_fa = d1.translate(fa)
+        return (
+            '<span style="border:1.5px solid #7aa2ff; border-radius:4px; '
+            'padding:0px 6px; background:#16233a; font-weight:bold;">'
+            f'{code_fa}</span>'
+            f' {d2_fa} {letter} {d1_fa}'
+        )
+    return prettify_plate(canonical)
 
 
 # حروف مجاز پلاک‌های ایرانی (برای کمبوباکس فرم تعریف)

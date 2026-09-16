@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import (
 )
 
 from plate_store import (
-    plate_store, normalize_plate_text, prettify_plate,
+    plate_store, normalize_plate_text, prettify_plate, prettify_plate_html,
     validate_iranian_plate, validate_motorcycle_plate, validate_phone,
     detect_plate_kind, plate_kind_label,
     IRANIAN_PLATE_LETTERS, VEHICLE_TYPES, VEHICLE_COLORS,
@@ -380,7 +380,7 @@ class PlateFormDialog(QDialog):
         canon, kind, _err = self._current_canonical()
         if canon:
             emoji = "🏍" if kind == "motorcycle" else "🚗"
-            self.preview_label.setText(f"{emoji} {prettify_plate(canon)}")
+            self.preview_label.setText(f"{emoji} {prettify_plate_html(canon)}")
         else:
             self.preview_label.setText("—")
 
@@ -551,7 +551,9 @@ class PlateEventDetailDialog(QDialog):
         info = QFormLayout()
         status = "✅ تعریف‌شده" if event.get("is_defined") else "⚠️ تعریف‌نشده"
         info.addRow("وضعیت:", QLabel(status))
-        info.addRow("پلاک خوانده‌شده:", QLabel(event.get("plate_display", "") or "—"))
+        info.addRow("پلاک خوانده‌شده:",
+                   QLabel(prettify_plate_html(event.get("plate_text", ""))
+                          or "—"))
         info.addRow("مالک:", QLabel(event.get("owner_name", "") or "—"))
         info.addRow("دوربین:", QLabel(event.get("camera_name", "") or "—"))
         info.addRow("تاریخ (شمسی):", QLabel(event.get("date_j", "") or "—"))
@@ -988,12 +990,17 @@ class PlateLibraryPage(QWidget):
         for p in plates:
             r = self.plates_table.rowCount()
             self.plates_table.insertRow(r)
-            item0 = QTableWidgetItem(p["plate_display"])
+            item0 = QTableWidgetItem("")
             item0.setData(Qt.ItemDataRole.UserRole, p["id"])
-            font = item0.font()
-            font.setBold(True)
-            item0.setFont(font)
             self.plates_table.setItem(r, 0, item0)
+            # پلاک با کادر مربعی دور کد ایران (مثل پلاک فیزیکی)؛
+            # آیتم مخفی بالا فقط برای نگهداری ID سطر است.
+            plate_label = QLabel(prettify_plate_html(p.get("plate_text", "")))
+            plate_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            fnt = plate_label.font()
+            fnt.setBold(True)
+            plate_label.setFont(fnt)
+            self.plates_table.setCellWidget(r, 0, plate_label)
             kind_item = QTableWidgetItem(
                 plate_kind_label(p.get("plate_type", "other")))
             kind_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1229,11 +1236,14 @@ class PlateLibraryPage(QWidget):
             self.events_table.setItem(r, 1, QTableWidgetItem(ev.get("date_j", "")))
             self.events_table.setItem(r, 2, QTableWidgetItem(ev.get("time_g", "")))
             self.events_table.setItem(r, 3, QTableWidgetItem(ev.get("camera_name", "")))
-            plate_item = QTableWidgetItem(ev.get("plate_display", "") or "—")
-            font = plate_item.font()
-            font.setBold(True)
-            plate_item.setFont(font)
-            self.events_table.setItem(r, 4, plate_item)
+            # پلاک با کادر مربعی دور کد ایران (مثل پلاک فیزیکی)
+            plate_label = QLabel(
+                prettify_plate_html(ev.get("plate_text", "")) or "—")
+            plate_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            pfont = plate_label.font()
+            pfont.setBold(True)
+            plate_label.setFont(pfont)
+            self.events_table.setCellWidget(r, 4, plate_label)
             kind_item = QTableWidgetItem(
                 plate_kind_label(detect_plate_kind(ev.get("plate_text", ""))))
             kind_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
