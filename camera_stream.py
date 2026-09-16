@@ -774,6 +774,14 @@ class CameraStreamThread(QThread):
                     info.update(ocr.diag)
                 except Exception:
                     pass
+                # علت لود نشدن موتور OCR (متن واقعی خطا، نه فقط none)
+                try:
+                    _st = ocr.engines_status()
+                    info["ocr_init_error"] = (
+                        _st.get("easyocr_error", "") or
+                        _st.get("rapidocr_error", "") or "")
+                except Exception:
+                    pass
             info["ocr_models_bundled"] = bool(easyocr_models_bundled())
         except Exception:
             pass
@@ -957,9 +965,15 @@ class CameraStreamThread(QThread):
                 _pld = None
             self._plate_detector_available = bool(
                 _pld is not None and _pld.available)
-            # علت لود نشدن مدل را نگه می‌داریم تا در دیالوگ تشخیصی دیده شود
-            self._plate_detector_load_error = (
-                (_pld.load_error if _pld else "") or "")
+            # علت لود نشدن مدل را نگه می‌داریم تا در دیالوگ تشخیصی دیده شود؛
+            # حتی وقتی نمونه‌ی None برگشت، خطای کش‌شده‌ی آخرین تلاش خوانده می‌شود
+            try:
+                from plate_detector import get_plate_detector_load_error
+                self._plate_detector_load_error = (
+                    get_plate_detector_load_error() or "")
+            except Exception:
+                self._plate_detector_load_error = (
+                    (_pld.load_error if _pld else "") or "")
             if not self._plate_detector_status_emitted:
                 self._plate_detector_status_emitted = True
                 self.plate_detector_status_signal.emit(

@@ -258,24 +258,41 @@ class PlateDetector:
 
 # نمونه‌ی مشترک بین دوربین‌ها (مثل person_detector) + کش خطا
 _PLATE_DETECTOR = None
-_PLATE_DETECTOR_TRIED = False
+_PLATE_DETECTOR_NEXT_RETRY = 0.0
+# شکست لود مدل دائمی نیست: هر ۱۸۰ ثانیه یک‌بار دوباره تلاش می‌شود تا
+# خطای گذرا (مثلاً فشار حافظه موقع استارت) کل سشن را از کار نیندازد.
+_PLATE_DETECTOR_RETRY_S = 180.0
 _PLATE_DETECTOR_LOCK = threading.Lock()
 
 
 def get_shared_plate_detector():
-    """نمونه‌ی مشترک؛ اگر مدل در دسترس نباشد None برمی‌گرداند (نه نمونه‌ی خراب)."""
-    global _PLATE_DETECTOR, _PLATE_DETECTOR_TRIED
+    """نمونه‌ی مشترک؛ اگر مدل در دسترس نباشد None برمی‌گرداند (نه نمونه‌ی خراب).
+    نمونه‌ی ناموفق هم کش می‌شود تا load_error آن برای دیاگ در دسترس باشد."""
+    global _PLATE_DETECTOR, _PLATE_DETECTOR_NEXT_RETRY
     with _PLATE_DETECTOR_LOCK:
-        if _PLATE_DETECTOR_TRIED:
-            d = _PLATE_DETECTOR
-            return d if (d is not None and d.available) else None
-        _PLATE_DETECTOR_TRIED = True
+        d = _PLATE_DETECTOR
+        if d is not None and d.available:
+            return d
+        now = time.monotonic()
+        if now < _PLATE_DETECTOR_NEXT_RETRY:
+            return None
+        _PLATE_DETECTOR_NEXT_RETRY = now + _PLATE_DETECTOR_RETRY_S
         try:
             d = PlateDetector()
-            _PLATE_DETECTOR = d if d.available else None
+            _PLATE_DETECTOR = d
         except Exception:
             _PLATE_DETECTOR = None
-        return _PLATE_DETECTOR
+            return None
+        return d if d.available else None
+
+
+def get_plate_detector_load_error():
+    """متن خطای آخرین تلاش لود مدل YOLO (برای دیاگ)؛ خالی یعنی خطایی ثبت نشده."""
+    try:
+        d = _PLATE_DETECTOR
+        return (getattr(d, "load_error", "") or "")
+    except Exception:
+        return ""
 
 
 # --------------------------------------------------------------------------
@@ -494,9 +511,14 @@ class PlateOCR:
 
     def __init__(self):
         self._easyocr_reader = None
-        self._easyocr_tried = False
+        self._easyocr_error = ""
+        # شکست لود دائمی نیست: اگر بالا نیامد، هر ۱۲۰ ثانیه یک‌بار دوباره
+        # تلاش می‌شود (روی سیستم ضعیف، تلاش اول ممکن است به‌خاطر فشار حافظه
+        # موقع استارت برنامه شکست بخورد و نباید کل سشن را از کار بیندازد).
+        self._easyocr_next_retry = 0.0
         self._rapidocr = None
-        self._rapidocr_tried = False
+        self._rapidocr_error = ""
+        self._rapidocr_next_retry = 0.0
         self._lock = threading.Lock()
         self.diag = {"ocr_calls": 0, "ocr_empty": 0, "ocr_skipped_blur": 0,
                      "rectified": 0, "rect_fallback": 0}
@@ -513,9 +535,12 @@ class PlateOCR:
 
     def _get_easyocr(self):
         with self._lock:
-            if self._easyocr_tried:
+            if self._easyocr_reader is not None:
                 return self._easyocr_reader
-            self._easyocr_tried = True
+            now = time.monotonic()
+            if now < self._easyocr_next_retry:
+                return None
+            self._easyocr_next_retry = now + 120.0
             try:
                 import easyocr
                 # مدل‌ها از EASYOCR_MODULE_PATH خوانده می‌شوند؛ در بیلد رسمی
@@ -528,10 +553,15 @@ class PlateOCR:
                 # فقط تشخیص متن (recognizer) روی کراپ کوچک؛ detector روی کراپ
                 # لازم نیست ولی easyocr همیشه هر دو را لود می‌کند - برای همین
                 # lazy است و فقط وقتی پلاک‌خوان فعال باشد.
-                self._easyocr_reader = easyocr.Reader(["fa", "en"], gpu=False,
+                # فقط «fa»: allowlist فقط فارسی است و مدل انگلیسی فقط حافظه‌ی
+                # اضافه می‌گیرد (مهم برای سیستم‌های ۴ گیگ).
+                self._easyocr_reader = easyocr.Reader(["fa"], gpu=False,
                                                       **kwargs)
+                self._easyocr_error = ""
             except Exception as e:
-                print(f"[plate_ocr] easyocr در دسترس نیست: {e}")
+                err = "%s: %s" % (type(e).__name__, e)
+                self._easyocr_error = err[:300]
+                print(f"[plate_ocr] easyocr در دسترس نیست: {err}")
                 self._easyocr_reader = None
             return self._easyocr_reader
 
@@ -564,14 +594,20 @@ class PlateOCR:
     # ----------------------------------------------------------- rapidocr -
     def _get_rapidocr(self):
         with self._lock:
-            if self._rapidocr_tried:
+            if self._rapidocr is not None:
                 return self._rapidocr
-            self._rapidocr_tried = True
+            now = time.monotonic()
+            if now < self._rapidocr_next_retry:
+                return None
+            self._rapidocr_next_retry = now + 120.0
             try:
                 from rapidocr_onnxruntime import RapidOCR
                 self._rapidocr = RapidOCR()
+                self._rapidocr_error = ""
             except Exception as e:
-                print(f"[plate_ocr] rapidocr در دسترس نیست: {e}")
+                err = "%s: %s" % (type(e).__name__, e)
+                self._rapidocr_error = err[:300]
+                print(f"[plate_ocr] rapidocr در دسترس نیست: {err}")
                 self._rapidocr = None
             return self._rapidocr
 
@@ -602,6 +638,8 @@ class PlateOCR:
             "easyocr_fa": self._get_easyocr() is not None,
             "rapidocr": self._get_rapidocr() is not None,
             "models_bundled": easyocr_models_bundled(),
+            "easyocr_error": self._easyocr_error,
+            "rapidocr_error": self._rapidocr_error,
         }
 
     def read(self, crop_bgr):
@@ -859,7 +897,7 @@ class PlateTracker:
 
 def reset_shared_plate_detector():
     """برای تست: کش نمونه‌ی مشترک را پاک می‌کند."""
-    global _PLATE_DETECTOR, _PLATE_DETECTOR_TRIED
+    global _PLATE_DETECTOR, _PLATE_DETECTOR_NEXT_RETRY
     with _PLATE_DETECTOR_LOCK:
         _PLATE_DETECTOR = None
-        _PLATE_DETECTOR_TRIED = False
+        _PLATE_DETECTOR_NEXT_RETRY = 0.0

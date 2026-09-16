@@ -614,6 +614,7 @@ _PLATE_DIAG_ROWS = [
     ("وضعیت پلاک‌خوان", "enabled"),
     ("مدل تشخیص پلاک", "detector_available"),
     ("موتور OCR", "ocr_engine"),
+    ("علت لود نشدن OCR", "ocr_init_error"),
     ("مدل‌های EasyOCR داخل برنامه", "ocr_models_bundled"),
     ("دور تشخیص (ticks)", "ticks"),
     ("کادر پلاک پیداشده", "boxes_total"),

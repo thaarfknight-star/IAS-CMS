@@ -96,6 +96,23 @@ def _resolve_model_path(filename):
     return filename
 
 
+def _box_iou(a, b):
+    """IoU برای باکس‌های قالب (top, right, bottom, left) که detect برمی‌گرداند."""
+    top = max(a[0], b[0])
+    right = min(a[1], b[1])
+    bottom = min(a[2], b[2])
+    left = max(a[3], b[3])
+    iw = max(0, right - left)
+    ih = max(0, bottom - top)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    aa = max(0, a[1] - a[3]) * max(0, a[2] - a[0])
+    bb = max(0, b[1] - b[3]) * max(0, b[2] - b[0])
+    union = aa + bb - inter
+    return (inter / union) if union > 0 else 0.0
+
+
 class PersonDetector:
     _MODEL_FILENAME = "yolov8n.pt"
 
@@ -165,20 +182,37 @@ class PersonDetector:
                     frame,
                     imgsz=self.imgsz,
                     conf=self.conf_threshold,
-                    classes=[0],  # فقط کلاس «شخص» از ۸۰ کلاس COCO؛ سایر اشیا نادیده گرفته می‌شوند
+                    # شخص + دوچرخه/موتورسیکلت: مدل گاهی موتور پارک‌شده را
+                    # «شخص» تشخیص می‌دهد؛ باکس‌های وسیله‌نقلیه فقط برای
+                    # حذف این خطا گرفته می‌شوند و در خروجی نیستند.
+                    classes=[0, 1, 3],
                     verbose=False,
                 )
             except Exception as e:
                 print(f"خطا در تشخیص شخص: {e}")
                 return []
 
-        boxes = []
+        persons = []
+        vehicles = []
         for r in results:
             if r.boxes is None:
                 continue
-            for b in r.boxes.xyxy.tolist():
+            try:
+                clses = r.boxes.cls.tolist()
+            except Exception:
+                clses = [0] * len(r.boxes)
+            for b, c in zip(r.boxes.xyxy.tolist(), clses):
                 left, top, right, bottom = (int(v) for v in b)
-                boxes.append((top, right, bottom, left))
+                box = (top, right, bottom, left)
+                if int(c) == 0:
+                    persons.append(box)
+                else:
+                    vehicles.append(box)
+        # باکس «شخص»‌ی که هم‌پوشانی زیاد با دوچرخه/موتور دارد، خطای مدل
+        # است (مثل موتور پارک‌شده) و حذف می‌شود. عابر کنار موتور چون
+        # هم‌پوشانی کمی دارد، نگه داشته می‌شود.
+        boxes = [p for p in persons
+                 if not any(_box_iou(p, v) > 0.45 for v in vehicles)]
         return boxes
 
     def draw_boxes(self, frame, boxes):
