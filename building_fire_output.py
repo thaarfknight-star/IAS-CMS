@@ -12,8 +12,6 @@ building_fire_output.py — اتصال تشخیص حریق IAS-CMS به سیست
   3. serial_relay : رله‌ی USB سریال (مثلاً ماژول ۱ کاناله) که کنتاکت خشک
                     را به ورودی زون پنل وصل می‌کنید. مطمئن‌ترین روش برای
                     پنل‌های سنتی.
-  4. simulator    : ارسال به شبیه‌ساز محلی (fire_panel_simulator.py) برای
-                    تست بدون داشتن پنل واقعی.
 
 همه‌ی ارسال‌ها در ترد پس‌زمینه انجام می‌شوند تا UI قفل نشود، و نبود
 کتابخانه‌های اختیاری (pymodbus/pyserial) باعث کرش نمی‌شود.
@@ -33,7 +31,7 @@ _CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 DEFAULT_CONFIG = {
     "enabled": False,
-    "backend": "webhook",          # webhook | modbus_tcp | serial_relay | simulator
+    "backend": "webhook",          # webhook | modbus_tcp | serial_relay
     "webhook_url": "http://127.0.0.1:8910/api/fire-alarm",
     "webhook_method": "POST",
     # modbus
@@ -44,8 +42,6 @@ DEFAULT_CONFIG = {
     # serial relay
     "serial_port": "COM3",         # در ویندوز COMx ، در لینوکس /dev/ttyUSB0
     "serial_baud": 9600,
-    # simulator
-    "simulator_url": "http://127.0.0.1:8910/api/fire-alarm",
     # رفتار
     "auto_clear_seconds": 0,       # ۰ یعنی پاک‌سازی دستی؛ مثلاً ۶۰ = بعد از ۶۰ ثانیه ریست
     "trigger_on_smoke": True,      # دود هم پنل ساختمان را فعال کند؟
@@ -151,10 +147,6 @@ class BuildingFireOutput:
             if backend == "webhook":
                 return self._webhook(self.config.get("webhook_url"),
                                      self._payload(camera_name, kind, confidence, test, "trigger"))
-            elif backend == "simulator":
-                return self._webhook(self.config.get("simulator_url"),
-                                     self._payload(camera_name, kind, confidence, test, "trigger"),
-                                     label="شبیه‌ساز")
             elif backend == "modbus_tcp":
                 return self._modbus_write(True)
             elif backend == "serial_relay":
@@ -170,10 +162,6 @@ class BuildingFireOutput:
             if backend == "webhook":
                 return self._webhook(self.config.get("webhook_url"),
                                      self._payload("", "", 0.0, False, "clear"))
-            elif backend == "simulator":
-                return self._webhook(self.config.get("simulator_url"),
-                                     self._payload("", "", 0.0, False, "clear"),
-                                     label="شبیه‌ساز")
             elif backend == "modbus_tcp":
                 return self._modbus_write(False)
             elif backend == "serial_relay":

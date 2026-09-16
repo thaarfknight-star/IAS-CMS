@@ -38,11 +38,13 @@ class BuildingFireSettingsDialog(QDialog):
         form = QFormLayout(conn_group)
 
         self.cmb_backend = QComboBox()
-        self.cmb_backend.addItem("شبیه‌ساز (برای تست بدون پنل واقعی)", "simulator")
         self.cmb_backend.addItem("وب‌هوک HTTP (پنل تحت شبکه / رله هوشمند)", "webhook")
         self.cmb_backend.addItem("Modbus TCP (پنل‌های صنعتی)", "modbus_tcp")
         self.cmb_backend.addItem("رله‌ی USB سریال (کنتاکت خشک به زون پنل)", "serial_relay")
-        idx = self.cmb_backend.findData(self.cfg.get("backend", "simulator"))
+        _be = self.cfg.get("backend", "webhook")
+        if _be == "simulator":  # شبیه‌ساز حذف شده؛ به وب‌هوک مهاجرت می‌کند
+            _be = "webhook"
+        idx = self.cmb_backend.findData(_be)
         self.cmb_backend.setCurrentIndex(max(0, idx))
         self.cmb_backend.currentIndexChanged.connect(self._refresh_fields)
         form.addRow("روش:", self.cmb_backend)
@@ -50,9 +52,6 @@ class BuildingFireSettingsDialog(QDialog):
         self.webhook_url = QLineEdit(self.cfg.get("webhook_url", ""))
         self.webhook_url.setPlaceholderText("http://192.168.1.50:8080/api/alarm")
         form.addRow("آدرس Webhook:", self.webhook_url)
-
-        self.sim_url = QLineEdit(self.cfg.get("simulator_url", "http://127.0.0.1:8910/api/fire-alarm"))
-        form.addRow("آدرس شبیه‌ساز:", self.sim_url)
 
         self.modbus_host = QLineEdit(self.cfg.get("modbus_host", "192.168.1.100"))
         form.addRow("هاست Modbus:", self.modbus_host)
@@ -122,10 +121,9 @@ class BuildingFireSettingsDialog(QDialog):
         layout.addLayout(btn_row)
 
         hint = QLabel(
-            "💡 راهنمای تست بدون پنل واقعی:\n"
-            "۱) فایل fire_panel_simulator.py را اجرا کنید.\n"
-            "۲) روش اتصال را «شبیه‌ساز» بگذارید و «تست اتصال» را بزنید.\n"
-            "۳) باید در پنجره‌ی شبیه‌ساز آلارم را ببینید + صدای آژیر پخش شود."
+            "💡 راهنمای تست اتصال:\n"
+            "روش اتصال را انتخاب کنید، آدرس/مشخصات را وارد کنید و «تست اتصال» را بزنید؛\n"
+            "نتیجه‌ی تست همین‌جا نمایش داده می‌شود."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #7d8f99; font-size: 12px;")
@@ -147,11 +145,9 @@ class BuildingFireSettingsDialog(QDialog):
     def _refresh_fields(self):
         b = self.cmb_backend.currentData()
         is_webhook = (b == "webhook")
-        is_sim = (b == "simulator")
         is_modbus = (b == "modbus_tcp")
         is_serial = (b == "serial_relay")
         self.webhook_url.setEnabled(is_webhook)
-        self.sim_url.setEnabled(is_sim)
         self.modbus_host.setEnabled(is_modbus)
         self.modbus_port.setEnabled(is_modbus)
         self.modbus_coil.setEnabled(is_modbus)
@@ -168,7 +164,6 @@ class BuildingFireSettingsDialog(QDialog):
         self.cfg["enabled"] = self.chk_enabled.isChecked()
         self.cfg["backend"] = self.cmb_backend.currentData()
         self.cfg["webhook_url"] = self.webhook_url.text().strip()
-        self.cfg["simulator_url"] = self.sim_url.text().strip()
         self.cfg["modbus_host"] = self.modbus_host.text().strip()
         self.cfg["modbus_port"] = self.modbus_port.value()
         self.cfg["modbus_coil"] = self.modbus_coil.value()

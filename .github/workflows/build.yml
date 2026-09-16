@@ -325,45 +325,6 @@ jobs:
         $bundleFiles = (Get-ChildItem -Path $bundleDir -Recurse -File | Measure-Object).Count
         Write-Host "Build verification OK: _socket.pyd + plate_detector.pt + easyocr_models present, $bundleFiles files in bundle."
 
-    # ساخت EXE سبک برای شبیه‌ساز پنل اعلام حریق (fire_panel_simulator.py):
-    # فقط به PyQt6 + کتابخانه‌ی استاندارد پایتون نیاز دارد، پس در یکی دو
-    # دقیقه ساخته می‌شود. کاربر نهایی بدون نصب پایتون آن را اجرا می‌کند و
-    # پنجره‌ی شبیه‌ساز باز می‌شود - برای تست اتصال IAS-CMS به سیستم حریق
-    # ساختمان بدون داشتن پنل واقعی (رجوع کنید به پکیج ias-cms-fire-building).
-    # اگر این فایل در ریپو نباشد، step با هشدار رد می‌شود و بیلد اصلی را
-    # متوقف نمی‌کند.
-    - name: Build Fire Panel Simulator EXE (PyInstaller onefile)
-      if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.quick_test == 'true') }}
-      shell: pwsh
-      run: |
-        $ErrorActionPreference = "Stop"
-
-        if (-not (Test-Path "fire_panel_simulator.py")) {
-          Write-Host "WARNING: fire_panel_simulator.py در ریپو پیدا نشد؛ ساخت شبیه‌ساز رد شد."
-          exit 0
-        }
-
-        $simArgs = @(
-          "--onefile"
-          "--noconfirm"
-          "--windowed"
-          "--name=FirePanelSimulator"
-          "--distpath=dist"
-          "fire_panel_simulator.py"
-        )
-        if (Test-Path "assets\app.ico") { $simArgs += "--icon=assets\app.ico" }
-
-        Write-Host "PyInstaller simulator command: python -m PyInstaller $($simArgs -join ' ')"
-        python -m PyInstaller @simArgs
-
-        if ($LASTEXITCODE -ne 0) {
-          Write-Host "##[error] PyInstaller (شبیه‌ساز) با کد خروج $LASTEXITCODE شکست خورد."
-          throw "PyInstaller build of fire_panel_simulator.py failed with exit code $LASTEXITCODE"
-        }
-        if (-not (Test-Path "dist\FirePanelSimulator.exe")) {
-          throw "dist\FirePanelSimulator.exe ساخته نشد."
-        }
-        Write-Host "FirePanelSimulator.exe آماده است: $((Get-Item dist\FirePanelSimulator.exe).Length) بایت"
 
     - name: Build Executable with Nuitka (portable, compiled to machine code)
       if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.quick_test != 'true' }}
@@ -557,15 +518,13 @@ jobs:
     # پوشش هر سه حالت در یک آپلود: onefile فقط dist/CCTV_CMS.exe دارد،
     # standalone قدیمی پوشه‌ی dist/main.dist، و PyInstaller (quick_test) هم
     # پوشه‌ی dist/CCTV_CMS - هرکدام نبود، با if-no-files-found: ignore
-    # بدون خطا رد می‌شود. فایل FirePanelSimulator.exe هم (اگر ساخته شده
-    # باشد) در همین آرتیفکت کنار exe اصلی قرار می‌گیرد.
+    # بدون خطا رد می‌شود.
     - name: Upload Build Artifact
       uses: actions/upload-artifact@v4
       with:
         name: CCTV_CMS_Windows_Portable
         path: |
           dist/CCTV_CMS.exe
-          dist/FirePanelSimulator.exe
           dist/main.dist/**
           dist/CCTV_CMS/**
         if-no-files-found: ignore
