@@ -3,6 +3,8 @@
 تا مشکل RTL در NSIS نداشته باشیم).
 
 خروجی: bg_welcome.bmp / bg_dir.bmp / bg_install.bmp / bg_finish.bmp
+       + bg_uninstall.bmp / bg_uninstall_progress.bmp / bg_uninstall_finish.bmp
+       (منوی حذف‌کننده‌ی مستقل)
 ابعاد ثابت: 960×600 (با اندازه‌ی پنجره‌ی نصب‌کننده در installer.nsi هماهنگ است).
 
 اجرا در CI:
@@ -26,6 +28,8 @@ CARD = (36, 46, 52)
 BLUE = (15, 124, 193)
 BLUE_LIGHT = (42, 155, 216)
 GOLD = (212, 175, 55)
+RED = (200, 70, 70)
+RED_DARK = (120, 30, 30)
 TEXT = (233, 238, 241)
 MUTED = (155, 151, 140)
 WHITE = (255, 255, 255)
@@ -156,7 +160,7 @@ def screen_welcome(logo_full, logo_shield, version, fb, fr):
     except Exception:
         lx = W - 48
     tx = lx - 30
-    text_r(draw, (tx, 62), "ایمن آرا سورنا", fb, WHITE)
+    text_r(draw, (tx, 62), "سورنا", fb, WHITE)
     # نشان نسخه دقیقاً زیر تیتر، هم‌تراز با لبه‌ی راست
     pill_s = "نسخه‌ی " + version
     pw = text_size(draw, pill_s, fr) + 40
@@ -179,7 +183,7 @@ def screen_welcome(logo_full, logo_shield, version, fb, fr):
     card_h = 44 * len(feats) + 96
     rounded(draw, [cx0, cy0, cx1, cy0 + card_h], 18, CARD + (235,))
     draw.line([(cx0, cy0), (cx0, cy0 + card_h)], fill=BLUE + (255,), width=4)
-    text_r(draw, (cx1 - 24, cy0 + 30), "چرا ایمن آرا سورنا؟", fb, WHITE)
+    text_r(draw, (cx1 - 24, cy0 + 30), "چرا سورنا؟", fb, WHITE)
     yy = cy0 + 78
     for f_ in feats:
         draw.ellipse([cx1 - 44, yy + 6, cx1 - 24, yy + 26], fill=(46, 160, 67))
@@ -249,7 +253,89 @@ def screen_finish(logo_shield, version, fb, fr):
     draw_check(draw, cx, cy, 44, WHITE, 7)
     text_c(draw, (cx, 410), "نصب با موفقیت انجام شد", fb, WHITE)
     text_c(draw, (cx, 452),
-           "ایمن آرا سورنا نسخه " + version + " آماده‌ی استفاده است.", fr, MUTED)
+           "سورنا نسخه " + version + " آماده‌ی استفاده است.", fr, MUTED)
+    return img
+
+
+def screen_uninstall(logo_shield, version, fb, fr):
+    """منوی حذف‌کننده‌ی مستقل: چه چیزهایی برای همیشه پاک می‌شوند."""
+    img = add_glow(gradient_bg())
+    draw = ImageDraw.Draw(img, "RGBA")
+    # بلوک برند بالا-راست با لهجه‌ی قرمز
+    try:
+        logo = Image.open(logo_shield).convert("RGBA")
+        logo.thumbnail((128, 128), Image.LANCZOS)
+        lx = W - 48 - logo.width
+        img.paste(logo, (lx, 52), logo)
+    except Exception:
+        lx = W - 48
+    tx = lx - 30
+    text_r(draw, (tx, 62), "حذف کامل سورنا", fb, WHITE)
+    pill_s = "نسخه‌ی " + version
+    pw = text_size(draw, pill_s, fr) + 40
+    draw.rounded_rectangle([tx - pw, 126, tx, 166], radius=20, fill=RED_DARK)
+    text_c(draw, (tx - pw / 2, 146), pill_s, fr, WHITE)
+    text_r(draw, (tx, 188),
+           "بعد از حذف، هیچ اثری روی سیستم نمی‌ماند", fr, MUTED)
+    draw.rounded_rectangle([tx - 190, 228, tx, 234], radius=3, fill=RED)
+
+    # کارت موارد حذفی سمت چپ
+    items = [
+        "فایل‌ها و پوشه‌ی نصب برنامه",
+        "تنظیمات و دوربین‌ها",
+        "بانک چهره و سوابق پلاک‌ها",
+        "کلیدهای رجیستری و میان‌برها",
+        "پوشه‌های داده در AppData",
+        "فایل‌های موقت",
+    ]
+    cx0, cy0, cx1 = 40, 64, 400
+    card_h = 44 * len(items) + 96
+    rounded(draw, [cx0, cy0, cx1, cy0 + card_h], 18, CARD + (235,))
+    draw.line([(cx0, cy0), (cx0, cy0 + card_h)], fill=RED + (255,), width=4)
+    text_r(draw, (cx1 - 24, cy0 + 30), "این موارد پاک می‌شوند:", fb, WHITE)
+    yy = cy0 + 78
+    for it in items:
+        draw.ellipse([cx1 - 44, yy + 6, cx1 - 24, yy + 26], fill=RED)
+        # ضربدر داخل دایره
+        draw.line([(cx1 - 39, yy + 11), (cx1 - 29, yy + 21)], fill=WHITE, width=3)
+        draw.line([(cx1 - 29, yy + 11), (cx1 - 39, yy + 21)], fill=WHITE, width=3)
+        text_r(draw, (cx1 - 56, yy + 4), it, fr, TEXT)
+        yy += 44
+    # راهنمای پایین — با فاصله‌ی امن از دکمه‌های واقعی (y=506)
+    text_r(draw, (W - 48, 458),
+           "برای شروع، «حذف کامل» را بزنید. این عمل غیرقابل بازگشت است.", fr, MUTED)
+    return img
+
+
+def screen_uninstall_progress(logo_shield, version, fb, fr):
+    img = add_glow(gradient_bg())
+    img = header_band(img, "در حال حذف کامل",
+                      "سورنا | SORENA", logo_shield, version, fb, fr)
+    draw = ImageDraw.Draw(img, "RGBA")
+    text_r(draw, (W - 60, 190), "در حال پاک‌سازی…", fb, WHITE)
+    text_r(draw, (W - 60, 232),
+           "لطفاً تا پایان حذف صبر کنید و پنجره را نبندید.", fr, MUTED)
+    draw.rounded_rectangle([60, 300, W - 60, 344], radius=17,
+                           outline=(58, 75, 82, 255), width=2, fill=(20, 27, 32, 255))
+    draw.rounded_rectangle([60, 358, W - 60, 402], radius=14, fill=(20, 27, 32, 255))
+    return img
+
+
+def screen_uninstall_finish(logo_shield, version, fb, fr):
+    img = add_glow(gradient_bg())
+    draw = ImageDraw.Draw(img, "RGBA")
+    try:
+        logo = Image.open(logo_shield).convert("RGBA")
+        logo.thumbnail((150, 150), Image.LANCZOS)
+        img.paste(logo, ((W - logo.width) // 2, 56), logo)
+    except Exception:
+        pass
+    cx, cy, r = W // 2, 330, 44
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(46, 160, 67))
+    draw_check(draw, cx, cy, 44, WHITE, 7)
+    text_c(draw, (cx, 410), "حذف کامل انجام شد", fb, WHITE)
+    text_c(draw, (cx, 452),
+           "هیچ اثری از سورنا روی سیستم باقی نماند.", fr, MUTED)
     return img
 
 
@@ -276,6 +362,9 @@ def main():
         "bg_dir": screen_dir(logo_shield, args.version, fb, fr),
         "bg_install": screen_install(logo_shield, args.version, fb, fr),
         "bg_finish": screen_finish(logo_shield, args.version, fb, fr),
+        "bg_uninstall": screen_uninstall(logo_shield, args.version, fb, fr),
+        "bg_uninstall_progress": screen_uninstall_progress(logo_shield, args.version, fb, fr),
+        "bg_uninstall_finish": screen_uninstall_finish(logo_shield, args.version, fb, fr),
     }
     for name, img in screens.items():
         out = os.path.join(args.outdir, name + ".bmp")

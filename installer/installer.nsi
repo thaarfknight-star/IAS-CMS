@@ -81,14 +81,17 @@ Var Ctl6
 Var Ctl7
 Var Ctl8
 Var Ctl9
+Var FontReg
+Var FontBold
 
 ; ============================================================
 ; ابزارهای پایه‌ی UI (ورودی‌ها با Push، خروجی با Pop — متوازن)
 ; ============================================================
 Function SetClientSize
   ; Push w, Push h → ناحیه‌ی مشتری پنجره دقیقاً w×h پیکسل می‌شود
-  Pop $R0 ; w
+  ; (ترتیب Pop برعکس Push است: آخرین مقدار روی استک، همان h است)
   Pop $R1 ; h
+  Pop $R0 ; w
   System::Call 'user32::GetWindowRect(i $HWNDPARENT, @r9)'
   System::Call '*$9(i.r2, i.r3, i.r4, i.r5)'
   IntOp $R2 $R4 - $R2   ; outer w
@@ -229,6 +232,8 @@ Function MakeButton
   Call TrackCtl
   SetCtlColors $R1 "FFFFFF" "0F7CC1"
   Push $R1
+  Call ApplyFontBold
+  Push $R1
 FunctionEnd
 
 Function MakeGhostButton
@@ -240,6 +245,53 @@ Function MakeGhostButton
   Call TrackCtl
   SetCtlColors $R1 "E9EEF1" "242E34"
   Push $R1
+  Call ApplyFontBold
+  Push $R1
+FunctionEnd
+
+Function MakeRedButton
+  ; Push "متن" → دکمه‌ی خطر (قرمز تخت) برای حذف کامل
+  Pop $R0
+  nsDialogs::CreateControl "BUTTON" "${BS_PUSHBUTTON}|${BS_FLAT}|${WS_CHILD}|${WS_VISIBLE}" 0 0 0 10 10 "$R0"
+  Pop $R1
+  Push $R1
+  Call TrackCtl
+  SetCtlColors $R1 "FFFFFF" "A03030"
+  Push $R1
+  Call ApplyFontBold
+  Push $R1
+FunctionEnd
+
+; ============================================================
+; فونت واحد (وزیرمتن) — بدون نصب روی سیستم، فقط در حافظه‌ی پردازه
+; ============================================================
+Function LoadAppFonts
+  File /oname=$PLUGINSDIR\VazirReg.ttf "${GFXDIR}\Vazirmatn-Regular.ttf"
+  File /oname=$PLUGINSDIR\VazirBold.ttf "${GFXDIR}\Vazirmatn-Bold.ttf"
+  System::Call 'gdi32::AddFontResourceW(w "$PLUGINSDIR\VazirReg.ttf") i.s'
+  Pop $R0
+  System::Call 'gdi32::AddFontResourceW(w "$PLUGINSDIR\VazirBold.ttf") i.s'
+  Pop $R0
+  System::Call 'gdi32::CreateFont(i -16, i 0, i 0, i 0, i 400, i 0, i 0, i 0, i 1, i 0, i 0, i 0, i 0, t "Vazirmatn") i.s'
+  Pop $FontReg
+  System::Call 'gdi32::CreateFont(i -16, i 0, i 0, i 0, i 700, i 0, i 0, i 0, i 1, i 0, i 0, i 0, i 0, t "Vazirmatn") i.s'
+  Pop $FontBold
+FunctionEnd
+
+Function ApplyFontReg
+  ; Push hwnd → فونت معمولی وزیرمتن
+  Pop $R0
+  ${If} $FontReg != 0
+    SendMessage $R0 ${WM_SETFONT} $FontReg 1
+  ${EndIf}
+FunctionEnd
+
+Function ApplyFontBold
+  ; Push hwnd → فونت ضخیم وزیرمتن
+  Pop $R0
+  ${If} $FontBold != 0
+    SendMessage $R0 ${WM_SETFONT} $FontBold 1
+  ${EndIf}
 FunctionEnd
 
 ; ============================================================
@@ -284,6 +336,8 @@ Function ShowDir
   Push $DirEdit
   Call TrackCtl
   SetCtlColors $DirEdit "E9EEF1" "141B20"
+  Push $DirEdit
+  Call ApplyFontReg
   Push $DirEdit
   Push 96
   Push 314
@@ -416,6 +470,8 @@ Function ShowInstall
   Call TrackCtl
   SetCtlColors $StatusLabel "E9EEF1" "141B20"
   Push $StatusLabel
+  Call ApplyFontReg
+  Push $StatusLabel
   Push 80
   Push 366
   Push 800
@@ -475,6 +531,8 @@ Function ShowFinish
   Push $RunCheck
   Call TrackCtl
   SetCtlColors $RunCheck "E9EEF1" "0F1418"
+  Push $RunCheck
+  Call ApplyFontReg
   Push $RunCheck
   Push 620
   Push 492
@@ -598,28 +656,158 @@ UninstPage instfiles
 ; ============================================================
 ; حذف‌کننده‌ی مستقل — داخل پکیج setup قرار می‌گیرد تا حتی اگر
 ; uninstall.exe داخل پوشه‌ی نصب گم شده باشد، حذف کامل ممکن باشد.
+; رابط: منوی موارد حذفی → پیشرفت واقعی → پایان (هم‌فونت و هم‌تم با نصب‌کننده)
 ; کامپایل: makensis /DVERSION=2.0.0 /DUNINSTALLER_ONLY installer/installer.nsi
 ; ============================================================
 !ifdef UNINSTALLER_ONLY
+
+Function ShowUninstMenu
+  Push "bg_uninstall.bmp"
+  Call ShowBackground
+  ; مسیر نصب شناسایی‌شده
+  nsDialogs::CreateControl "STATIC" "${SS_LEFT}|${WS_CHILD}|${WS_VISIBLE}" 0 0 0 10 10 ""
+  Pop $StatusLabel
+  Push $StatusLabel
+  Call TrackCtl
+  SetCtlColors $StatusLabel "9BA79B" "141B20"
+  Push $StatusLabel
+  Call ApplyFontReg
+  Push $StatusLabel
+  Push 210
+  Push 508
+  Push 470
+  Push 32
+  Call PlaceCtl
+  IfFileExists "$INSTDIR\${EXE_NAME}" 0 +3
+    ${NSD_SetText} $StatusLabel "محل نصب: $INSTDIR"
+    Goto MenuBtns
+  ${NSD_SetText} $StatusLabel "فایل اصلی یافت نشد؛ فقط بقایا پاک‌سازی می‌شود."
+  MenuBtns:
+  Push "حذف کامل"
+  Call MakeRedButton
+  Pop $BtnNext
+  Push $BtnNext
+  Push 700
+  Push 506
+  Push 220
+  Push 44
+  Call PlaceCtl
+  ${NSD_OnClick} $BtnNext OnUninstStart
+  Push "انصراف"
+  Call MakeGhostButton
+  Pop $BtnCancel
+  Push $BtnCancel
+  Push 40
+  Push 506
+  Push 150
+  Push 44
+  Call PlaceCtl
+  ${NSD_OnClick} $BtnCancel OnUninstCancel
+FunctionEnd
+
+Function ShowUninstDoing
+  Push "bg_uninstall_progress.bmp"
+  Call ShowBackground
+  nsDialogs::CreateControl "msctls_progress32" "${WS_CHILD}|${WS_VISIBLE}" 0 0 0 10 10 ""
+  Pop $ProgressBar
+  Push $ProgressBar
+  Call TrackCtl
+  Push $ProgressBar
+  Push 80
+  Push 308
+  Push 800
+  Push 28
+  Call PlaceCtl
+  SendMessage $ProgressBar ${PBM_SETRANGE} 0 0x640000
+  SendMessage $ProgressBar ${PBM_SETBARCOLOR} 0 0x4646C1
+  nsDialogs::CreateControl "STATIC" "${SS_LEFT}|${WS_CHILD}|${WS_VISIBLE}" 0 0 0 10 10 "در حال حذف…"
+  Pop $StatusLabel
+  Push $StatusLabel
+  Call TrackCtl
+  SetCtlColors $StatusLabel "E9EEF1" "141B20"
+  Push $StatusLabel
+  Call ApplyFontReg
+  Push $StatusLabel
+  Push 80
+  Push 366
+  Push 800
+  Push 28
+  Call PlaceCtl
+FunctionEnd
+
+Function OnUninstStart
+  Call ClearScreen
+  Call ShowUninstDoing
+  System::Call 'user32::UpdateWindow(i $Dialog)'
+  SendMessage $ProgressBar ${PBM_SETPOS} 15 0
+  ${NSD_SetText} $StatusLabel "در حال حذف کامل…"
+  System::Call 'user32::UpdateWindow(i $StatusLabel)'
+  !insertmacro FULL_CLEANUP_BODY
+  SendMessage $ProgressBar ${PBM_SETPOS} 100 0
+  System::Call 'user32::UpdateWindow(i $ProgressBar)'
+  Sleep 400
+  Call ClearScreen
+  Call ShowUninstDone
+  System::Call 'user32::UpdateWindow(i $Dialog)'
+FunctionEnd
+
+Function ShowUninstDone
+  Push "bg_uninstall_finish.bmp"
+  Call ShowBackground
+  Push "بستن"
+  Call MakeGhostButton
+  Pop $BtnNext
+  Push $BtnNext
+  Push 700
+  Push 506
+  Push 220
+  Push 44
+  Call PlaceCtl
+  ${NSD_OnClick} $BtnNext OnUninstCancel
+FunctionEnd
+
+Function OnUninstCancel
+  Quit
+FunctionEnd
+
+Function ShowUninstMain
+  Call HideWizardButtons
+  Push 960
+  Push 600
+  Call SetClientSize
+  nsDialogs::Create 1018
+  Pop $Dialog
+  ${If} $Dialog == error
+    Abort
+  ${EndIf}
+  System::Call 'user32::SetWindowPos(i $Dialog, i 0, i 0, i 0, i 960, i 600, i 0x16)'
+  StrCpy $Ctl0 0
+  StrCpy $Ctl1 0
+  StrCpy $Ctl2 0
+  StrCpy $Ctl3 0
+  StrCpy $Ctl4 0
+  StrCpy $Ctl5 0
+  StrCpy $Ctl6 0
+  StrCpy $Ctl7 0
+  StrCpy $Ctl8 0
+  StrCpy $Ctl9 0
+  StrCpy $BgBmp 0
+  Call ShowUninstMenu
+  nsDialogs::Show
+FunctionEnd
+
+Page custom ShowUninstMain
+
 Function .onInit
   ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}" "InstallLocation"
   ${If} $0 != ""
     StrCpy $INSTDIR $0
   ${EndIf}
-  IfFileExists "$INSTDIR\${EXE_NAME}" FoundInst
-    MessageBox MB_YESNO|MB_ICONQUESTION \
-      "فایل اصلی برنامه در محل نصب پیدا نشد.$\nمحل بررسی‌شده: $INSTDIR$\n$\nآیا پوشه‌های داده و کلیدهای رجیستری پاک‌سازی شوند؟" \
-      IDYES DoClean
-    Quit
-  FoundInst:
-    MessageBox MB_YESNO|MB_ICONQUESTION \
-      "«${APP_NAME}» به‌طور کامل از این سیستم حذف شود؟$\n$\nمحل نصب: $INSTDIR$\n$\nهمه‌ی فایل‌ها، تنظیمات، دوربین‌ها، بانک چهره و سوابق پلاک‌ها برای همیشه پاک می‌شوند." \
-      IDYES DoClean
-    Quit
-  DoClean:
-    !insertmacro FULL_CLEANUP_BODY
-    MessageBox MB_ICONINFORMATION "حذف کامل انجام شد. هیچ اثری از «${APP_NAME}» روی سیستم باقی نماند."
-    Quit
+  InitPluginsDir
+  File /oname=$PLUGINSDIR\bg_uninstall.bmp "${GFXDIR}\bg_uninstall.bmp"
+  File /oname=$PLUGINSDIR\bg_uninstall_progress.bmp "${GFXDIR}\bg_uninstall_progress.bmp"
+  File /oname=$PLUGINSDIR\bg_uninstall_finish.bmp "${GFXDIR}\bg_uninstall_finish.bmp"
+  Call LoadAppFonts
 FunctionEnd
 !endif
 
@@ -633,5 +821,6 @@ Function .onInit
   File /oname=$PLUGINSDIR\bg_dir.bmp "${GFXDIR}\bg_dir.bmp"
   File /oname=$PLUGINSDIR\bg_install.bmp "${GFXDIR}\bg_install.bmp"
   File /oname=$PLUGINSDIR\bg_finish.bmp "${GFXDIR}\bg_finish.bmp"
+  Call LoadAppFonts
 FunctionEnd
 !endif

@@ -203,6 +203,27 @@ QTabBar::tab:selected {{
 """
 
 
+def _ensure_vazirmatn(app):
+    """فونت واحد برنامه: وزیرمتن (باندل‌شده در assets/fonts — بدون نصب روی ویندوز)."""
+    try:
+        from PyQt6.QtGui import QFontDatabase, QFont
+        if getattr(sys, "frozen", False):
+            base = os.path.join(sys._MEIPASS, "assets", "fonts")
+        else:
+            base = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "assets", "fonts")
+        for ttf in ("Vazirmatn-Regular.ttf", "Vazirmatn-Bold.ttf"):
+            p = os.path.join(base, ttf)
+            if os.path.exists(p):
+                QFontDatabase.addApplicationFont(p)
+        f = QFont("Vazirmatn")
+        f.setPointSize(10)
+        app.setFont(f)
+    except Exception:
+        pass
+
+
 def apply_theme(app):
     """اعمال تم تیره‌ی ایمن آرا سورنا روی کل برنامه."""
+    _ensure_vazirmatn(app)
     app.setStyleSheet(APP_STYLESHEET)
