@@ -2,10 +2,13 @@
 """اعمال «فایل آپدیت» ایمن آرا سورنا از داخل برنامه.
 
 گردش کار:
-  ۱) کاربر از هدر برنامه «⬆️ اعمال فایل آپدیت» را می‌زند و فایل
-     IAS-CMS-Update-vX.Y.Z.zip را انتخاب می‌کند.
-  ۲) فایل اعتبارسنجی می‌شود (ساختار zip، update_info.json، نسخه).
-  ۳) محتوا در <install>/pending_update استخراج می‌شود.
+  ۱) کاربر از هدر برنامه «⬆️ اعمال آپدیت» را می‌زند؛ دیالوگ مدرن و
+     هماهنگ با تم برنامه باز می‌شود و فایل IAS-CMS-Update-vX.Y.Z.zip
+     را انتخاب می‌کند.
+  ۲) فایل اعتبارسنجی می‌شود (ساختار zip، update_info.json، نسخه،
+     تطابق با مانیفست).
+  ۳) محتوا به‌صورت امن (بدون path traversal) در
+     <install>/pending_update استخراج می‌شود.
   ۴) updater.ps1 (داخل پوشه‌ی نصب) به‌صورت جداگانه اجرا می‌شود و
      برنامه بسته می‌شود؛ اسکریپت منتظر خروج کامل برنامه می‌ماند،
      فایل‌ها را با بکاپ جایگزین می‌کند و برنامه را دوباره اجرا می‌کند.
@@ -22,6 +25,8 @@ import sys
 import zipfile
 from pathlib import Path
 
+
+# ------------------------------------------------------------- ابزارها ---
 
 def is_frozen():
     return getattr(sys, "frozen", False)
@@ -53,6 +58,31 @@ def _ver_tuple(v):
     return tuple(parts)
 
 
+def _theme():
+    """پالت تم برنامه؛ اگر theme.py در دسترس نبود، مقادیر پیش‌فرض."""
+    try:
+        import theme as _t
+        return {
+            "BG_DEEP": _t.BG_DEEP, "BG_PANEL": _t.BG_PANEL,
+            "BG_INPUT": _t.BG_INPUT, "BORDER": _t.BORDER,
+            "TEXT": _t.TEXT, "TEXT_MUTED": _t.TEXT_MUTED,
+            "ACCENT": _t.ACCENT, "ACCENT_HOVER": _t.ACCENT_HOVER,
+            "DANGER": _t.DANGER, "LOGO_SHIELD": _t.LOGO_SHIELD,
+            "APP_NAME_FA": _t.APP_NAME_FA,
+        }
+    except Exception:
+        return {
+            "BG_DEEP": "#1b2227", "BG_PANEL": "#242e34",
+            "BG_INPUT": "#20282e", "BORDER": "#3a4b52",
+            "TEXT": "#e9eef1", "TEXT_MUTED": "#9b978c",
+            "ACCENT": "#0f7cc1", "ACCENT_HOVER": "#2a9bd8",
+            "DANGER": "#e74c3c", "LOGO_SHIELD": "",
+            "APP_NAME_FA": "ایمن آرا سورنا",
+        }
+
+
+# ------------------------------------------------------- اعتبارسنجی ---
+
 def validate_update_zip(zip_path):
     """اعتبارسنجی فایل آپدیت. خروجی: (ok, info_or_error_message)."""
     zp = Path(zip_path)
@@ -62,10 +92,16 @@ def validate_update_zip(zip_path):
         return False, "فایل انتخاب‌شده یک «فایل آپدیت» معتبر نیست."
     try:
         with zipfile.ZipFile(zp) as z:
-            names = z.namelist()
+            names = set(z.namelist())
             if "update_info.json" not in names:
                 return False, "ساختار فایل آپدیت ناقص است (update_info.json پیدا نشد)."
             info = json.loads(z.read("update_info.json").decode("utf-8"))
+            # تطابق فایل‌های مانیفست با محتوای واقعی zip
+            missing = [f["path"] for f in info.get("files", [])
+                       if f"files/{f['path']}" not in names]
+            if missing:
+                return False, (f"فایل آپدیت ناقص است؛ {len(missing)} فایل "
+                               f"در بسته پیدا نشد (مثلاً {missing[0]}).")
     except Exception as e:
         return False, f"خواندن فایل آپدیت ممکن نشد: {e}"
     if info.get("app") != "IAS-CMS":
@@ -82,99 +118,280 @@ def validate_update_zip(zip_path):
     return True, info
 
 
-def apply_update_zip(zip_path, parent=None):
-    """مرحله‌بندی آپدیت، اجرای updater.ps1 و بستن برنامه.
+def safe_extract_zip(zip_path, dest_dir):
+    """استخراج امن zip: جلوگیری از path traversal (../ و مسیر مطلق)."""
+    dest = Path(dest_dir).resolve()
+    dest.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path) as z:
+        for m in z.infolist():
+            name = m.filename.replace("\\", "/").lstrip("/")
+            if not name or name.startswith(".."):
+                raise ValueError(f"مسیر ناامن در فایل آپدیت: {m.filename}")
+            target = (dest / name).resolve()
+            if target != dest and not str(target).startswith(str(dest) + os.sep):
+                raise ValueError(f"مسیر ناامن در فایل آپدیت: {m.filename}")
+            if m.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with z.open(m) as src, open(target, "wb") as out:
+                    shutil.copyfileobj(src, out)
 
-    خروجی: (ok, message) — اگر ok باشد برنامه باید بسته شود.
-    """
-    from PyQt6.QtWidgets import QMessageBox, QApplication
 
-    if not is_frozen():
-        QMessageBox.information(
-            parent, "اعمال آپدیت",
-            "اعمال «فایل آپدیت» فقط در نسخه‌ی نصب‌شده کار می‌کند.\n"
-            "این حالتِ توسعه (اجرای از روی سورس) است.")
-        return False, "dev-mode"
+# ------------------------------------------------- دیالوگ مدرن آپدیت ---
 
-    ok, info = validate_update_zip(zip_path)
-    if not ok:
-        QMessageBox.warning(parent, "فایل آپدیت نامعتبر", info)
-        return False, info
+class UpdateDialog(__import__("PyQt6.QtWidgets", fromlist=["QDialog"]).QDialog):
+    """دیالوگ «فایل آپدیت» — مدرن، راست‌چین و هماهنگ با تم برنامه."""
 
-    cur_ver = get_app_version()
-    new_ver = info["version"]
-    n_files = len(info["files"])
-    total_mb = info.get("total_size", 0) / 1e6
-    if _ver_tuple(new_ver) == _ver_tuple(cur_ver):
-        extra = "\n(نسخه برابر است؛ فایل‌ها بازنویسی می‌شوند.)"
-    else:
-        extra = ""
-    ans = QMessageBox.question(
-        parent, "تأیید آپدیت",
-        f"آپدیت به نسخه‌ی {new_ver} اعمال شود؟\n\n"
-        f"• نسخه‌ی فعلی: {cur_ver}\n"
-        f"• تعداد فایل‌ها: {n_files} ({total_mb:.0f} مگابایت)\n"
-        f"• از نسخه‌ی قبلی بکاپ گرفته می‌شود.{extra}\n\n"
-        "برنامه بسته می‌شود، آپدیت اعمال و برنامه دوباره اجرا می‌شود.",
-        QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-    if ans != QMessageBox.Yes:
-        return False, "cancelled"
+    def __init__(self, parent=None):
+        from PyQt6.QtWidgets import (QVBoxLayout, QHBoxLayout, QLabel,
+                                     QPushButton, QFileDialog, QFrame)
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtGui import QPixmap
+        super().__init__(parent)
+        self._QFileDialog = QFileDialog
+        self._Qt = Qt
+        th = _theme()
+        self._th = th
+        self.zip_path = None
+        self.info = None
 
-    install_dir = get_install_dir()
-    ps1 = install_dir / "updater.ps1"
-    if not ps1.is_file():
-        QMessageBox.warning(
-            parent, "خطا",
-            "فایل updater.ps1 در پوشه‌ی نصب پیدا نشد؛\nآپدیت ممکن نیست.")
-        return False, "no-updater"
+        self.setWindowTitle("فایل آپدیت " + th["APP_NAME_FA"])
+        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.setMinimumWidth(540)
+        self.setStyleSheet(f"""
+            QDialog {{ background-color: {th['BG_DEEP']}; }}
+            QLabel {{ color: {th['TEXT']}; background: transparent; }}
+        """)
 
-    pending = install_dir / "pending_update"
-    try:
-        if pending.exists():
-            shutil.rmtree(pending)
-        pending.mkdir(parents=True)
-        with zipfile.ZipFile(zip_path) as z:
-            z.extractall(pending)
-    except Exception as e:
-        QMessageBox.warning(parent, "خطا", f"استخراج فایل آپدیت ممکن نشد:\n{e}")
-        return False, str(e)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 20, 24, 20)
+        root.setSpacing(14)
 
-    # اجرای جداگانه‌ی updater.ps1 و بستن برنامه
-    try:
-        creationflags = getattr(subprocess, "DETACHED_PROCESS", 0)
-        creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-        subprocess.Popen(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-             "-WindowStyle", "Hidden", "-File", str(ps1),
-             "-InstallDir", str(install_dir),
-             "-PendingDir", str(pending),
-             "-ExeName", "CCTV_CMS"],
-            creationflags=creationflags,
-            close_fds=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except Exception as e:
-        shutil.rmtree(pending, ignore_errors=True)
-        QMessageBox.warning(parent, "خطا", f"اجرای موتور آپدیت ممکن نشد:\n{e}")
-        return False, str(e)
+        # --- سربرگ: لوگو + عنوان ---
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        logo_lbl = QLabel()
+        if th["LOGO_SHIELD"] and os.path.isfile(th["LOGO_SHIELD"]):
+            px = QPixmap(th["LOGO_SHIELD"]).scaled(
+                56, 56, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+            logo_lbl.setPixmap(px)
+        head.addWidget(logo_lbl)
+        title_box = QVBoxLayout()
+        title_box.setSpacing(2)
+        t1 = QLabel("فایل آپدیت")
+        t1.setStyleSheet("font-size: 20px; font-weight: bold;")
+        t2 = QLabel(f"{th['APP_NAME_FA']} — نسخه‌ی فعلی {get_app_version()}")
+        t2.setStyleSheet(f"font-size: 12px; color: {th['TEXT_MUTED']};")
+        title_box.addWidget(t1)
+        title_box.addWidget(t2)
+        head.addLayout(title_box)
+        head.addStretch(1)
+        root.addLayout(head)
 
-    QMessageBox.information(
-        parent, "آپدیت شروع شد",
-        "برنامه بسته می‌شود و آپدیت اعمال می‌گردد.\n"
-        "پس از اتمام، برنامه به‌صورت خودکار دوباره اجرا می‌شود.")
-    QApplication.instance().quit()
-    # اگر به هر دلیلی quit عمل نکرد، خروج سخت
-    os._exit(0)
-    return True, "started"
+        # --- کارت انتخاب فایل ---
+        self.file_card = QFrame()
+        self.file_card.setStyleSheet(f"""
+            QFrame {{ background-color: {th['BG_PANEL']};
+                     border: 1px dashed {th['BORDER']};
+                     border-radius: 12px; }}
+        """)
+        fc_l = QVBoxLayout(self.file_card)
+        fc_l.setContentsMargins(18, 16, 18, 16)
+        fc_l.setSpacing(10)
+        row = QHBoxLayout()
+        self.pick_btn = QPushButton("📂 انتخاب فایل آپدیت…")
+        self.pick_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pick_btn.setStyleSheet(f"""
+            QPushButton {{ background-color: {th['BG_INPUT']};
+                          border: 1px solid {th['BORDER']};
+                          border-radius: 8px; padding: 10px 16px;
+                          font-size: 13px; font-weight: bold; }}
+            QPushButton:hover {{ border-color: {th['ACCENT']}; }}
+        """)
+        self.pick_btn.clicked.connect(self._pick_file)
+        row.addWidget(self.pick_btn)
+        self.file_lbl = QLabel("فایلی انتخاب نشده است")
+        self.file_lbl.setStyleSheet(f"font-size: 12px; color: {th['TEXT_MUTED']};")
+        self.file_lbl.setWordWrap(True)
+        row.addWidget(self.file_lbl, 1)
+        fc_l.addLayout(row)
+        root.addWidget(self.file_card)
+
+        # --- کارت اطلاعات آپدیت (پس از اعتبارسنجی) ---
+        self.info_card = QFrame()
+        self.info_card.setStyleSheet(f"""
+            QFrame {{ background-color: {th['BG_PANEL']};
+                     border: 1px solid {th['BORDER']};
+                     border-radius: 12px; }}
+        """)
+        ic_l = QVBoxLayout(self.info_card)
+        ic_l.setContentsMargins(18, 14, 18, 14)
+        ic_l.setSpacing(8)
+        self.ver_lbl = QLabel("")
+        self.ver_lbl.setStyleSheet("font-size: 16px; font-weight: bold;")
+        self.ver_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ic_l.addWidget(self.ver_lbl)
+        self.detail_lbl = QLabel("")
+        self.detail_lbl.setStyleSheet(f"font-size: 12px; color: {th['TEXT_MUTED']};")
+        self.detail_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.detail_lbl.setWordWrap(True)
+        ic_l.addWidget(self.detail_lbl)
+        self.note_lbl = QLabel("از نسخه‌ی قبلی بکاپ گرفته می‌شود؛ "
+                               "برنامه بسته و پس از آپدیت دوباره اجرا می‌شود.")
+        self.note_lbl.setStyleSheet(f"font-size: 11px; color: {th['TEXT_MUTED']};")
+        self.note_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.note_lbl.setWordWrap(True)
+        ic_l.addWidget(self.note_lbl)
+        root.addWidget(self.info_card)
+        self.info_card.setVisible(False)
+
+        # --- کارت خطا ---
+        self.err_card = QFrame()
+        self.err_card.setStyleSheet(f"""
+            QFrame {{ background-color: #3a2226;
+                     border: 1px solid {th['DANGER']};
+                     border-radius: 12px; }}
+        """)
+        ec_l = QVBoxLayout(self.err_card)
+        ec_l.setContentsMargins(18, 12, 18, 12)
+        self.err_lbl = QLabel("")
+        self.err_lbl.setStyleSheet(f"font-size: 12px; color: #f5b7b1;")
+        self.err_lbl.setWordWrap(True)
+        ec_l.addWidget(self.err_lbl)
+        root.addWidget(self.err_card)
+        self.err_card.setVisible(False)
+
+        root.addStretch(1)
+
+        # --- دکمه‌ها ---
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        self.cancel_btn = QPushButton("انصراف")
+        self.cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.cancel_btn.setStyleSheet(f"""
+            QPushButton {{ background-color: {th['BG_INPUT']};
+                          border: 1px solid {th['BORDER']};
+                          border-radius: 8px; padding: 10px 26px;
+                          font-size: 13px; }}
+            QPushButton:hover {{ border-color: {th['TEXT_MUTED']}; }}
+        """)
+        self.cancel_btn.clicked.connect(self.reject)
+        btns.addWidget(self.cancel_btn)
+        self.apply_btn = QPushButton("⬆️ اعمال آپدیت")
+        self.apply_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.apply_btn.setEnabled(False)
+        self.apply_btn.setStyleSheet(f"""
+            QPushButton {{ background-color: {th['ACCENT']}; color: white;
+                          border: none; border-radius: 8px;
+                          padding: 10px 30px; font-size: 14px;
+                          font-weight: bold; }}
+            QPushButton:hover:!disabled {{ background-color: {th['ACCENT_HOVER']}; }}
+            QPushButton:disabled {{ background-color: {th['BG_INPUT']};
+                                    color: {th['TEXT_MUTED']}; }}
+        """)
+        self.apply_btn.clicked.connect(self._apply)
+        btns.addWidget(self.apply_btn)
+        root.addLayout(btns)
+
+    # ------------------------------------------------- رفتار ---
+
+    def _pick_file(self):
+        path, _ = self._QFileDialog.getOpenFileName(
+            self, "انتخاب فایل آپدیت", str(Path.home()),
+            "فایل آپدیت ایمن آرا سورنا (*.zip)")
+        if not path:
+            return
+        self.file_lbl.setText(Path(path).name)
+        self.file_lbl.setStyleSheet(f"font-size: 12px; color: {self._th['TEXT']};")
+        ok, info = validate_update_zip(path)
+        if not ok:
+            self.zip_path, self.info = None, None
+            self.err_lbl.setText("⚠️ " + info)
+            self.err_card.setVisible(True)
+            self.info_card.setVisible(False)
+            self.apply_btn.setEnabled(False)
+            return
+        self.zip_path, self.info = path, info
+        self.err_card.setVisible(False)
+        cur, new = get_app_version(), info["version"]
+        n_files = len(info["files"])
+        total_mb = info.get("total_size", 0) / 1e6
+        if _ver_tuple(new) == _ver_tuple(cur):
+            ver_text = f"{cur} ← {new} (بازنویسی همین نسخه)"
+        else:
+            ver_text = f"{cur} ← {new}"
+        self.ver_lbl.setText(ver_text)
+        self.detail_lbl.setText(
+            f"{n_files} فایل جایگزین می‌شود ({total_mb:.0f} مگابایت) — "
+            "فقط فایل‌های تغییریافته، نه کل برنامه")
+        self.info_card.setVisible(True)
+        self.apply_btn.setEnabled(True)
+
+    def _apply(self):
+        from PyQt6.QtWidgets import QApplication
+        if not self.zip_path or not self.info:
+            return
+        if not is_frozen():
+            self.err_lbl.setText("ℹ️ اعمال «فایل آپدیت» فقط در نسخه‌ی نصب‌شده "
+                                 "کار می‌کند (این حالتِ توسعه است).")
+            self.err_card.setVisible(True)
+            return
+        self.apply_btn.setEnabled(False)
+        self.apply_btn.setText("در حال آماده‌سازی…")
+        QApplication.processEvents()
+
+        install_dir = get_install_dir()
+        ps1 = install_dir / "updater.ps1"
+        if not ps1.is_file():
+            self.err_lbl.setText("⚠️ فایل updater.ps1 در پوشه‌ی نصب پیدا نشد؛ "
+                                 "آپدیت ممکن نیست.")
+            self.err_card.setVisible(True)
+            self.apply_btn.setEnabled(True)
+            self.apply_btn.setText("⬆️ اعمال آپدیت")
+            return
+
+        pending = install_dir / "pending_update"
+        try:
+            if pending.exists():
+                shutil.rmtree(pending)
+            safe_extract_zip(self.zip_path, pending)
+        except Exception as e:
+            self.err_lbl.setText(f"⚠️ استخراج فایل آپدیت ممکن نشد:\n{e}")
+            self.err_card.setVisible(True)
+            self.apply_btn.setEnabled(True)
+            self.apply_btn.setText("⬆️ اعمال آپدیت")
+            return
+
+        try:
+            creationflags = getattr(subprocess, "DETACHED_PROCESS", 0)
+            creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            subprocess.Popen(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                 "-WindowStyle", "Hidden", "-File", str(ps1),
+                 "-InstallDir", str(install_dir),
+                 "-PendingDir", str(pending),
+                 "-ExeName", "CCTV_CMS"],
+                creationflags=creationflags,
+                close_fds=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            shutil.rmtree(pending, ignore_errors=True)
+            self.err_lbl.setText(f"⚠️ اجرای موتور آپدیت ممکن نشد:\n{e}")
+            self.err_card.setVisible(True)
+            self.apply_btn.setEnabled(True)
+            self.apply_btn.setText("⬆️ اعمال آپدیت")
+            return
+
+        self.accept()
+        QApplication.instance().quit()
+        os._exit(0)
 
 
 def show_apply_update_dialog(parent=None):
-    """دیالوگ انتخاب فایل آپدیت (از هدر برنامه صدا زده می‌شود)."""
-    from PyQt6.QtWidgets import QFileDialog
-    path, _ = QFileDialog.getOpenFileName(
-        parent, "انتخاب فایل آپدیت",
-        str(Path.home()),
-        "فایل آپدیت ایمن آرا سورنا (*.zip)")
-    if path:
-        apply_update_zip(path, parent=parent)
+    """دیالوگ مدرن انتخاب و اعمال «فایل آپدیت» (از هدر برنامه صدا زده می‌شود)."""
+    dlg = UpdateDialog(parent=parent)
+    dlg.exec()

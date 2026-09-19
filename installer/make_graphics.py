@@ -122,49 +122,50 @@ def draw_check(draw, cx, cy, size, color, width=5):
 
 def header_band(img, title, subtitle, logo_path, version=None,
                 font_bold=None, font_reg=None):
-    """نوار هدر مشترک صفحات داخلی: لوگوی کوچک + عنوان."""
+    """نوار هدر مشترک صفحات داخلی: لوگوی سپر + عنوان، تراز عمودی وسط."""
     draw = ImageDraw.Draw(img, "RGBA")
     draw.rectangle([0, 0, W, 118], fill=(16, 22, 26, 255))
     draw.line([(0, 118), (W, 118)], fill=BLUE + (255,), width=2)
     try:
         logo = Image.open(logo_path).convert("RGBA")
-        logo.thumbnail((76, 76), Image.LANCZOS)
-        img.paste(logo, (W - 24 - logo.width, 20), logo)
+        logo.thumbnail((88, 88), Image.LANCZOS)
+        lx = W - 28 - logo.width
+        img.paste(logo, (lx, (118 - logo.height) // 2), logo)
     except Exception:
-        pass
-    text_r(draw, (W - 120, 34), title, font_bold, WHITE)
-    text_r(draw, (W - 120, 74), subtitle, font_reg, MUTED)
+        lx = W - 28
+    tx = lx - 24
+    text_r(draw, (tx, 24), title, font_bold, WHITE)
+    text_r(draw, (tx, 68), subtitle, font_reg, MUTED)
     if version:
-        pill_s = "نسخه " + version
-        f = font_reg
-        pw = text_size(draw, pill_s, f) + 36
+        pill_s = "نسخه‌ی " + version
+        pw = text_size(draw, pill_s, font_reg) + 36
         draw.rounded_rectangle([24, 40, 24 + pw, 78], radius=19, fill=BLUE)
-        text_c(draw, (24 + pw / 2, 59), pill_s, f, WHITE)
+        text_c(draw, (24 + pw / 2, 59), pill_s, font_reg, WHITE)
     return img
 
 
 def screen_welcome(logo_full, logo_shield, version, fb, fr):
     img = add_glow(gradient_bg())
     draw = ImageDraw.Draw(img, "RGBA")
-    # لوگوی کامل بالا-راست
+    # --- بلوک برند بالا-راست: سپر تمیز + تیتر (تراز عمودی با هم) ---
     try:
-        logo = Image.open(logo_full).convert("RGBA")
-        logo.thumbnail((300, 300), Image.LANCZOS)
-        img.paste(logo, (W - 40 - logo.width, 36), logo)
+        logo = Image.open(logo_shield).convert("RGBA")
+        logo.thumbnail((128, 128), Image.LANCZOS)
+        lx = W - 48 - logo.width
+        img.paste(logo, (lx, 52), logo)
     except Exception:
-        pass
-    y = 230
-    text_r(draw, (W - 40, y), "نصب‌کننده‌ی", fr, MUTED)
-    text_r(draw, (W - 40, y + 52), "ایمن آرا سورنا", fb, WHITE)
-    # خط تزئینی آبی زیر عنوان
-    draw.rounded_rectangle([W - 40 - 220, y + 118, W - 40, y + 124], radius=3, fill=BLUE)
-    text_r(draw, (W - 40, y + 150),
-           "سامانه‌ی هوشمند مدیریت تصاویر مداربسته", fr, MUTED)
-    # نشان نسخه
-    pill_s = "نسخه " + version
+        lx = W - 48
+    tx = lx - 30
+    text_r(draw, (tx, 62), "ایمن آرا سورنا", fb, WHITE)
+    # نشان نسخه دقیقاً زیر تیتر، هم‌تراز با لبه‌ی راست
+    pill_s = "نسخه‌ی " + version
     pw = text_size(draw, pill_s, fr) + 40
-    draw.rounded_rectangle([W - 40 - pw, y + 196, W - 40, y + 236], radius=20, fill=BLUE)
-    text_c(draw, (W - 40 - pw / 2, y + 216), pill_s, fr, WHITE)
+    draw.rounded_rectangle([tx - pw, 126, tx, 166], radius=20, fill=BLUE)
+    text_c(draw, (tx - pw / 2, 146), pill_s, fr, WHITE)
+    text_r(draw, (tx, 188),
+           "سامانه‌ی هوشمند مدیریت تصاویر مداربسته", fr, MUTED)
+    # خط تزئینی آبی زیر توضیح
+    draw.rounded_rectangle([tx - 190, 228, tx, 234], radius=3, fill=BLUE)
 
     # کارت ویژگی‌ها سمت چپ
     feats = [
@@ -174,7 +175,7 @@ def screen_welcome(logo_full, logo_shield, version, fb, fr):
         "نقشه‌ی ساختمان و کنترل تردد",
         "بدون نیاز به نصب هیچ‌چیز",
     ]
-    cx0, cy0, cx1 = 40, 60, 380
+    cx0, cy0, cx1 = 40, 64, 380
     card_h = 44 * len(feats) + 96
     rounded(draw, [cx0, cy0, cx1, cy0 + card_h], 18, CARD + (235,))
     draw.line([(cx0, cy0), (cx0, cy0 + card_h)], fill=BLUE + (255,), width=4)
@@ -185,9 +186,9 @@ def screen_welcome(logo_full, logo_shield, version, fb, fr):
         draw_check(draw, cx1 - 34, yy + 16, 16, WHITE, 3)
         text_r(draw, (cx1 - 56, yy + 4), f_, fr, TEXT)
         yy += 44
-    # راهنمای پایین (بالای دکمه‌ها)
-    text_r(draw, (W - 40, H - 120),
-           "برای شروع نصب، روی دکمه‌ی «شروع نصب» کلیک کنید.", fr, MUTED)
+    # راهنمای پایین — با فاصله‌ی امن از دکمه‌های واقعی (y=506)
+    text_r(draw, (W - 48, 458),
+           "برای ادامه، «شروع نصب» را بزنید.", fr, MUTED)
     return img
 
 
