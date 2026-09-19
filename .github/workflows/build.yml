@@ -549,24 +549,41 @@ jobs:
     - name: Fetch previous manifest (for diff update)
       if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
       shell: pwsh
+      # این استپ best-effort است: نبود منیفست قبلی فقط یعنی آپدیت full می‌شود، پس هیچ‌وقت نباید بیلد را قرمز کند
+      continue-on-error: true
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
         $prevDir = "prev_manifest"
         New-Item -ItemType Directory -Path $prevDir -Force | Out-Null
+        $runId = ""
         try {
-          $runId = gh run list --workflow build.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>$null
-          if ($runId) {
-            gh run download $runId -n IAS-CMS-manifest -D $prevDir 2>$null
+          $out = @(gh run list --workflow build.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>&1)
+          $code = $LASTEXITCODE
+          $txt = "$($out -join ' ')".Trim()
+          Write-Host "gh run list exit=$code out=[$txt]"
+          if ($code -eq 0 -and $txt -ne "" -and $txt -ne "null") { $runId = $txt }
+        } catch {
+          Write-Host "gh run list threw: $_"
+        }
+        if ($runId -ne "") {
+          try {
+            gh run download $runId -n IAS-CMS-manifest -D $prevDir 2>&1 | Out-String | Write-Host
+            Write-Host "gh run download exit=$LASTEXITCODE"
+          } catch {
+            Write-Host "gh run download threw: $_"
+          }
+          if (Test-Path (Join-Path $prevDir "manifest.json")) {
             Write-Host "previous manifest downloaded from run $runId"
           } else {
-            Write-Host "no previous successful run; update will be full payload"
+            Write-Host "download did not yield manifest.json; update will be full payload"
           }
-        } catch {
-          Write-Host "previous manifest unavailable (first installer build?): $_"
+        } else {
+          Write-Host "no previous successful run; update will be full payload"
         }
         $mf = Join-Path $prevDir "manifest.json"
         if (Test-Path $mf) { "PREV_MANIFEST=$mf" >> $env:GITHUB_ENV } else { "PREV_MANIFEST=" >> $env:GITHUB_ENV }
+        $LASTEXITCODE = 0
 
     - name: Build update package (diff)
       if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
