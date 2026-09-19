@@ -48,6 +48,7 @@ ShowInstDetails nevershow
 Var Dialog
 Var BgCtl
 Var BgBmp
+Var BgFile
 Var BtnNext
 Var BtnBack
 Var BtnCancel
@@ -186,8 +187,10 @@ Function PlaceCtl
 FunctionEnd
 
 Function ShowBackground
-  ; Push "bg_x.bmp" (نام فایل داخل PLUGINSDIR)
-  Pop $R0
+  ; ورودی: نام فایل BMP روی استک (مثلاً "bg_welcome.bmp").
+  ; نکته: اسم فایل در $BgFile (متغیر اختصاصی) نگه داشته می‌شود، چون
+  ; TrackCtl و PlaceCtl رجیسترهای $R0 تا $R4 را بازنویسی می‌کنند.
+  Pop $BgFile
   nsDialogs::CreateControl "STATIC" "${SS_BITMAP}|${WS_CHILD}|${WS_VISIBLE}" 0 0 0 10 10 ""
   Pop $BgCtl
   Push $BgCtl
@@ -198,7 +201,7 @@ Function ShowBackground
   Push 960
   Push 600
   Call PlaceCtl
-  System::Call 'user32::LoadImage(i 0, t "$PLUGINSDIR\$R0", i ${IMAGE_BITMAP}, i 0, i 0, i ${LR_LOADFROMFILE}) i.s'
+  System::Call 'user32::LoadImage(i 0, t "$PLUGINSDIR\$BgFile", i ${IMAGE_BITMAP}, i 0, i 0, i ${LR_LOADFROMFILE}) i.s'
   Pop $BgBmp
   SendMessage $BgCtl ${STM_SETIMAGE} ${IMAGE_BITMAP} $BgBmp
 FunctionEnd
