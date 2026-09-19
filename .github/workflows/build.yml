@@ -549,13 +549,15 @@ jobs:
     - name: Fetch previous manifest (for diff update)
       if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
       shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
         $prevDir = "prev_manifest"
         New-Item -ItemType Directory -Path $prevDir -Force | Out-Null
         try {
-          $runId = gh run list --workflow build.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          $runId = gh run list --workflow build.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId' 2>$null
           if ($runId) {
-            gh run download $runId -n IAS-CMS-manifest -D $prevDir
+            gh run download $runId -n IAS-CMS-manifest -D $prevDir 2>$null
             Write-Host "previous manifest downloaded from run $runId"
           } else {
             Write-Host "no previous successful run; update will be full payload"
