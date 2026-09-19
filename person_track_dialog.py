@@ -813,8 +813,9 @@ class PersonTrackPage(QWidget):
         viol_btn_row = QHBoxLayout()
         self.viol_sound_chk = QCheckBox("🔊 هشدار صوتی تخلف")
         try:
+            from alarm_sound import load_config as _load_alarm_cfg
             self.viol_sound_chk.setChecked(
-                str(person_store.get_setting("floor_violation_sound", "1")) == "1")
+                bool(_load_alarm_cfg().get("violation_enabled", True)))
         except Exception:
             pass
         self.viol_sound_chk.toggled.connect(self._on_violation_sound_toggled)
@@ -1060,7 +1061,15 @@ class PersonTrackPage(QWidget):
         self._on_access_person_changed()
 
     def _on_violation_sound_toggled(self, checked):
-        person_store.set_setting("floor_violation_sound", "1" if checked else "0")
+        try:
+            from alarm_sound import set_sound_enabled
+            set_sound_enabled("violation", bool(checked))
+        except Exception:
+            pass
+        try:
+            person_store.set_setting("floor_violation_sound", "1" if checked else "0")
+        except Exception:
+            pass
 
     def refresh_violations(self):
         """به‌روزرسانی جدول تخلفات (از main.py هم هنگام تخلف تازه صدا زده می‌شود)."""

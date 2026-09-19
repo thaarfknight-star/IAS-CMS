@@ -18,7 +18,18 @@ function Log([string]$m) {
     try { Add-Content -Path $logFile -Value $line -Encoding UTF8 } catch {}
 }
 
-Log("=== updater started (target v?) ===")
+# خطای مهلک: هم در لاگ، هم با پنجره‌ی پیام قابل‌مشاهده (نه سکوت)
+try { Add-Type -AssemblyName System.Windows.Forms } catch {}
+function Show-Error([string]$m) {
+    Log("ERROR: $m")
+    try {
+        [System.Windows.Forms.MessageBox]::Show(
+            "$m`n`nجزئیات در فایل update.log (پوشه‌ی نصب) ثبت شد.",
+            "خطای آپدیت ایمن آرا سورنا", "OK", "Error") | Out-Null
+    } catch {}
+}
+
+Log("=== updater started === InstallDir=$InstallDir PendingDir=$PendingDir ExeName=$ExeName")
 
 # ۱) انتظار برای خروج کامل برنامه (حداکثر ۱۲۰ ثانیه)
 $waited = 0
@@ -29,20 +40,21 @@ while ($waited -lt 120) {
     $waited++
 }
 if (Get-Process -Name $ExeName -ErrorAction SilentlyContinue) {
-    Log("ERROR: app still running after 120s, aborting update")
+    Show-Error("برنامه‌ی ایمن آرا سورنا بعد از ۱۲۰ ثانیه هنوز باز است؛ " +
+               "آپدیت لغو شد. لطفاً برنامه را دستی ببندید و دوباره تلاش کنید.")
     exit 2
 }
 
 # ۲) خواندن مشخصات آپدیت
 $infoPath = Join-Path $PendingDir "update_info.json"
 if (-not (Test-Path $infoPath)) {
-    Log("ERROR: update_info.json not found in $PendingDir")
+    Show-Error("فایل update_info.json در پوشه‌ی pending_update پیدا نشد؛ آپدیت لغو شد.")
     exit 3
 }
 try {
     $info = Get-Content -Path $infoPath -Raw -Encoding UTF8 | ConvertFrom-Json
 } catch {
-    Log("ERROR: cannot parse update_info.json : $_")
+    Show-Error("خواندن update_info.json ممکن نشد: $_")
     exit 4
 }
 Log(("update v{0} (prev v{1}): {2} files, {3} removed" -f $info.version, $info.prev_version, $info.files.Count, $info.removed.Count))
@@ -116,17 +128,31 @@ try {
 try { Remove-Item -LiteralPath $PendingDir -Recurse -Force } catch {}
 
 if ($copyFail -gt 0 -or $badHash -gt 0) {
-    Log(("update FINISHED WITH ERRORS: copyFail={0} badHash={1}" -f $copyFail, $badHash))
+    Show-Error(("آپدیت با خطا تمام شد (copyFail={0} badHash={1})؛ " +
+                "برنامه دوباره اجرا نشد تا وضعیت ناقص نماند." -f $copyFail, $badHash))
     exit 5
 }
 
 Log(("update to v{0} OK" -f $info.version))
 
-# ۸) اجرای مجدد برنامه
+# ۸) اجرای مجدد برنامه + راستی‌آزمایی اینکه واقعاً بالا آمد
 try {
     Start-Process -FilePath (Join-Path $InstallDir ($ExeName + ".exe")) -WorkingDirectory $InstallDir
-    Log("app relaunched")
+    $relaunched = $false
+    for ($i = 0; $i -lt 10; $i++) {
+        Start-Sleep -Milliseconds 500
+        if (Get-Process -Name $ExeName -ErrorAction SilentlyContinue) {
+            $relaunched = $true
+            break
+        }
+    }
+    if ($relaunched) {
+        Log("app relaunched")
+    } else {
+        Show-Error("فایل‌ها آپدیت شدند ولی اجرای مجدد برنامه ممکن نشد؛ " +
+                   "لطفاً برنامه را دستی اجرا کنید.")
+    }
 } catch {
-    Log(("WARN relaunch failed: {0}" -f $_))
+    Show-Error("اجرای مجدد برنامه ممکن نشد: $_")
 }
 exit 0

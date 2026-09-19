@@ -72,12 +72,12 @@ class FireAlarmPage(QWidget):
         self.camera_checklist.setMaximumHeight(130)
         self.camera_checklist.itemChanged.connect(self._on_camera_check_changed)
         vision_layout.addWidget(self.camera_checklist)
-        # صدای آلارم: اختیاری، پیش‌فرض خاموش
+        # صدای آژیر حریق: اختیاری، پیش‌فرض خاموش (مستقل از بقیه‌ی صداها)
         sound_row = QHBoxLayout()
         from alarm_sound import load_config, save_config
         self._alarm_cfg = load_config()
-        self.sound_enabled_chk = QCheckBox("🔊 پخش صدای آلارم (آژیر/بیپ)")
-        self.sound_enabled_chk.setChecked(bool(self._alarm_cfg.get("enabled", False)))
+        self.sound_enabled_chk = QCheckBox("🔊 پخش صدای آژیر حریق")
+        self.sound_enabled_chk.setChecked(bool(self._alarm_cfg.get("fire_enabled", False)))
         self.sound_enabled_chk.toggled.connect(self._on_sound_enabled_toggled)
         sound_row.addWidget(self.sound_enabled_chk)
         sound_test_btn = QPushButton("تست صدا")
@@ -151,7 +151,7 @@ class FireAlarmPage(QWidget):
     def _on_sound_enabled_toggled(self, checked):
         try:
             from alarm_sound import save_config
-            self._alarm_cfg["enabled"] = bool(checked)
+            self._alarm_cfg["fire_enabled"] = bool(checked)
             save_config(self._alarm_cfg)
         except Exception:
             pass
@@ -159,7 +159,7 @@ class FireAlarmPage(QWidget):
     def _on_sound_test(self):
         try:
             from alarm_sound import AlarmSoundPlayer
-            AlarmSoundPlayer(dict(self._alarm_cfg, enabled=True)).play_once()
+            AlarmSoundPlayer(dict(self._alarm_cfg, fire_enabled=True)).play_once()
         except Exception:
             pass
 

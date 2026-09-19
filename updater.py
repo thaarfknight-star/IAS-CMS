@@ -9,9 +9,12 @@
      تطابق با مانیفست).
   ۳) محتوا به‌صورت امن (بدون path traversal) در
      <install>/pending_update استخراج می‌شود.
-  ۴) updater.ps1 (داخل پوشه‌ی نصب) به‌صورت جداگانه اجرا می‌شود و
-     برنامه بسته می‌شود؛ اسکریپت منتظر خروج کامل برنامه می‌ماند،
-     فایل‌ها را با بکاپ جایگزین می‌کند و برنامه را دوباره اجرا می‌کند.
+  ۴) updater.ps1 (داخل پوشه‌ی نصب) به‌صورت جداگانه اجرا می‌شود؛ برنامه فقط
+     وقتی بسته می‌شود که اسکریپت با نوشتن خط شروع در update.log تأیید کند
+     بالا آمده است (handshake) — وگرنه خطا نمایش داده می‌شود و برنامه
+     باز می‌ماند. اسکریپت منتظر خروج کامل برنامه می‌ماند، فایل‌ها را با
+     بکاپ جایگزین می‌کند و برنامه را دوباره اجرا می‌کند؛ خطاهای مهلک با
+     پنجره‌ی پیام قابل‌مشاهده اعلام می‌شوند (نه سکوت).
 
 نکته: این قابلیت فقط در نسخه‌ی نصب‌شده (frozen) کار می‌کند؛ در حالت
 توسعه پیام راهنما نمایش داده می‌شود.
@@ -365,10 +368,15 @@ class UpdateDialog(__import__("PyQt6.QtWidgets", fromlist=["QDialog"]).QDialog):
             return
 
         try:
+            import shutil as _shutil
+            import time as _time
+            ps_exe = (_shutil.which("powershell") or _shutil.which("pwsh")
+                      or "powershell")
+            spawn_ts = _time.time()
             creationflags = getattr(subprocess, "DETACHED_PROCESS", 0)
             creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            subprocess.Popen(
-                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            proc = subprocess.Popen(
+                [ps_exe, "-NoProfile", "-ExecutionPolicy", "Bypass",
                  "-WindowStyle", "Hidden", "-File", str(ps1),
                  "-InstallDir", str(install_dir),
                  "-PendingDir", str(pending),
@@ -386,9 +394,48 @@ class UpdateDialog(__import__("PyQt6.QtWidgets", fromlist=["QDialog"]).QDialog):
             self.apply_btn.setText("⬆️ اعمال آپدیت")
             return
 
+        # دست‌تکان (handshake): مطمئن می‌شویم updater.ps1 واقعاً بالا آمده
+        # و شروع به کار کرده، بعد برنامه را می‌بندیم. بدون این کنترل، اگر
+        # اسکریپت بالا نیاید برنامه بسته می‌شود و «هیچ اتفاقی نمی‌افتد».
+        self.apply_btn.setText("در حال راه‌اندازی موتور آپدیت…")
+        handshake_ok, handshake_hint = self._wait_updater_handshake(
+            proc, install_dir, spawn_ts)
+        if not handshake_ok:
+            shutil.rmtree(pending, ignore_errors=True)
+            self.err_lbl.setText(
+                "⚠️ موتور آپدیت راه‌اندازی نشد؛ برنامه بسته نشد.\n"
+                f"{handshake_hint}\n"
+                "اگر مشکل ادامه داشت، فایل update.log در پوشه‌ی نصب را بفرستید.")
+            self.err_card.setVisible(True)
+            self.apply_btn.setEnabled(True)
+            self.apply_btn.setText("⬆️ اعمال آپدیت")
+            return
+
         self.accept()
         QApplication.instance().quit()
         os._exit(0)
+
+    def _wait_updater_handshake(self, proc, install_dir, spawn_ts):
+        """انتظار حداکثر ~۱۰ ثانیه تا updater.ps1 خط شروع را در update.log
+        بنویسد. خروجی: (ok, hint)."""
+        from PyQt6.QtWidgets import QApplication
+        import time as _time
+        logf = install_dir / "update.log"
+        for _ in range(100):
+            _time.sleep(0.1)
+            QApplication.processEvents()
+            if proc.poll() is not None:
+                return (False, "فرایند powershell بلافاصله بسته شد "
+                               "(احتمالاً خطا در اجرای updater.ps1).")
+            try:
+                if logf.is_file() and logf.stat().st_mtime >= spawn_ts - 1:
+                    tail = logf.read_text(
+                        encoding="utf-8", errors="ignore").splitlines()[-30:]
+                    if any("updater started" in ln for ln in tail):
+                        return (True, "")
+            except Exception:
+                pass
+        return (False, "updater.ps1 در ۱۰ ثانیه شروع به کار نکرد.")
 
 
 def show_apply_update_dialog(parent=None):

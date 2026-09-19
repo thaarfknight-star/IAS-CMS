@@ -23,33 +23,97 @@ _DEFAULT_WAV = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "assets", "fire_alarm.wav")
 
 DEFAULT_CONFIG = {
-    # پیش‌فرض: خاموش — کاربر اگر خواست از تنظیمات فعال می‌کند
-    "enabled": False,
+    # هر صدا مستقل و جداگانه قابل فعال/غیرفعال‌سازی است:
+    "fire_enabled": False,       # آژیر ممتد حریق (پیش‌فرض خاموش)
+    "zone_enabled": False,        # بوق ورود به محدوده (پیش‌فرض خاموش)
+    "violation_enabled": True,    # بوق تخلف طبقاتی (پیش‌فرض روشن، مثل قبل)
     "sound_file": "",        # خالی = فایل پیش‌فرض assets/fire_alarm.wav
     "volume": 0.9,           # 0.0 تا 1.0 (فقط برای QSoundEffect)
     "loop": True,            # تکرار تا قطع شدن
     "max_seconds": 120,      # سقف پخش خودکار (۰ = بدون سقف)
 }
 
+# نگاشت نوع صدا به کلید تنظیمات
+_SOUND_KEYS = {
+    "fire": "fire_enabled",
+    "zone": "zone_enabled",
+    "violation": "violation_enabled",
+}
 
-def load_config():
-    cfg = dict(DEFAULT_CONFIG)
+
+def _read_raw():
+    """خواندن خام فایل json بدون اعمال پیش‌فرض‌ها (برای تشخیص کلیدهای موجود)."""
     try:
         if os.path.exists(_CONFIG_PATH):
             with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
-                user = json.load(f)
-            if isinstance(user, dict):
-                cfg.update(user)
+                data = json.load(f)
+            if isinstance(data, dict):
+                return data
     except Exception:
         pass
+    return {}
+
+
+def _write_raw(data):
+    try:
+        with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def migrate_legacy_violation(get_setting):
+    """مهاجرت یک‌باره‌ی تنظیم قدیمی «floor_violation_sound» از person_store
+    به کلید جدید «violation_enabled». get_setting: تابع (key, default)."""
+    raw = _read_raw()
+    if "violation_enabled" in raw:
+        return
+    try:
+        enabled = str(get_setting("floor_violation_sound", "1")) == "1"
+    except Exception:
+        enabled = True
+    raw["violation_enabled"] = enabled
+    _write_raw(raw)
+
+
+def sound_enabled(kind, cfg=None):
+    """وضعیت فعال‌بودن یک نوع صدا: 'fire' | 'zone' | 'violation'."""
+    key = _SOUND_KEYS.get(kind)
+    if key is None:
+        return False
+    c = cfg if isinstance(cfg, dict) else load_config()
+    return bool(c.get(key, DEFAULT_CONFIG.get(key, False)))
+
+
+def set_sound_enabled(kind, value):
+    """تغییر وضعیت یک نوع صدا و ذخیره."""
+    key = _SOUND_KEYS.get(kind)
+    if key is None:
+        return False
+    cfg = load_config()
+    cfg[key] = bool(value)
+    return save_config(cfg)
+
+
+def load_config():
+    cfg = dict(DEFAULT_CONFIG)
+    user = _read_raw()
+    if user:
+        # مهاجرت از نسخه‌های قدیمی: کلید واحد «enabled» مربوط به آژیر حریق بود
+        if "fire_enabled" not in user and "enabled" in user:
+            user["fire_enabled"] = bool(user["enabled"])
+        cfg.update(user)
+    # کلید قدیمی را نگه ندار تا ابهام ایجاد نکند
+    cfg.pop("enabled", None)
     return cfg
 
 
 def save_config(cfg):
     try:
-        with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, ensure_ascii=False, indent=2)
-        return True
+        data = dict(cfg)
+        data.pop("enabled", None)  # کلید منسوخ نسخه‌های قدیمی
+        return _write_raw(data)
     except Exception:
         return False
 
@@ -76,8 +140,8 @@ class AlarmSoundPlayer:
 
     # -- API عمومی -------------------------------------------------------
     def start(self):
-        """شروع آژیر (لوپ طبق تنظیمات)."""
-        if not self.config.get("enabled", True):
+        """شروع آژیر (لوپ طبق تنظیمات). فقط آژیر حریق — با fire_enabled گیت می‌شود."""
+        if not sound_enabled("fire", self.config):
             return
         with self._lock:
             if self._playing:

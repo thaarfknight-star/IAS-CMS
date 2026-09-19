@@ -1,15 +1,17 @@
 # -*- coding: utf-8 -*-
-"""settings_page.py — صفحه‌ی «⚙️ تنظیمات»: تم، زبان، اعمال آپدیت.
+"""settings_page.py — صفحه‌ی «⚙️ تنظیمات»: تم، زبان، صداهای هشدار، اعمال آپدیت.
 
 - تم: تاریک / روشن / سیستم — بلافاصله اعمال و ذخیره می‌شود.
 - زبان: فارسی / English — ذخیره می‌شود؛ خود این صفحه دوزبانه است و بقیه‌ی
   برنامه بعد از راه‌اندازی مجدد با زبان انتخابی بالا می‌آید.
+- صداهای هشدار: سه صدای مستقل (آژیر حریق / بوق ورود به محدوده /
+  بوق تخلف طبقاتی) — هر کدام جداگانه فعال/غیرفعال می‌شود.
 - اعمال آپدیت: همان دیالوگ قبلی هدر (updater.show_apply_update_dialog).
 """
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QComboBox,
-    QPushButton, QMessageBox,
+    QPushButton, QMessageBox, QCheckBox,
 )
 from PyQt6.QtCore import Qt
 
@@ -34,13 +36,20 @@ STRINGS = {
     "update_desc": {"fa": "فایل «آپدیت» را انتخاب و فقط فایل‌های تغییرکرده را جایگزین کنید.",
                     "en": "Select an “update” file to replace only the changed files."},
     "apply_update": {"fa": "⬆️ اعمال آپدیت", "en": "⬆️ Apply update"},
+    "sound_group": {"fa": "🔊 صداهای هشدار", "en": "🔊 Alert sounds"},
+    "sound_hint": {"fa": "هر صدا مستقل است؛ فعال/غیرفعال بودن یکی روی بقیه اثر ندارد.",
+                   "en": "Each sound is independent of the others."},
+    "sound_fire": {"fa": "🔥 آژیر حریق", "en": "🔥 Fire siren"},
+    "sound_zone": {"fa": "🚧 بوق ورود به محدوده", "en": "🚧 Zone-entry beep"},
+    "sound_violation": {"fa": "🚨 بوق تخلف طبقاتی", "en": "🚨 Floor-violation beep"},
 }
 
 
 class SettingsPage(QWidget):
-    def __init__(self, on_apply_update=None, parent=None):
+    def __init__(self, on_apply_update=None, on_sound_changed=None, parent=None):
         super().__init__(parent)
         self.on_apply_update = on_apply_update
+        self.on_sound_changed = on_sound_changed
         self._lang = app_settings.get_language()
         self._build()
 
@@ -104,6 +113,29 @@ class SettingsPage(QWidget):
         lang_group.setLayout(llay)
         layout.addWidget(lang_group)
 
+        # --- صداهای هشدار (هر کدام مستقل) ---
+        sound_group = QGroupBox(self._t("sound_group"))
+        slay = QVBoxLayout()
+        hint = QLabel(self._t("sound_hint"))
+        hint.setStyleSheet("color: #888; font-size: 11px;")
+        hint.setWordWrap(True)
+        slay.addWidget(hint)
+        from alarm_sound import load_config as _load_sound_cfg, set_sound_enabled as _set_sound
+        _scfg = _load_sound_cfg()
+        self._sound_checks = {}
+        for key, label in (("fire", self._t("sound_fire")),
+                           ("zone", self._t("sound_zone")),
+                           ("violation", self._t("sound_violation"))):
+            chk = QCheckBox(label)
+            chk.setChecked(bool(_scfg.get(
+                {"fire": "fire_enabled", "zone": "zone_enabled",
+                 "violation": "violation_enabled"}[key], False)))
+            chk.toggled.connect(lambda c, k=key: self._on_sound_toggled(k, c))
+            slay.addWidget(chk)
+            self._sound_checks[key] = chk
+        sound_group.setLayout(slay)
+        layout.addWidget(sound_group)
+
         # --- آپدیت ---
         upd_group = QGroupBox(self._t("update_group"))
         ulay = QVBoxLayout()
@@ -142,20 +174,38 @@ class SettingsPage(QWidget):
         self._rebuild_texts()
 
     def _rebuild_texts(self):
-        # ساده‌ترین راه مطمئن: بازسازی کامل ویجت
-        while self.layout().count():
-            item = self.layout().takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
-            lay = item.layout()
-            if lay is not None:
-                while lay.count():
-                    sub = lay.takeAt(0)
-                    sw = sub.widget()
-                    if sw is not None:
-                        sw.deleteLater()
+        # ساده‌ترین راه مطمئن: بازسازی کامل ویجت؛ اول layout قدیمی را کاملاً
+        # حذف می‌کنیم تا _build بتواند یکی تازه روی همین QWidget بسازد
+        # (بدون این کار، Qt اخطار setLayout می‌دهد و layout جدید نصب نمی‌شود).
+        old_layout = self.layout()
+        if old_layout is not None:
+            while old_layout.count():
+                item = old_layout.takeAt(0)
+                w = item.widget()
+                if w is not None:
+                    w.deleteLater()
+                lay = item.layout()
+                if lay is not None:
+                    while lay.count():
+                        sub = lay.takeAt(0)
+                        sw = sub.widget()
+                        if sw is not None:
+                            sw.deleteLater()
+            from PyQt6 import sip
+            sip.delete(old_layout)
         self._build()
+
+    def _on_sound_toggled(self, kind, checked):
+        try:
+            from alarm_sound import set_sound_enabled
+            set_sound_enabled(kind, bool(checked))
+        except Exception:
+            pass
+        if callable(self.on_sound_changed):
+            try:
+                self.on_sound_changed()
+            except Exception:
+                pass
 
     def _on_update_clicked(self):
         if callable(self.on_apply_update):

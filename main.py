@@ -132,16 +132,14 @@ def _bgr_to_pixmap(frame):
     return QPixmap.fromImage(qt_img)
 
 
-def _play_alarm_beep():
-    """رفع درخواست: پخش صدای آلارم هنگام عبور شخص از خط فرضی. در یک ترد
-    جداگانه اجرا می‌شود تا رابط کاربری هرگز قفل نشود. روی ویندوز (پلتفرم
-    اصلی این برنامه) از winsound.Beep استفاده می‌شود؛ اگر در دسترس نبود
-    (مثلاً روی لینوکس/مک برای توسعه)، به بیپ ساده‌ی Qt برمی‌گردد.
-    اختیاری است: اگر در تنظیمات «صدای آلارم» خاموش باشد (پیش‌فرض)، هیچ
-    صدایی پخش نمی‌شود."""
+def _play_alarm_beep(kind="zone"):
+    """پخش تک‌بوق هشدار در ترد جداگانه (رابط کاربری قفل نمی‌شود).
+    kind: نوع صدا — "zone" (ورود به محدوده) یا "fire" (تشخیص حریق/پنل).
+    هر نوع صدا تنظیم مستقل خودش را دارد (پیش‌فرض هر دو خاموش).
+    """
     try:
-        from alarm_sound import load_config
-        if not load_config().get("enabled", False):
+        from alarm_sound import sound_enabled
+        if not sound_enabled(kind):
             return
     except Exception:
         return
@@ -151,6 +149,28 @@ def _play_alarm_beep():
             for _ in range(3):
                 winsound.Beep(1500, 220)
                 time.sleep(0.08)
+        except Exception:
+            try:
+                QApplication.beep()
+            except Exception:
+                pass
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _play_violation_beep():
+    """تک‌بوق تخلف طبقاتی — کاملاً مستقل از صدای حریق و ورود به محدوده."""
+    try:
+        from alarm_sound import sound_enabled
+        if not sound_enabled("violation"):
+            return
+    except Exception:
+        return
+    def _run():
+        try:
+            import winsound
+            winsound.Beep(880, 300)
+            time.sleep(0.12)
+            winsound.Beep(660, 300)
         except Exception:
             try:
                 QApplication.beep()
@@ -975,7 +995,7 @@ class CameraSlotWidget(QWidget):
         self._alarm_active = True
         self._apply_frame_style()
         self.status_label.setText(f"⚠ ورود به محدوده {label}")
-        _play_alarm_beep()
+        _play_alarm_beep("zone")
         self._alarm_timer.start(4000)
         if self._on_region_alert is not None and self.cam is not None:
             # رفع درخواست «گزارش‌ها روی NVR ضبط بشه»: کل cam پاس داده می‌شود
@@ -992,7 +1012,7 @@ class CameraSlotWidget(QWidget):
         self._alarm_active = True
         self._apply_frame_style()
         self.status_label.setText(f"⚠ تشخیص {label} ({confidence * 100:.0f}%)")
-        _play_alarm_beep()
+        _play_alarm_beep("fire")
         self._alarm_timer.start(4000)
         if self._fire_event_cb is not None and self.cam is not None:
             self._fire_event_cb(self.cam, kind, crop_frame, confidence)
@@ -2071,6 +2091,13 @@ class MainWindow(QMainWindow):
         else:
             self.building_fire = None
             self.alarm_player = None
+        # مهاجرت یک‌باره‌ی تنظیم قدیمی «floor_violation_sound» به کلید جدید
+        # و مستقل «violation_enabled» در alarm_sound_config.json
+        try:
+            from alarm_sound import migrate_legacy_violation
+            migrate_legacy_violation(person_store.get_setting)
+        except Exception:
+            pass
         self.network_scan_thread = None
         self.detect_thread = None
         self._scan_ports_by_ip = {}  # ip -> [ports...] از آخرین اسکن شبکه
@@ -2560,7 +2587,8 @@ class MainWindow(QMainWindow):
         # صفحه‌ی «⚙️ تنظیمات»: تم (تاریک/روشن/سیستم)، زبان (فارسی/English)
         # و «اعمال آپدیت» (از هدر به اینجا منتقل شد).
         self.settings_page = SettingsPage(
-            on_apply_update=self._on_apply_update)
+            on_apply_update=self._on_apply_update,
+            on_sound_changed=self._on_alarm_sound_changed)
         self.pages.addWidget(self.settings_page)
 
         main_layout.addWidget(self._build_header())
@@ -2867,7 +2895,7 @@ class MainWindow(QMainWindow):
         item = QListWidgetItem(text)
         item.setForeground(QColor("#e74c3c"))
         self.fire_panel_list.insertItem(0, item)
-        _play_alarm_beep()
+        _play_alarm_beep("fire")
         # رفع درخواست «اتصال به سیستم اعلام حریق ساختمان + صدای هشدار»:
         # آلارم پنل فیزیکی هم آژیر ممتد + سیگنال به پنل ساختمان را فعال می‌کند.
         if self.alarm_player is not None:
@@ -3609,6 +3637,14 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "خطا", f"باز کردن دیالوگ آپدیت ممکن نشد:\n{e}")
 
+    def _on_alarm_sound_changed(self):
+        """تازه‌سازی تنظیمات صدا در پخش‌کننده‌ی آژیر حریق."""
+        try:
+            if getattr(self, "alarm_player", None) is not None:
+                self.alarm_player.reload()
+        except Exception:
+            pass
+
     def show_page(self, key):
         """تغییر صفحه‌ی فعال از طریق هدر؛ هر صفحه هنگام نمایش، داده‌هایش را
         با متد refresh خودش تازه می‌کند."""
@@ -3981,11 +4017,10 @@ class MainWindow(QMainWindow):
             snapshot_bgr=snapshot_bgr)
         if viol is None:
             return  # داخل cooldown؛ قبلاً ثبت شده
-        # هشدار صوتی (تک‌بوق؛ آژیر ممتد آتش جداست)
+        # هشدار صوتی تخلف طبقاتی — کاملاً مستقل از صدای حریق و ورود به محدوده
+        # (تک‌بوق؛ آژیر ممتد آتش جداست و با تنظیم خودش کنترل می‌شود)
         try:
-            if str(person_store.get_setting("floor_violation_sound", "1")) == "1":
-                if getattr(self, "alarm_player", None) is not None:
-                    self.alarm_player.play_once()
+            _play_violation_beep()
         except Exception:
             pass
         # به‌روزرسانی زنده‌ی تب تخلفات (اگر صفحه باز است)

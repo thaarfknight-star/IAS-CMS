@@ -87,7 +87,7 @@ class BuildingFireSettingsDialog(QDialog):
         snd_group = QGroupBox("صدای هشدار حریق")
         snd_form = QFormLayout(snd_group)
         self.chk_sound = QCheckBox("پخش صدای هشدار هنگام تشخیص حریق")
-        self.chk_sound.setChecked(bool(self.sound_cfg.get("enabled", True)))
+        self.chk_sound.setChecked(bool(self.sound_cfg.get("fire_enabled", False)))
         snd_form.addRow(self.chk_sound)
 
         snd_row = QHBoxLayout()
@@ -172,7 +172,7 @@ class BuildingFireSettingsDialog(QDialog):
         self.cfg["trigger_on_fire"] = self.chk_fire.isChecked()
         self.cfg["auto_clear_seconds"] = self.spin_autoclear.value()
 
-        self.sound_cfg["enabled"] = self.chk_sound.isChecked()
+        self.sound_cfg["fire_enabled"] = self.chk_sound.isChecked()
         self.sound_cfg["sound_file"] = self.sound_path.text().strip()
         self.sound_cfg["volume"] = self.sld_volume.value() / 100.0
         self.sound_cfg["loop"] = self.chk_loop.isChecked()
@@ -180,7 +180,7 @@ class BuildingFireSettingsDialog(QDialog):
     def _test_sound(self):
         from alarm_sound import AlarmSoundPlayer
         self._collect()
-        p = AlarmSoundPlayer(config=dict(self.sound_cfg))
+        p = AlarmSoundPlayer(config=dict(self.sound_cfg, fire_enabled=True))
         p.play_once()
         QMessageBox.information(self, "تست صدا", "صدای هشدار یک‌بار پخش شد 🔊")
 
