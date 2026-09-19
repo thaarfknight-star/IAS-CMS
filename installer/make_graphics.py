@@ -32,10 +32,17 @@ WHITE = (255, 255, 255)
 
 
 def fa(text):
-    """شکل‌دهی فارسی برای رندر صحیح داخل تصویر."""
+    """شکل‌دهی فارسی برای رندر صحیح داخل تصویر (فقط وقتی raqm نداریم)."""
     import arabic_reshaper
     from bidi.algorithm import get_display
     return get_display(arabic_reshaper.reshape(text))
+
+
+try:
+    from PIL import features as _pil_features
+    _HAS_RAQM = _pil_features.check("raqm")
+except Exception:
+    _HAS_RAQM = False
 
 
 def load_font(path, size, fallback_bold=True):
@@ -76,8 +83,31 @@ def rounded(draw, box, radius, fill):
 
 
 def text_r(draw, xy, s, font, fill, anchor="ra"):
-    """متن فارسی (راست‌چین) در مختصات داده‌شده."""
-    draw.text(xy, fa(s), font=font, fill=fill, anchor=anchor)
+    """متن فارسی (راست‌چین) در مختصات داده‌شده.
+
+    اگر Pillow با raqm ساخته شده باشد، خود raqm شکل‌دهی و bidi را انجام
+    می‌دهد پس متن منطقی (logical) با direction='rtl' داده می‌شود؛ در غیر
+    این صورت از fa() (ترتیب دیداری آماده) استفاده می‌شود.
+    """
+    if _HAS_RAQM:
+        draw.text(xy, s, font=font, fill=fill, anchor=anchor,
+                  direction="rtl", language="fa")
+    else:
+        draw.text(xy, fa(s), font=font, fill=fill, anchor=anchor)
+
+
+def text_size(draw, s, font):
+    """پهنای متن فارسی برای محاسبه‌ی قاب‌ها."""
+    if _HAS_RAQM:
+        bb = draw.textbbox((0, 0), s, font=font, direction="rtl", language="fa")
+    else:
+        bb = draw.textbbox((0, 0), fa(s), font=font)
+    return bb[2] - bb[0]
+
+
+def text_c(draw, xy, s, font, fill):
+    """متن فارسی وسط‌چین."""
+    text_r(draw, xy, s, font, fill, anchor="mm")
 
 
 def draw_check(draw, cx, cy, size, color, width=5):
@@ -105,12 +135,11 @@ def header_band(img, title, subtitle, logo_path, version=None,
     text_r(draw, (W - 120, 34), title, font_bold, WHITE)
     text_r(draw, (W - 120, 74), subtitle, font_reg, MUTED)
     if version:
-        pill = fa("نسخه " + version)
+        pill_s = "نسخه " + version
         f = font_reg
-        bb = draw.textbbox((0, 0), pill, font=f)
-        pw = bb[2] - bb[0] + 36
+        pw = text_size(draw, pill_s, f) + 36
         draw.rounded_rectangle([24, 40, 24 + pw, 78], radius=19, fill=BLUE)
-        draw.text((24 + pw / 2, 59), pill, font=f, fill=WHITE, anchor="mm")
+        text_c(draw, (24 + pw / 2, 59), pill_s, f, WHITE)
     return img
 
 
@@ -132,11 +161,10 @@ def screen_welcome(logo_full, logo_shield, version, fb, fr):
     text_r(draw, (W - 40, y + 150),
            "سامانه‌ی هوشمند مدیریت تصاویر مداربسته", fr, MUTED)
     # نشان نسخه
-    pill = fa("نسخه " + version)
-    bb = draw.textbbox((0, 0), pill, font=fr)
-    pw = bb[2] - bb[0] + 40
+    pill_s = "نسخه " + version
+    pw = text_size(draw, pill_s, fr) + 40
     draw.rounded_rectangle([W - 40 - pw, y + 196, W - 40, y + 236], radius=20, fill=BLUE)
-    draw.text((W - 40 - pw / 2, y + 216), pill, font=fr, fill=WHITE, anchor="mm")
+    text_c(draw, (W - 40 - pw / 2, y + 216), pill_s, fr, WHITE)
 
     # کارت ویژگی‌ها سمت چپ
     feats = [
@@ -218,10 +246,9 @@ def screen_finish(logo_shield, version, fb, fr):
     cx, cy, r = W // 2, 330, 44
     draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(46, 160, 67))
     draw_check(draw, cx, cy, 44, WHITE, 7)
-    t = fa("نصب با موفقیت انجام شد")
-    draw.text((cx, 410), t, font=fb, fill=WHITE, anchor="mm")
-    t2 = fa("ایمن آرا سورنا نسخه " + version + " آماده‌ی استفاده است.")
-    draw.text((cx, 452), t2, font=fr, fill=MUTED, anchor="mm")
+    text_c(draw, (cx, 410), "نصب با موفقیت انجام شد", fb, WHITE)
+    text_c(draw, (cx, 452),
+           "ایمن آرا سورنا نسخه " + version + " آماده‌ی استفاده است.", fr, MUTED)
     return img
 
 
