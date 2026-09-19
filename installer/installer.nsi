@@ -37,13 +37,18 @@ ${StrStr}
 !endif
 
 Name "${APP_NAME} v${VERSION}"
-Caption "نصب ${APP_NAME} نسخه‌ی ${VERSION}"
+; (Caption داخل بلوک UNINSTALLER_ONLY / حالت عادی تنظیم می‌شود)
 !ifdef UNINSTALLER_ONLY
   ; --- حالت حذف‌کننده‌ی مستقل: فقط پاک‌سازی کامل، بدون صفحه‌ی نصب ---
   OutFile "${OUTDIR}\IAS-CMS-Uninstall-v${VERSION}.exe"
-  Caption "حذف کامل ${APP_NAME}"
+  Caption "حذف کامل ${APP_NAME} نسخه‌ی ${VERSION}"
+  ; makensis بدون حتی یک سکشن خالی، اسکریپت را «نامعتبر» می‌داند —
+  ; این سکشن هرگز اجرا نمی‌شود چون .onInit اول Quit می‌کند
+  Section "-hidden-uninstaller"
+  SectionEnd
 !else
   OutFile "${OUTDIR}\IAS-CMS-Setup-v${VERSION}.exe"
+  Caption "نصب ${APP_NAME} نسخه‌ی ${VERSION}"
 !endif
 Icon "${ROOTDIR}\assets\app.ico"
 InstallDir "$LOCALAPPDATA\ImenaraSorena\IAS-CMS"
@@ -441,7 +446,9 @@ Function DoInstall
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\حذف برنامه.lnk" "$INSTDIR\uninstall.exe"
   CreateShortcut "$DESKTOP\${APP_NAME}.lnk" \
     "$INSTDIR\${EXE_NAME}" "" "$INSTDIR\${EXE_NAME}" 0
+  !ifndef UNINSTALLER_ONLY
   WriteUninstaller "$INSTDIR\uninstall.exe"
+  !endif
   ; اطلاعات حذف در رجیستری کاربر جاری (بدون نیاز به ادمین)
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}" \
     "DisplayName" "${APP_NAME} (${APP_EN})"
