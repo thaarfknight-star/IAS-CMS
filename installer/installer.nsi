@@ -39,7 +39,7 @@ ${StrStr}
 Name "${APP_NAME} v${VERSION}"
 Caption "نصب ${APP_NAME} نسخه‌ی ${VERSION}"
 OutFile "${OUTDIR}\IAS-CMS-Setup-v${VERSION}.exe"
-Icon "assets\app.ico"
+Icon "${ROOTDIR}\assets\app.ico"
 InstallDir "$LOCALAPPDATA\ImenaraSorena\IAS-CMS"
 ShowInstDetails nevershow
 
@@ -416,7 +416,7 @@ Function DoInstall
     Return
   ${EndIf}
   ; کپی فایل‌ها (chunkبندی‌شده با نوار پیشرفت واقعی — تولیدشده توسط gen_filelist.py)
-  !include "installer/files.nsi"
+  !include "${ROOTDIR}\installer\files.nsi"
   ${If} ${Errors}
     StrCpy $R9 "خطا در کپی فایل‌ها."
     Return
