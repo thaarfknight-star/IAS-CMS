@@ -39,7 +39,7 @@ ${StrStr}
 Name "${APP_NAME} v${VERSION}"
 Caption "نصب ${APP_NAME} نسخه‌ی ${VERSION}"
 OutFile "${OUTDIR}\IAS-CMS-Setup-v${VERSION}.exe"
-Icon "${ROOTDIR}\assets\app.ico"
+Icon "${__FILEDIR__}\..\assets\app.ico"
 InstallDir "$LOCALAPPDATA\ImenaraSorena\IAS-CMS"
 ShowInstDetails nevershow
 
