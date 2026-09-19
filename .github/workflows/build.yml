@@ -631,15 +631,22 @@ jobs:
           ~\AppData\Local\Nuitka\Nuitka\Cache
         key: nuitka-cache-windows-${{ hashFiles('requirements.txt') }}-${{ github.run_id }}
 
-    # تحویل نهایی: نصب‌کننده (Setup.exe با صفحه‌ی اختصاصی) + «فایل آپدیت»
+    # تحویل نهایی: سه آرتیفکت جدا — نصب‌کننده (Setup.exe) + «فایل آپدیت»
     # تفاضلی هر نسخه + مانیفست (برای diff بیلد بعدی). خروجی portable
     # دیگر تولید نمی‌شود.
-    - name: Upload installer + update artifacts
+    - name: Upload installer artifact
       uses: actions/upload-artifact@v4
       with:
         name: IAS-CMS-Setup-Windows
         path: |
           dist/IAS-CMS-Setup-*.exe
+        if-no-files-found: warn
+
+    - name: Upload update package artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: IAS-CMS-Update-Windows
+        path: |
           dist/IAS-CMS-Update-*.zip
         if-no-files-found: warn
 
