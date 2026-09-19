@@ -22,51 +22,10 @@ from datetime import datetime
 import cv2
 
 
-# ---------------------------------------------------------------------------
-# تاریخ شمسی توکار (همان الگوریتم plate_store — بدون وابستگی خارجی)
-# ---------------------------------------------------------------------------
-
-def gregorian_to_jalali(gy, gm, gd):
-    g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
-    if gy > 1600:
-        jy = 979
-        gy -= 1600
-    else:
-        jy = 0
-        gy -= 621
-    gy2 = gm - 1
-    if gy2 > 1:
-        gy2 -= 1
-    else:
-        gy2 += 1
-    days = (365 * gy + (gy + 3) // 4 - (gy + 99) // 100 + (gy + 399) // 400
-            - 80 + gy2 + g_d_m[gm - 1] + gd - 1)
-    jy += 33 * (days // 12053)
-    days %= 12053
-    jy += 4 * (days // 1461)
-    days %= 1461
-    if days > 365:
-        jy += (days - 1) // 365
-        days = (days - 1) % 365
-    if days < 186:
-        jm = 1 + days // 31
-        jd = 1 + (days % 31)
-    else:
-        jm = 7 + (days - 186) // 30
-        jd = 1 + ((days - 186) % 30)
-    return jy, jm, jd
-
-
-def jalali_now_str(ts=None):
-    dt = datetime.fromtimestamp(ts if ts is not None else time.time())
-    jy, jm, jd = gregorian_to_jalali(dt.year, dt.month, dt.day)
-    return f"{jy:04d}/{jm:02d}/{jd:02d} {dt.strftime('%H:%M:%S')}"
-
-
-def jalali_date_str(ts=None):
-    dt = datetime.fromtimestamp(ts if ts is not None else time.time())
-    jy, jm, jd = gregorian_to_jalali(dt.year, dt.month, dt.day)
-    return f"{jy:04d}/{jm:02d}/{jd:02d}"
+# تاریخ شمسی از ماژول مشترک jalali.py می‌آید (تک‌منبع حقیقت؛ الگوریتم
+# دقیق jalaali). نسخه‌ی قبلیِ توکارِ همین فایل باگ داشت و بعضی
+# تاریخ‌ها را چند روز جابه‌جا نشان می‌داد.
+from jalali import gregorian_to_jalali, jalali_now_str, jalali_date_str
 
 
 def _base_dir():

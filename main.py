@@ -2019,7 +2019,9 @@ class CameraTreeWidget(QTreeWidget):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f"{APP_NAME_FA} | {APP_NAME_EN}")
+        from updater import get_app_version
+        self.app_version = get_app_version()
+        self.setWindowTitle(f"{APP_NAME_FA} | {APP_NAME_EN} v{self.app_version}")
         # آیکون پنجره: سپر لوگوی شرکت (هم در اجرای عادی، هم داخل exe).
         _logo_icon = QIcon(LOGO_SHIELD)
         if not _logo_icon.isNull():
@@ -2524,7 +2526,8 @@ class MainWindow(QMainWindow):
         self.person_page = PersonTrackPage(
             self.camera_store,
             on_person_toggle=self._on_camera_person_toggle,
-            on_show_on_map=self._on_person_show_on_map)
+            on_show_on_map=self._on_person_show_on_map,
+            face_engine=self.face_engine)
         self.pages.addWidget(self.person_page)
         # رفع درخواست «نقشه‌ی تعاملی ساختمان»: صفحه‌ی هفتم؛ اگر فایل
         # building_map_dialog.py کنار برنامه نباشد، بدون کرش رد می‌شود.
@@ -3564,7 +3567,30 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(lambda _checked=False, _key=key: self.show_page(_key))
             header_layout.addWidget(btn)
             self.nav_buttons[key] = btn
+        # دکمه‌ی «اعمال فایل آپدیت» (اکشن مستقل، نه ناوبری)
+        upd_btn = QPushButton("⬆️ اعمال آپدیت")
+        upd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        upd_btn.setStyleSheet(
+            "QPushButton{padding: 6px 14px; border-radius: 6px; font-size: 12px; "
+            f"background: {LOGO_BLUE}; color: white; font-weight: bold;}}"
+        )
+        upd_btn.clicked.connect(self._on_apply_update)
+        header_layout.addWidget(upd_btn)
+        # نشان نسخه
+        ver_label = QLabel(f"v{self.app_version}")
+        ver_label.setStyleSheet(
+            f"font-size: 10px; color: {TEXT_MUTED}; padding: 4px 8px;"
+        )
+        header_layout.addWidget(ver_label)
         return header
+
+    def _on_apply_update(self):
+        """باز کردن دیالوگ انتخاب و اعمال «فایل آپدیت»."""
+        try:
+            from updater import show_apply_update_dialog
+            show_apply_update_dialog(parent=self)
+        except Exception as e:
+            QMessageBox.warning(self, "خطا", f"باز کردن دیالوگ آپدیت ممکن نشد:\n{e}")
 
     def show_page(self, key):
         """تغییر صفحه‌ی فعال از طریق هدر؛ هر صفحه هنگام نمایش، داده‌هایش را

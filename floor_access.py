@@ -71,7 +71,10 @@ def resolve_camera_floor(cam_id, camera_store=None, building_map=None):
 
 def evaluate_floor_access(person_id, face_person_id, floor_id, person_store):
     """ارزیابی قانون تردد. خروجی: (مجاز؟, دلیل, is_defined)
-    - دلیل: 'undefined' / 'defined' / 'no_floor' / 'free'"""
+    - دلیل: 'undefined' / 'defined' / 'no_floor' / 'free'
+    - قانون تکی: اول قانون «چهره» (کلید بانک چهره = face_person_id) چک
+      می‌شود؛ اگر نبود، قانون رکورد ردیابی (person_id) برای سازگاری با
+      نسخه‌های قبل. قانون تکیِ پیدا‌شده نسبت به قانون سراسری اولویت دارد."""
     if not floor_id:
         return True, "no_floor", False
     person = None
@@ -80,9 +83,14 @@ def evaluate_floor_access(person_id, face_person_id, floor_id, person_store):
     except Exception:
         person = None
     known_face = bool(face_person_id or (person and person.get("face_person_id")))
-    # قانون تکی شخص (اگر ثبت شده باشد، برای هر دو حالت اولویت دارد)
+    # قانون تکی شخص (اگر ثبت شده باشد، برای هر دو حالت اولویت دارد):
+    # اول کلید بانک چهره، بعد کلید رکورد ردیابی (سازگاری با قبل)
+    personal = None
     try:
-        personal = person_store.get_person_allowed_floors(person_id)
+        if face_person_id:
+            personal = person_store.get_person_allowed_floors(face_person_id)
+        if personal is None:
+            personal = person_store.get_person_allowed_floors(person_id)
     except Exception:
         personal = None
     if personal is not None:

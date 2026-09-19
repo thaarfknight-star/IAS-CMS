@@ -27,3 +27,10 @@ dist/
 # محیط مجازی (در صورت استفاده)
 venv/
 .venv/
+
+# فایل لیست نصب‌کننده NSIS — در CI توسط gen_filelist.py تولید می‌شود
+installer/files.nsi
+
+# گرافیک تولیدشده‌ی نصب‌کننده — در CI توسط make_graphics.py بازتولید می‌شود
+installer/graphics/*.bmp
+installer/graphics/*.png

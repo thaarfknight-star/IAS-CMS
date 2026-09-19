@@ -104,11 +104,12 @@ class PersonTrackPage(QWidget):
                     "ساعت ورود", "ساعت خروج", "مدت حضور"]
 
     def __init__(self, camera_store, on_person_toggle=None, parent=None,
-                 on_show_on_map=None):
+                 on_show_on_map=None, face_engine=None):
         super().__init__(parent)
         self.camera_store = camera_store
         self.on_person_toggle = on_person_toggle  # (cam_id, enabled) -> None
         self.on_show_on_map = on_show_on_map  # (person_id) -> None: نمایش مسیر روی نقشه ساختمان
+        self.face_engine = face_engine  # بانک چهره‌ها (برای قانون تردد افراد تعریف‌شده)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
 
         layout = QVBoxLayout(self)
@@ -727,13 +728,14 @@ class PersonTrackPage(QWidget):
         undef_group.setLayout(undef_layout)
         layout.addWidget(undef_group)
 
-        # --- ۲) قانون تکی: افراد تعریف‌شده (چهره‌محور)
+        # --- ۲) قانون تکی: افراد تعریف‌شده (چهره‌محور، از بانک چهره‌ها)
         person_group = QGroupBox("🧑 افراد تعریف‌شده — طبقات مجاز هر شخص (جداگانه)")
         person_layout = QVBoxLayout()
         person_hint = QLabel(
-            "شخصی که چهره‌اش در «بانک چهره‌ها» تعریف شده، حتی با عوض کردن "
-            "لباس هم شناسایی می‌شود؛ برای هر کدام جداگانه مشخص کنید در چه "
-            "طبقاتی اجازه‌ی تردد دارد. اگر برای شخصی قانونی ثبت نشود، آزاد است.")
+            "شخص را از «بانک چهره‌ها» انتخاب کنید (نه از لیست ردیابی‌شده‌ها): "
+            "چهره‌ی تعریف‌شده حتی با عوض کردن لباس هم شناسایی می‌شود، پس قانون "
+            "تردد باید به هویت چهره وصل باشد. اگر برای چهره‌ای قانونی ثبت نشود، "
+            "آزاد است.")
         person_hint.setStyleSheet("color: #9e9e9e; font-size: 11px;")
         person_hint.setWordWrap(True)
         person_layout.addWidget(person_hint)
@@ -848,19 +850,20 @@ class PersonTrackPage(QWidget):
             chk.setChecked(True if is_all else (fid in (allowed or [])))
             chk.setEnabled(not is_all)
             chk.blockSignals(False)
-        # لیست اشخاص (اولویت با چهره‌دارها)
+        # لیست اشخاص: از «بانک چهره‌ها» (هویت چهره‌محور)، نه ردیابی‌شده‌ها
+        face_people = []
         try:
-            persons = person_store.get_persons()
+            if getattr(self, "face_engine", None) is not None:
+                face_people = self.face_engine.list_people()
         except Exception:
-            persons = []
+            face_people = []
         self.access_person_combo.blockSignals(True)
         self.access_person_combo.clear()
-        for p in persons:
-            label = p.get("id", "")
-            if p.get("face_name"):
-                label += f" · {p['face_name']}"
-            elif p.get("face_person_id"):
-                label += f" · {p['face_person_id']}"
+        for p in face_people:
+            label = p.get("name") or "بدون نام"
+            wg = (p.get("work_group") or "").strip()
+            if wg:
+                label += f" · 🏷 {wg}"
             self.access_person_combo.addItem(label, p.get("id"))
         self.access_person_combo.blockSignals(False)
         self._on_access_person_changed()
@@ -887,7 +890,9 @@ class PersonTrackPage(QWidget):
         from floor_access import ALL_FLOORS
         pid = self.access_person_combo.currentData()
         if not pid:
-            self.person_rule_status.setText("هنوز هیچ شخصی ردیابی نشده است.")
+            self.person_rule_status.setText(
+                "هنوز هیچ چهره‌ای در «بانک چهره‌ها» تعریف نشده است؛ "
+                "اول از صفحه‌ی «👤 چهره‌ها» فرد را تعریف کنید.")
             return
         try:
             rule = person_store.get_person_allowed_floors(pid)
@@ -908,6 +913,17 @@ class PersonTrackPage(QWidget):
             for chk, fid in self.person_floor_checks:
                 chk.setChecked(fid in rule)
 
+    def _access_person_name(self, pid):
+        """نام نمایشی چهره‌ی انتخاب‌شده (برای پیام‌ها)."""
+        try:
+            if getattr(self, "face_engine", None) is not None and pid:
+                p = self.face_engine.get_person(pid)
+                if p and p.get("name"):
+                    return p["name"]
+        except Exception:
+            pass
+        return pid or "—"
+
     def _save_person_rule(self):
         from floor_access import ALL_FLOORS
         pid = self.access_person_combo.currentData()
@@ -921,7 +937,7 @@ class PersonTrackPage(QWidget):
         else:
             person_store.set_person_allowed_floors(pid, floors)
         QMessageBox.information(self, "ذخیره شد",
-                                f"قانون تردد {pid} ذخیره شد.")
+                                f"قانون تردد «{self._access_person_name(pid)}» ذخیره شد.")
         self._on_access_person_changed()
 
     def _clear_person_rule(self):
@@ -930,7 +946,7 @@ class PersonTrackPage(QWidget):
             return
         person_store.set_person_allowed_floors(pid, None)
         QMessageBox.information(self, "حذف شد",
-                                f"قانون تردد {pid} حذف شد (آزاد).")
+                                f"قانون تردد «{self._access_person_name(pid)}» حذف شد (آزاد).")
         self._on_access_person_changed()
 
     def _on_violation_sound_toggled(self, checked):

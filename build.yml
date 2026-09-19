@@ -53,10 +53,10 @@ jobs:
         pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
         pip install -r requirements.txt
         # --- موتور OCR پلاک‌خوان (اجباری برای خوانش متن پلاک) ---
-        # easyocr موتور اصلی خوانش پلاک فارسی است؛ rapidocr سبک و کمکی.
-        # هر دو lazy-load می‌شوند (فقط وقتی پلاک‌خوان یک دوربین فعال شود)
-        # و مدل‌های easyocr در اولین استفاده‌ی واقعی دانلود می‌شوند.
-        pip install easyocr rapidocr-onnxruntime
+        # hezarai/crnn-fa-license-plate-recognition-v2 به‌صورت ONNX (موتور اصلی،
+        # مخصوص پلاک فارسی؛ بدون torch). lazy-load می‌شود (فقط وقتی پلاک‌خوان
+        # یک دوربین فعال شود). مدل داخل ریپو است و باندل می‌شود.
+        pip install onnxruntime
         # --- کتابخانه‌ی خوانش نقشه‌های اتوکد (DXF) برای «نقشه ساختمان» ---
         # ezdxf خالص‌پایتونی و سبک است؛ PyInstaller آن را داخل exe می‌بندد
         # تا روی سیستم کاربر نهایی هیچ نصبی لازم نباشد.
@@ -107,6 +107,28 @@ jobs:
         }
         Write-Host "segformer_floor_model آماده‌ی بسته‌بندی است."
 
+    - name: Cache plate-reader assets (model + EasyOCR models)
+      # مدل پلاک (~۶MB)؛ روی کش hit بودن، step آماده‌سازی فقط نبودها را پر می‌کند.
+      # (مدل OCR هزار داخل ریپو و پوشه‌ی plate_ocr_models است و کش جدا نمی‌خواهد.)
+      id: plate-assets-cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          plate_detector.pt
+        key: plate-assets-v4
+
+    - name: Prepare plate-reader assets (model + OCR models)
+      # اجباری: این‌ها باید حتماً داخل exe باشند تا روی سیستم کاربر
+      # هیچ دانلودی لازم نباشد (شرط سخت). نبود/ناقص بودن هرکدام → بیلد fail.
+      # نکته‌ی فنی: منطق پایتون در ci/prepare_plate_assets.py است، نه heredoc
+      # داخل YAML؛ چون checkout روی رانر ویندوز انتهای خط‌ها را CRLF می‌کند و
+      # heredoc داخل shell: bash با CRLF می‌شکند (syntax error).
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        python ci/prepare_plate_assets.py
+        if ($LASTEXITCODE -ne 0) { throw "ci/prepare_plate_assets.py شکست خورد." }
+        Write-Host "plate assets ready."
     - name: Restore Nuitka cache (MinGW64 + ماژول‌های کامپایل‌شده)
       # روی مسیر quick_test (PyInstaller) اصلاً از Nuitka استفاده نمی‌شود، پس
       # restore این کش (که می‌تواند چند گیگابایت باشد) فقط وقت تلف می‌کند.
@@ -195,6 +217,18 @@ jobs:
           "--noconfirm"
           "--name=CCTV_CMS"
           "--windowed"
+          # --- رفع «No module named '_socket'» (و پیشگیری از '_ssl') ---
+          # هوک اجرایی pyi_rth_multiprocessing در لحظه‌ی شروع exe ماژول
+          # multiprocessing را import می‌کند و زنجیره‌ی آن به _socket می‌رسد،
+          # ولی تحلیل استاتیک PyInstaller فایل باینری _socket.pyd را داخل
+          # باندل نمی‌گذارد و exe موقع اجرا کرش می‌کند (همان خطایی که طه
+          # روی سیستمش دید). پس این‌ها را صراحتاً force می‌کنیم تا حتماً
+          # داخل dist/CCTV_CMS باشند. _ssl هم برای وبهوک حریق/ONVIF/Modbus
+          # که روی سوکت کار می‌کنند همین وضعیت را دارد.
+          "--hidden-import=_socket"
+          "--hidden-import=socket"
+          "--hidden-import=_ssl"
+          "--hidden-import=ssl"
           "--add-data=faces;faces"
           "--add-data=yolov8n.pt;."
           "--add-data=segformer_floor_model;segformer_floor_model"
@@ -208,22 +242,43 @@ jobs:
           "--distpath=dist"
           "main.py"
         )
-        # --- سیستم پلاک‌خوان: مدل پلاک (در صورت وجود در ریپو) + موتورهای OCR ---
-        # مدل plate_detector.pt اگر در ریشه‌ی ریپو باشد کنار exe بسته‌بندی
-        # می‌شود؛ وگرنه برنامه در اولین استفاده خودش آن را دانلود می‌کند
-        # (رجوع کنید به plate_detector.py) پس نبودش بیلد را نمی‌شکند.
-        if (Test-Path "plate_detector.pt") { $pyiArgs += "--add-data=plate_detector.pt;." }
-        # easyocr/rapidocr/ezdxf فقط اگر در محیط بیلد نصب باشند جمع‌آوری می‌شوند
-        # تا در صورت نبودشان بیلد خطا نگیرد؛ نبودشان در exe یعنی آن قابلیت
-        # (پلاک‌خوان / نقشه‌ی DXF) غیرفعال و برنامه بدون کرش کار می‌کند.
-        foreach ($pkg in @("easyocr", "rapidocr_onnxruntime", "ezdxf")) {
+        # --- سیستم پلاک‌خوان v2: مدل + EasyOCR اجباری داخل exe ---
+        # این‌ها در step «Prepare plate-reader assets» آماده شده‌اند و باید
+        # حتماً باندل شوند؛ نبود هرکدام بیلد را fail می‌کند تا exe بدون
+        # پلاک‌خوان دست کاربر نرسد (روی سیستم کاربر هیچ دانلودی نمی‌شود).
+        if (-not (Test-Path "plate_detector.pt")) {
+          throw "plate_detector.pt آماده نیست؛ step «Prepare plate-reader assets» را بررسی کنید."
+        }
+        $plateModelSize = (Get-Item "plate_detector.pt").Length
+        if ($plateModelSize -lt 1MB) {
+          throw "plate_detector.pt ناقص است ($plateModelSize بایت)."
+        }
+        $pyiArgs += "--add-data=plate_detector.pt;."
+        Write-Host "plate_detector.pt bundled ($plateModelSize بایت)."
+        # مدل OCR هزار (CRNN مخصوص پلاک فارسی) از داخل ریپو باندل می‌شود؛
+        # روی سیستم کاربر هیچ دانلودی انجام نمی‌شود.
+        if (-not (Test-Path "plate_ocr_models\\hezar_plate_v2.onnx")) {
+          throw "plate_ocr_models آماده نیست؛ مدل hezar_plate_v2.onnx در ریپو نیست."
+        }
+        $pyiArgs += "--add-data=plate_ocr_models;plate_ocr_models"
+        Write-Host "plate_ocr_models bundled."
+        # موتورهای OCR: اجباری‌اند؛ نبودشان در محیط بیلد = خطای صریح، نه
+        # بیلدِ بی‌صدا-ناقص.
+        foreach ($pkg in @("onnxruntime")) {
           python -c "import $pkg" 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            $pyiArgs += "--collect-all=$pkg"
-            Write-Host "bundling $pkg."
-          } else {
-            Write-Host "WARNING: $pkg not installed in build env; its feature will be disabled in exe."
+          if ($LASTEXITCODE -ne 0) {
+            throw "پکیج $pkg در محیط بیلد نصب نیست؛ بیلد پلاک‌خوان ناقص می‌ماند."
           }
+          $pyiArgs += "--collect-all=$pkg"
+          Write-Host "bundling $pkg."
+        }
+        # ezdxf (نقشه‌ی DXF) همچنان اختیاری است.
+        python -c "import ezdxf" 2>$null
+        if ($LASTEXITCODE -eq 0) {
+          $pyiArgs += "--collect-all=ezdxf"
+          Write-Host "bundling ezdxf."
+        } else {
+          Write-Host "WARNING: ezdxf not installed in build env; map DXF feature will be disabled in exe."
         }
         if ($wsdlDataArg) { $pyiArgs += $wsdlDataArg }
         if (Test-Path "assets") { $pyiArgs += "--add-data=assets;assets" }
@@ -242,14 +297,34 @@ jobs:
         # «Failed to execute script 'pyi_rth_multiprocessing' ... No module
         # named '_socket'» کرش می‌کند. پس بیلد را همین‌جا با پیام فارسی
         # واضح fail می‌کنیم تا exe خراب دست کاربر نرسد.
+        # نکته‌ی چیدمان: در PyInstaller نسخه‌ی ۶ به بعد، حالت onedir همه‌ی
+        # فایل‌های باندل (باینری‌ها مثل _socket.pyd و --add-dataها) را داخل
+        # زیرپوشه‌ی _internal کنار فایل اجرایی می‌گذارد، نه کنار exe؛ پس
+        # اول همان‌جا چک می‌کنیم و بعد چیدمان قدیمی (کنار exe).
         $bundleDir = Join-Path "dist" "CCTV_CMS"
-        $socketPyd = Join-Path $bundleDir "_socket.pyd"
-        if (-not (Test-Path $socketPyd)) {
+        $bundleRoots = @((Join-Path $bundleDir "_internal"), $bundleDir)
+        function Find-Bundled([string]$rel) {
+          foreach ($root in $bundleRoots) {
+            $p = Join-Path $root $rel
+            if (Test-Path $p) { return $p }
+          }
+          return $null
+        }
+        if (-not (Find-Bundled "_socket.pyd")) {
           Write-Host "##[error] بیلد ناقص است: _socket.pyd در dist/CCTV_CMS پیدا نشد؛ exe با خطای No module named '_socket' کرش می‌کند."
           throw "Build verification failed: _socket.pyd missing from bundle."
         }
-        $bundleFiles = (Get-ChildItem -Path $bundleDir -File | Measure-Object).Count
-        Write-Host "Build verification OK: _socket.pyd present, $bundleFiles files in bundle."
+        # --- راستی‌آزمایی پلاک‌خوان: مدل و مدل‌های EasyOCR باید داخل باندل باشند ---
+        if (-not (Find-Bundled "plate_detector.pt")) {
+          Write-Host "##[error] بیلد ناقص است: plate_detector.pt در dist/CCTV_CMS پیدا نشد؛ پلاک‌خوان در exe کار نمی‌کند."
+          throw "Build verification failed: plate_detector.pt missing from bundle."
+        }
+        if (-not (Find-Bundled (Join-Path "plate_ocr_models" "hezar_plate_v2.onnx"))) {
+          Write-Host "##[error] بیلد ناقص است: مدل hezar_plate_v2.onnx در dist/CCTV_CMS/plate_ocr_models پیدا نشد؛ خوانش متن پلاک در exe کار نمی‌کند."
+          throw "Build verification failed: hezar OCR model missing from bundle."
+        }
+        $bundleFiles = (Get-ChildItem -Path $bundleDir -Recurse -File | Measure-Object).Count
+        Write-Host "Build verification OK: _socket.pyd + plate_detector.pt + plate_ocr_models present, $bundleFiles files in bundle."
 
 
     - name: Build Executable with Nuitka (portable, compiled to machine code)
@@ -348,6 +423,16 @@ jobs:
           # می‌کند.
           "--include-data-dir=segformer_floor_model=segformer_floor_model"
 
+          # رفع درخواست «سیستم پلاک‌خوان»: مدل پلاک و مدل‌های EasyOCR هم
+          # مثل بقیه داخل exe پرتابل بسته‌بندی می‌شوند - روی سیستم کاربر
+          # نهایی نه دانلود و نه نصبی لازم است (رجوع کنید به
+          # plate_detector.py: _find_plate_model / _plate_ocr_models_dir).
+          "--include-data-files=plate_detector.pt=plate_detector.pt"
+          "--include-data-dir=plate_ocr_models=plate_ocr_models"
+          # این فقط با import تنبل (داخل تابع) صدا زده می‌شود؛ نویتکا
+          # خودش آن را پیدا نمی‌کند، پس صراحتاً include می‌شود.
+          "--include-package=onnxruntime"
+
           # نکته‌ی مهم: این سه ماژول جداگانه از exclude‌های قبلی (torch.onnx،
           # torch.distributed و ...) هستند و به همان دلیل حذف نشدند - این‌ها
           # فقط جدول‌های عددیِ خودکار-تولیدشده‌ی sympy برای حل معادلات درجه‌ی
@@ -395,6 +480,96 @@ jobs:
     # می‌کرد - دقیقاً نقض هدف کل این تغییر. با این ترتیب (پاک‌سازیِ
     # کش‌های *قدیمی* از اجراهای قبلی، سپس ذخیره‌ی کش *تازه* از همین اجرا)،
     # همیشه فقط آخرین نسخه نگه داشته می‌شود.
+
+    # ============ نصب‌کننده‌ی NSIS + فایل آپدیت ============
+    # روی هر push و هر اجرای دستی: از روی dist/CCTV_CMS یک Setup.exe
+    # با صفحه‌ی اختصاصی + یک «فایل آپدیت» تفاضلی (فقط فایل‌های عوض‌شده
+    # نسبت به آخرین بیلد موفق) ساخته می‌شود.
+
+    - name: Prepare installer payload (version/updater/manifest)
+      if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        # خروجی onefile نوتکا را هم به چیدمان پوشه‌ای تبدیل کن تا نصب‌کننده یکی باشد
+        if ((Test-Path "dist/CCTV_CMS.exe") -and -not (Test-Path "dist/CCTV_CMS")) {
+          New-Item -ItemType Directory -Path "dist/CCTV_CMS" -Force | Out-Null
+          Move-Item "dist/CCTV_CMS.exe" "dist/CCTV_CMS/CCTV_CMS.exe"
+        }
+        if (-not (Test-Path "dist/CCTV_CMS/CCTV_CMS.exe")) { throw "dist/CCTV_CMS/CCTV_CMS.exe not found" }
+        Copy-Item "version.txt" "dist/CCTV_CMS/version.txt" -Force
+        Copy-Item "installer/updater.ps1" "dist/CCTV_CMS/updater.ps1" -Force
+        $ver = (Get-Content "version.txt" -Raw).Trim()
+        "APP_VERSION=$ver" >> $env:GITHUB_ENV
+        Write-Host "APP_VERSION=$ver"
+
+    - name: Build installer graphics (Persian branded pages)
+      if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        python -m pip install pillow arabic_reshaper python-bidi
+        if ($LASTEXITCODE -ne 0) { throw "pip install for graphics failed" }
+        $gfx = "installer/graphics"
+        New-Item -ItemType Directory -Path $gfx -Force | Out-Null
+        Invoke-WebRequest -Uri "https://github.com/rastikerdar/vazirmatn/raw/master/fonts/ttf/Vazirmatn-Bold.ttf" -OutFile "$gfx/Vazirmatn-Bold.ttf"
+        Invoke-WebRequest -Uri "https://github.com/rastikerdar/vazirmatn/raw/master/fonts/ttf/Vazirmatn-Regular.ttf" -OutFile "$gfx/Vazirmatn-Regular.ttf"
+        python installer/make_graphics.py --version $env:APP_VERSION --outdir $gfx --font "$gfx/Vazirmatn-Bold.ttf" --font-regular "$gfx/Vazirmatn-Regular.ttf"
+        if ($LASTEXITCODE -ne 0) { throw "make_graphics.py failed" }
+
+    - name: Generate installer file list + manifest
+      if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        python installer/gen_filelist.py --dist dist/CCTV_CMS --out installer/files.nsi --chunks 16
+        if ($LASTEXITCODE -ne 0) { throw "gen_filelist.py failed" }
+        python installer/make_update.py manifest --dist dist/CCTV_CMS --version $env:APP_VERSION --out dist/CCTV_CMS/manifest.json
+        if ($LASTEXITCODE -ne 0) { throw "make_update.py manifest failed" }
+        Copy-Item "dist/CCTV_CMS/manifest.json" "dist/manifest.json" -Force
+
+    - name: Build Setup EXE (NSIS)
+      if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        $nsis = "C:\Program Files (x86)\NSIS"
+        if (Test-Path (Join-Path $nsis "makensis.exe")) { $nsis >> $env:GITHUB_PATH }
+        makensis /DVERSION=$env:APP_VERSION installer/installer.nsi
+        if ($LASTEXITCODE -ne 0) { throw "makensis failed with code $LASTEXITCODE" }
+        Get-ChildItem dist/IAS-CMS-Setup-*.exe
+
+    - name: Fetch previous manifest (for diff update)
+      if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+      shell: pwsh
+      run: |
+        $prevDir = "prev_manifest"
+        New-Item -ItemType Directory -Path $prevDir -Force | Out-Null
+        try {
+          $runId = gh run list --workflow build.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          if ($runId) {
+            gh run download $runId -n IAS-CMS-manifest -D $prevDir
+            Write-Host "previous manifest downloaded from run $runId"
+          } else {
+            Write-Host "no previous successful run; update will be full payload"
+          }
+        } catch {
+          Write-Host "previous manifest unavailable (first installer build?): $_"
+        }
+        $mf = Join-Path $prevDir "manifest.json"
+        if (Test-Path $mf) { "PREV_MANIFEST=$mf" >> $env:GITHUB_ENV } else { "PREV_MANIFEST=" >> $env:GITHUB_ENV }
+
+    - name: Build update package (diff)
+      if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        $prevArg = @()
+        if ($env:PREV_MANIFEST -and (Test-Path $env:PREV_MANIFEST)) { $prevArg = @("--prev", $env:PREV_MANIFEST) }
+        python installer/make_update.py package --dist dist/CCTV_CMS --version $env:APP_VERSION @prevArg --out "dist/IAS-CMS-Update-v$env:APP_VERSION.zip" --stagedir update_staging
+        if ($LASTEXITCODE -ne 0) { throw "make_update.py package failed" }
+        Get-ChildItem dist/IAS-CMS-Update-*.zip
+
     - name: Clean up old caches (جلوگیری از پر شدن سقف ۱۰ گیگابایتی کش)
       if: always()
       shell: bash
@@ -430,16 +605,21 @@ jobs:
           ~\AppData\Local\Nuitka\Nuitka\Cache
         key: nuitka-cache-windows-${{ hashFiles('requirements.txt') }}-${{ github.run_id }}
 
-    # پوشش هر سه حالت در یک آپلود: onefile فقط dist/CCTV_CMS.exe دارد،
-    # standalone قدیمی پوشه‌ی dist/main.dist، و PyInstaller (quick_test) هم
-    # پوشه‌ی dist/CCTV_CMS - هرکدام نبود، با if-no-files-found: ignore
-    # بدون خطا رد می‌شود.
-    - name: Upload Build Artifact
+    # تحویل نهایی: نصب‌کننده (Setup.exe با صفحه‌ی اختصاصی) + «فایل آپدیت»
+    # تفاضلی هر نسخه + مانیفست (برای diff بیلد بعدی). خروجی portable
+    # دیگر تولید نمی‌شود.
+    - name: Upload installer + update artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: CCTV_CMS_Windows_Portable
+        name: IAS-CMS-Setup-Windows
         path: |
-          dist/CCTV_CMS.exe
-          dist/main.dist/**
-          dist/CCTV_CMS/**
-        if-no-files-found: ignore
+          dist/IAS-CMS-Setup-*.exe
+          dist/IAS-CMS-Update-*.zip
+        if-no-files-found: warn
+
+    - name: Upload manifest (for next diff update)
+      uses: actions/upload-artifact@v4
+      with:
+        name: IAS-CMS-manifest
+        path: dist/manifest.json
+        if-no-files-found: warn

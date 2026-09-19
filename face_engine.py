@@ -35,7 +35,7 @@ class FaceEngine:
         self.unknown_alert_cooldown = unknown_alert_cooldown
         self.known_alert_cooldown = known_alert_cooldown
 
-        self.people = []  # each: id, name, phone, employee_id, note, encoding, photo, created_at
+        self.people = []  # each: id, name, phone, employee_id, note, work_group, encoding, photo, created_at
 
         self._last_unknown_alert = 0.0
         self._last_seen_person = {}  # person_id -> last notified timestamp
@@ -77,6 +77,15 @@ class FaceEngine:
 
     # ---------- CRUD for the face library ----------
 
+    def list_work_groups(self):
+        """لیست یکتای گروه‌های کاری تعریف‌شده (برای پیشنهاد در فرم‌ها و فیلتر)."""
+        groups = set()
+        for p in self.people:
+            g = (p.get("work_group") or "").strip()
+            if g:
+                groups.add(g)
+        return sorted(groups)
+
     def list_people(self):
         """Metadata only (no raw encoding) - safe for the UI table."""
         return [{k: v for k, v in p.items() if k != "encoding"} for p in self.people]
@@ -87,7 +96,8 @@ class FaceEngine:
                 return p
         return None
 
-    def register_face(self, name, image_frame, phone="", employee_id="", note=""):
+    def register_face(self, name, image_frame, phone="", employee_id="", note="",
+                      work_group=""):
         """Detect the face in image_frame and add it as a new library entry.
         Returns the created person dict, or None if no face was found."""
         with self._lock:
@@ -107,6 +117,7 @@ class FaceEngine:
                 "phone": phone,
                 "employee_id": employee_id,
                 "note": note,
+                "work_group": (work_group or "").strip(),
                 "encoding": encodings[0].tolist(),
                 "photo": photo_path,
                 "created_at": time.time(),

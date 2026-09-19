@@ -480,6 +480,96 @@ jobs:
     # می‌کرد - دقیقاً نقض هدف کل این تغییر. با این ترتیب (پاک‌سازیِ
     # کش‌های *قدیمی* از اجراهای قبلی، سپس ذخیره‌ی کش *تازه* از همین اجرا)،
     # همیشه فقط آخرین نسخه نگه داشته می‌شود.
+
+    # ============ نصب‌کننده‌ی NSIS + فایل آپدیت ============
+    # روی هر push و هر اجرای دستی: از روی dist/CCTV_CMS یک Setup.exe
+    # با صفحه‌ی اختصاصی + یک «فایل آپدیت» تفاضلی (فقط فایل‌های عوض‌شده
+    # نسبت به آخرین بیلد موفق) ساخته می‌شود.
+
+    - name: Prepare installer payload (version/updater/manifest)
+      if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        # خروجی onefile نوتکا را هم به چیدمان پوشه‌ای تبدیل کن تا نصب‌کننده یکی باشد
+        if ((Test-Path "dist/CCTV_CMS.exe") -and -not (Test-Path "dist/CCTV_CMS")) {
+          New-Item -ItemType Directory -Path "dist/CCTV_CMS" -Force | Out-Null
+          Move-Item "dist/CCTV_CMS.exe" "dist/CCTV_CMS/CCTV_CMS.exe"
+        }
+        if (-not (Test-Path "dist/CCTV_CMS/CCTV_CMS.exe")) { throw "dist/CCTV_CMS/CCTV_CMS.exe not found" }
+        Copy-Item "version.txt" "dist/CCTV_CMS/version.txt" -Force
+        Copy-Item "installer/updater.ps1" "dist/CCTV_CMS/updater.ps1" -Force
+        $ver = (Get-Content "version.txt" -Raw).Trim()
+        "APP_VERSION=$ver" >> $env:GITHUB_ENV
+        Write-Host "APP_VERSION=$ver"
+
+    - name: Build installer graphics (Persian branded pages)
+      if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        python -m pip install pillow arabic_reshaper python-bidi
+        if ($LASTEXITCODE -ne 0) { throw "pip install for graphics failed" }
+        $gfx = "installer/graphics"
+        New-Item -ItemType Directory -Path $gfx -Force | Out-Null
+        Invoke-WebRequest -Uri "https://github.com/rastikerdar/vazirmatn/raw/master/fonts/ttf/Vazirmatn-Bold.ttf" -OutFile "$gfx/Vazirmatn-Bold.ttf"
+        Invoke-WebRequest -Uri "https://github.com/rastikerdar/vazirmatn/raw/master/fonts/ttf/Vazirmatn-Regular.ttf" -OutFile "$gfx/Vazirmatn-Regular.ttf"
+        python installer/make_graphics.py --version $env:APP_VERSION --outdir $gfx --font "$gfx/Vazirmatn-Bold.ttf" --font-regular "$gfx/Vazirmatn-Regular.ttf"
+        if ($LASTEXITCODE -ne 0) { throw "make_graphics.py failed" }
+
+    - name: Generate installer file list + manifest
+      if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        python installer/gen_filelist.py --dist dist/CCTV_CMS --out installer/files.nsi --chunks 16
+        if ($LASTEXITCODE -ne 0) { throw "gen_filelist.py failed" }
+        python installer/make_update.py manifest --dist dist/CCTV_CMS --version $env:APP_VERSION --out dist/CCTV_CMS/manifest.json
+        if ($LASTEXITCODE -ne 0) { throw "make_update.py manifest failed" }
+        Copy-Item "dist/CCTV_CMS/manifest.json" "dist/manifest.json" -Force
+
+    - name: Build Setup EXE (NSIS)
+      if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        $nsis = "C:\Program Files (x86)\NSIS"
+        if (Test-Path (Join-Path $nsis "makensis.exe")) { $nsis >> $env:GITHUB_PATH }
+        makensis /DVERSION=$env:APP_VERSION installer/installer.nsi
+        if ($LASTEXITCODE -ne 0) { throw "makensis failed with code $LASTEXITCODE" }
+        Get-ChildItem dist/IAS-CMS-Setup-*.exe
+
+    - name: Fetch previous manifest (for diff update)
+      if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+      shell: pwsh
+      run: |
+        $prevDir = "prev_manifest"
+        New-Item -ItemType Directory -Path $prevDir -Force | Out-Null
+        try {
+          $runId = gh run list --workflow build.yml --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          if ($runId) {
+            gh run download $runId -n IAS-CMS-manifest -D $prevDir
+            Write-Host "previous manifest downloaded from run $runId"
+          } else {
+            Write-Host "no previous successful run; update will be full payload"
+          }
+        } catch {
+          Write-Host "previous manifest unavailable (first installer build?): $_"
+        }
+        $mf = Join-Path $prevDir "manifest.json"
+        if (Test-Path $mf) { "PREV_MANIFEST=$mf" >> $env:GITHUB_ENV } else { "PREV_MANIFEST=" >> $env:GITHUB_ENV }
+
+    - name: Build update package (diff)
+      if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        $prevArg = @()
+        if ($env:PREV_MANIFEST -and (Test-Path $env:PREV_MANIFEST)) { $prevArg = @("--prev", $env:PREV_MANIFEST) }
+        python installer/make_update.py package --dist dist/CCTV_CMS --version $env:APP_VERSION @prevArg --out "dist/IAS-CMS-Update-v$env:APP_VERSION.zip" --stagedir update_staging
+        if ($LASTEXITCODE -ne 0) { throw "make_update.py package failed" }
+        Get-ChildItem dist/IAS-CMS-Update-*.zip
+
     - name: Clean up old caches (جلوگیری از پر شدن سقف ۱۰ گیگابایتی کش)
       if: always()
       shell: bash
@@ -515,16 +605,21 @@ jobs:
           ~\AppData\Local\Nuitka\Nuitka\Cache
         key: nuitka-cache-windows-${{ hashFiles('requirements.txt') }}-${{ github.run_id }}
 
-    # پوشش هر سه حالت در یک آپلود: onefile فقط dist/CCTV_CMS.exe دارد،
-    # standalone قدیمی پوشه‌ی dist/main.dist، و PyInstaller (quick_test) هم
-    # پوشه‌ی dist/CCTV_CMS - هرکدام نبود، با if-no-files-found: ignore
-    # بدون خطا رد می‌شود.
-    - name: Upload Build Artifact
+    # تحویل نهایی: نصب‌کننده (Setup.exe با صفحه‌ی اختصاصی) + «فایل آپدیت»
+    # تفاضلی هر نسخه + مانیفست (برای diff بیلد بعدی). خروجی portable
+    # دیگر تولید نمی‌شود.
+    - name: Upload installer + update artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: CCTV_CMS_Windows_Portable
+        name: IAS-CMS-Setup-Windows
         path: |
-          dist/CCTV_CMS.exe
-          dist/main.dist/**
-          dist/CCTV_CMS/**
-        if-no-files-found: ignore
+          dist/IAS-CMS-Setup-*.exe
+          dist/IAS-CMS-Update-*.zip
+        if-no-files-found: warn
+
+    - name: Upload manifest (for next diff update)
+      uses: actions/upload-artifact@v4
+      with:
+        name: IAS-CMS-manifest
+        path: dist/manifest.json
+        if-no-files-found: warn

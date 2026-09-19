@@ -6,8 +6,32 @@ from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QTextEdit,
     QTableWidget, QTableWidgetItem, QPushButton, QMessageBox, QDialogButtonBox,
-    QHeaderView, QLabel, QFileDialog
+    QHeaderView, QLabel, QFileDialog, QComboBox
 )
+
+
+def _work_group_combo(work_groups=(), current=""):
+    """کامبوباکس قابل‌ویرایش «گروه کاری»: گروه‌های موجود پیشنهاد می‌شوند و
+    کاربر می‌تواند گروه جدید هم تایپ کند."""
+    combo = QComboBox()
+    combo.setEditable(True)
+    combo.setMinimumWidth(160)
+    seen = []
+    for g in work_groups:
+        g = (g or "").strip()
+        if g and g not in seen:
+            seen.append(g)
+    combo.addItems(seen)
+    if current:
+        idx = combo.findText(current)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        else:
+            combo.setEditText(current)
+    elif seen:
+        combo.setCurrentIndex(-1)
+        combo.setEditText("")
+    return combo
 
 
 def _imread_unicode(path):
@@ -25,7 +49,7 @@ class AddFaceFromImageDialog(QDialog):
     تصویر از سیستم خودش انتخاب می‌کند، پیش‌نمایش آن را می‌بیند و مشخصات فرد
     را وارد می‌کند."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, work_groups=()):
         super().__init__(parent)
         self.setWindowTitle("افزودن چهره از تصویر")
         self.setMinimumWidth(360)
@@ -45,6 +69,7 @@ class AddFaceFromImageDialog(QDialog):
         self.name_input = QLineEdit()
         self.phone_input = QLineEdit()
         self.employee_id_input = QLineEdit()
+        self.work_group_input = _work_group_combo(work_groups)
         self.note_input = QTextEdit()
         self.note_input.setFixedHeight(60)
 
@@ -52,6 +77,7 @@ class AddFaceFromImageDialog(QDialog):
         form.addRow("نام و نام‌خانوادگی:", self.name_input)
         form.addRow("شماره تلفن:", self.phone_input)
         form.addRow("شماره کارمندی:", self.employee_id_input)
+        form.addRow("گروه کاری:", self.work_group_input)
         form.addRow("توضیحات:", self.note_input)
 
         self.status_label = QLabel("")
@@ -120,15 +146,16 @@ class AddFaceFromImageDialog(QDialog):
             "name": self.name_input.text().strip(),
             "phone": self.phone_input.text().strip(),
             "employee_id": self.employee_id_input.text().strip(),
+            "work_group": self.work_group_input.currentText().strip(),
             "note": self.note_input.toPlainText().strip(),
             "frame": self.selected_frame,
         }
 
 
 class PersonFormDialog(QDialog):
-    """فرم وارد کردن مشخصات فرد: نام، شماره تلفن، شماره کارمندی، توضیحات."""
+    """فرم وارد کردن مشخصات فرد: نام، شماره تلفن، شماره کارمندی، گروه کاری، توضیحات."""
 
-    def __init__(self, parent=None, existing=None):
+    def __init__(self, parent=None, existing=None, work_groups=()):
         super().__init__(parent)
         self.setWindowTitle("مشخصات فرد")
         self.setMinimumWidth(320)
@@ -136,6 +163,8 @@ class PersonFormDialog(QDialog):
         self.name_input = QLineEdit()
         self.phone_input = QLineEdit()
         self.employee_id_input = QLineEdit()
+        self.work_group_input = _work_group_combo(
+            work_groups, (existing or {}).get("work_group", ""))
         self.note_input = QTextEdit()
         self.note_input.setFixedHeight(60)
 
@@ -149,6 +178,7 @@ class PersonFormDialog(QDialog):
         form.addRow("نام و نام‌خانوادگی:", self.name_input)
         form.addRow("شماره تلفن:", self.phone_input)
         form.addRow("شماره کارمندی:", self.employee_id_input)
+        form.addRow("گروه کاری:", self.work_group_input)
         form.addRow("توضیحات:", self.note_input)
 
         buttons = QDialogButtonBox(
@@ -173,6 +203,7 @@ class PersonFormDialog(QDialog):
             "name": self.name_input.text().strip(),
             "phone": self.phone_input.text().strip(),
             "employee_id": self.employee_id_input.text().strip(),
+            "work_group": self.work_group_input.currentText().strip(),
             "note": self.note_input.toPlainText().strip(),
         }
 
@@ -182,7 +213,7 @@ class FaceLibraryPage(QWidget):
     صفحه‌ی جداگانه داخل QStackedWidget پنجره‌ی اصلی (قابل دسترسی از هدر
     بالای برنامه)، نه یک دیالوگ مستقل."""
 
-    COLUMNS = ["عکس", "نام", "شماره تلفن", "شماره کارمندی", "توضیحات"]
+    COLUMNS = ["عکس", "نام", "گروه کاری", "شماره تلفن", "شماره کارمندی", "توضیحات"]
 
     def __init__(self, face_engine, get_current_frame_callback, parent=None):
         super().__init__(parent)
@@ -192,9 +223,18 @@ class FaceLibraryPage(QWidget):
         title = QLabel("👤 Face Library - مدیریت چهره‌ها")
         title.setStyleSheet("font-size: 16px; font-weight: bold; padding: 4px;")
 
+        # فیلتر دسته‌بندی بر اساس گروه کاری
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("🏷 فیلتر گروه کاری:"))
+        self.group_filter = QComboBox()
+        self.group_filter.setMinimumWidth(180)
+        self.group_filter.currentIndexChanged.connect(self.refresh_table)
+        filter_row.addWidget(self.group_filter)
+        filter_row.addStretch()
+
         self.table = QTableWidget(0, len(self.COLUMNS))
         self.table.setHorizontalHeaderLabels(self.COLUMNS)
-        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
 
@@ -216,20 +256,45 @@ class FaceLibraryPage(QWidget):
 
         layout = QVBoxLayout()
         layout.addWidget(title)
+        layout.addLayout(filter_row)
         layout.addWidget(self.table, 1)
         layout.addLayout(btn_row)
         self.setLayout(layout)
 
         self.refresh_table()
 
+    def _reload_group_filter(self):
+        cur = self.group_filter.currentData()
+        self.group_filter.blockSignals(True)
+        self.group_filter.clear()
+        self.group_filter.addItem("همه‌ی گروه‌ها", None)
+        self.group_filter.addItem("— بدون گروه —", "")
+        for g in self.face_engine.list_work_groups():
+            self.group_filter.addItem(g, g)
+        if cur is not None:
+            idx = self.group_filter.findData(cur)
+            if idx >= 0:
+                self.group_filter.setCurrentIndex(idx)
+        self.group_filter.blockSignals(False)
+
     def refresh(self):
         """هر بار که صفحه از هدر باز می‌شود صدا زده می‌شود تا جدول تازه باشد."""
         self.refresh_table()
 
     def refresh_table(self):
+        self._reload_group_filter()
+        wanted = self.group_filter.currentData()
         people = self.face_engine.list_people()
         self.table.setRowCount(0)
         for person in people:
+            pg = (person.get("work_group") or "").strip()
+            if wanted is None:
+                pass
+            elif wanted == "":
+                if pg:
+                    continue
+            elif pg != wanted:
+                continue
             row = self.table.rowCount()
             self.table.insertRow(row)
 
@@ -240,9 +305,10 @@ class FaceLibraryPage(QWidget):
             self.table.setCellWidget(row, 0, photo_label)
 
             self.table.setItem(row, 1, QTableWidgetItem(person.get("name", "")))
-            self.table.setItem(row, 2, QTableWidgetItem(person.get("phone", "")))
-            self.table.setItem(row, 3, QTableWidgetItem(person.get("employee_id", "")))
-            self.table.setItem(row, 4, QTableWidgetItem(person.get("note", "")))
+            self.table.setItem(row, 2, QTableWidgetItem(pg or "—"))
+            self.table.setItem(row, 3, QTableWidgetItem(person.get("phone", "")))
+            self.table.setItem(row, 4, QTableWidgetItem(person.get("employee_id", "")))
+            self.table.setItem(row, 5, QTableWidgetItem(person.get("note", "")))
             # شناسه داخلی را در آیتم مخفی نگه می‌داریم تا هنگام ویرایش/حذف قابل بازیابی باشد.
             self.table.item(row, 1).setData(Qt.ItemDataRole.UserRole, person.get("id"))
 
@@ -259,7 +325,7 @@ class FaceLibraryPage(QWidget):
             QMessageBox.warning(self, "خطا", "ابتدا یک دوربین را متصل و انتخاب کنید تا از تصویر زنده آن چهره ثبت شود.")
             return
 
-        form = PersonFormDialog(self)
+        form = PersonFormDialog(self, work_groups=self.face_engine.list_work_groups())
         if form.exec() == QDialog.DialogCode.Accepted:
             data = form.get_data()
             person = self.face_engine.register_face(
@@ -268,6 +334,7 @@ class FaceLibraryPage(QWidget):
                 phone=data["phone"],
                 employee_id=data["employee_id"],
                 note=data["note"],
+                work_group=data["work_group"],
             )
             if person:
                 QMessageBox.information(self, "موفقیت", f"چهره «{data['name']}» با موفقیت در Face Library ثبت شد.")
@@ -276,7 +343,7 @@ class FaceLibraryPage(QWidget):
                 QMessageBox.warning(self, "خطا", "چهره‌ای در تصویر تشخیص داده نشد. لطفاً نزدیک‌تر و روبه‌روی دوربین قرار بگیرید.")
 
     def add_from_image(self):
-        dialog = AddFaceFromImageDialog(self)
+        dialog = AddFaceFromImageDialog(self, work_groups=self.face_engine.list_work_groups())
         if dialog.exec() == QDialog.DialogCode.Accepted:
             data = dialog.get_data()
             person = self.face_engine.register_face(
@@ -285,6 +352,7 @@ class FaceLibraryPage(QWidget):
                 phone=data["phone"],
                 employee_id=data["employee_id"],
                 note=data["note"],
+                work_group=data["work_group"],
             )
             if person:
                 QMessageBox.information(self, "موفقیت", f"چهره «{data['name']}» با موفقیت در Face Library ثبت شد.")
@@ -301,7 +369,9 @@ class FaceLibraryPage(QWidget):
             QMessageBox.warning(self, "خطا", "لطفاً یک فرد را از لیست انتخاب کنید.")
             return
         existing = self.face_engine.get_person(person_id)
-        form = PersonFormDialog(self, existing=existing)
+        form = PersonFormDialog(
+            self, existing=existing,
+            work_groups=self.face_engine.list_work_groups())
         if form.exec() == QDialog.DialogCode.Accepted:
             self.face_engine.update_person(person_id, **form.get_data())
             self.refresh_table()
