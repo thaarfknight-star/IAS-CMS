@@ -148,6 +148,15 @@ def header_band(img, title, subtitle, logo_path, version=None,
     return img
 
 
+def footer_strip(img):
+    """نوار فوتر پایین کادر (y=540..600): لنگر بصری دکمه‌های واقعی NSIS
+    که در y=546 قرار می‌گیرند."""
+    draw = ImageDraw.Draw(img, "RGBA")
+    draw.rectangle([0, 540, W, 600], fill=(13, 18, 22, 255))
+    draw.line([(0, 540), (W, 540)], fill=GOLD + (255,), width=2)
+    return img
+
+
 def screen_welcome(logo_full, logo_shield, version, fb, fr):
     img = add_glow(gradient_bg())
     draw = ImageDraw.Draw(img, "RGBA")
@@ -190,10 +199,10 @@ def screen_welcome(logo_full, logo_shield, version, fb, fr):
         draw_check(draw, cx1 - 34, yy + 16, 16, WHITE, 3)
         text_r(draw, (cx1 - 56, yy + 4), f_, fr, TEXT)
         yy += 44
-    # راهنمای پایین — با فاصله‌ی امن از دکمه‌های واقعی (y=506)
-    text_r(draw, (W - 48, 458),
+    # راهنمای بالای نوار فوتر (دکمه‌های واقعی در y=546 روی نوار فوتر می‌نشینند)
+    text_r(draw, (W - 48, 492),
            "برای ادامه، «شروع نصب» را بزنید.", fr, MUTED)
-    return img
+    return footer_strip(img)
 
 
 def screen_dir(logo_shield, version, fb, fr):
@@ -211,7 +220,7 @@ def screen_dir(logo_shield, version, fb, fr):
     text_r(draw, (W - 60, 400),
            "حداقل ۲ گیگابایت فضای خالی لازم است. میان‌برها در منوی استارت و دسکتاپ ساخته می‌شوند.",
            fr, MUTED)
-    return img
+    return footer_strip(img)
 
 
 def screen_install(logo_shield, version, fb, fr):
@@ -235,7 +244,7 @@ def screen_install(logo_shield, version, fb, fr):
         rounded(draw, [60, yy, W - 60, yy + 56], 12, CARD + (200,))
         text_r(draw, (W - 84, yy + 14), t, fr, TEXT)
         yy += 68
-    return img
+    return footer_strip(img)
 
 
 def screen_finish(logo_shield, version, fb, fr):
@@ -254,7 +263,7 @@ def screen_finish(logo_shield, version, fb, fr):
     text_c(draw, (cx, 410), "نصب با موفقیت انجام شد", fb, WHITE)
     text_c(draw, (cx, 452),
            "سورنا نسخه " + version + " آماده‌ی استفاده است.", fr, MUTED)
-    return img
+    return footer_strip(img)
 
 
 def screen_uninstall(logo_shield, version, fb, fr):
@@ -301,10 +310,10 @@ def screen_uninstall(logo_shield, version, fb, fr):
         draw.line([(cx1 - 29, yy + 11), (cx1 - 39, yy + 21)], fill=WHITE, width=3)
         text_r(draw, (cx1 - 56, yy + 4), it, fr, TEXT)
         yy += 44
-    # راهنمای پایین — با فاصله‌ی امن از دکمه‌های واقعی (y=506)
-    text_r(draw, (W - 48, 458),
+    # راهنمای بالای نوار فوتر (دکمه‌های واقعی در y=546 روی نوار فوتر می‌نشینند)
+    text_r(draw, (W - 48, 492),
            "برای شروع، «حذف کامل» را بزنید. این عمل غیرقابل بازگشت است.", fr, MUTED)
-    return img
+    return footer_strip(img)
 
 
 def screen_uninstall_progress(logo_shield, version, fb, fr):
@@ -318,7 +327,7 @@ def screen_uninstall_progress(logo_shield, version, fb, fr):
     draw.rounded_rectangle([60, 300, W - 60, 344], radius=17,
                            outline=(58, 75, 82, 255), width=2, fill=(20, 27, 32, 255))
     draw.rounded_rectangle([60, 358, W - 60, 402], radius=14, fill=(20, 27, 32, 255))
-    return img
+    return footer_strip(img)
 
 
 def screen_uninstall_finish(logo_shield, version, fb, fr):
@@ -336,7 +345,7 @@ def screen_uninstall_finish(logo_shield, version, fb, fr):
     text_c(draw, (cx, 410), "حذف کامل انجام شد", fb, WHITE)
     text_c(draw, (cx, 452),
            "هیچ اثری از سورنا روی سیستم باقی نماند.", fr, MUTED)
-    return img
+    return footer_strip(img)
 
 
 def main():

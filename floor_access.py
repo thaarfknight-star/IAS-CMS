@@ -69,12 +69,13 @@ def resolve_camera_floor(cam_id, camera_store=None, building_map=None):
     return ""
 
 
-def evaluate_floor_access(person_id, face_person_id, floor_id, person_store):
+def evaluate_floor_access(person_id, face_person_id, floor_id, person_store,
+                        face_engine=None):
     """ارزیابی قانون تردد. خروجی: (مجاز؟, دلیل, is_defined)
-    - دلیل: 'undefined' / 'defined' / 'no_floor' / 'free'
-    - قانون تکی: اول قانون «چهره» (کلید بانک چهره = face_person_id) چک
-      می‌شود؛ اگر نبود، قانون رکورد ردیابی (person_id) برای سازگاری با
-      نسخه‌های قبل. قانون تکیِ پیدا‌شده نسبت به قانون سراسری اولویت دارد."""
+    - دلیل: 'undefined' / 'defined' / 'work_group' / 'no_floor' / 'free'
+    - ترتیب اولویت برای افراد تعریف‌شده: ۱) قانون تکی شخص ۲) قانون «گروه
+      کاری» شخص (از بانک چهره) ۳) آزاد. قانون تکیِ پیدا‌شده نسبت به قانون
+      سراسری اولویت دارد."""
     if not floor_id:
         return True, "no_floor", False
     person = None
@@ -98,7 +99,23 @@ def evaluate_floor_access(person_id, face_person_id, floor_id, person_store):
             return True, "defined", known_face
         return (floor_id in personal), "defined", known_face
     if known_face:
-        # تعریف‌شده بدون قانون تکی = آزاد
+        # قانون «گروه کاری»: اگر برای work_group شخص قانونی ثبت شده باشد
+        group_rule = None
+        try:
+            wg = ""
+            if face_engine is not None and face_person_id:
+                rec = face_engine.get_person(face_person_id)
+                if rec:
+                    wg = (rec.get("work_group") or "").strip()
+            if wg:
+                group_rule = person_store.get_work_group_allowed_floors(wg)
+        except Exception:
+            group_rule = None
+        if group_rule is not None:
+            if group_rule == ALL_FLOORS:
+                return True, "work_group", True
+            return (floor_id in group_rule), "work_group", True
+        # تعریف‌شده بدون قانون تکی و بدون قانون گروه = آزاد
         return True, "free", True
     # تعریف‌نشده: قانون سراسری
     try:

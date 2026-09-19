@@ -1,7 +1,7 @@
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QListWidget,
-    QListWidgetItem, QLabel, QMenu, QGroupBox, QComboBox,
+    QListWidgetItem, QLabel, QMenu, QGroupBox, QComboBox, QCheckBox,
 )
 
 from fire_alarm_io import PANEL_TYPE_LABELS_FA
@@ -19,11 +19,14 @@ class FireAlarmPage(QWidget):
     MainWindow سپرده می‌شود چون آن تردها در سطح MainWindow نگهداری
     می‌شوند."""
 
-    def __init__(self, fire_alarm_store, start_monitor_callback, stop_monitor_callback, parent=None):
+    def __init__(self, fire_alarm_store, start_monitor_callback, stop_monitor_callback, parent=None,
+                 camera_store=None, on_fire_toggle=None):
         super().__init__(parent)
         self.fire_alarm_store = fire_alarm_store
         self.start_monitor_callback = start_monitor_callback
         self.stop_monitor_callback = stop_monitor_callback
+        self.camera_store = camera_store
+        self.on_fire_toggle = on_fire_toggle  # (cam_id, enabled) -> None
 
         title = QLabel("🔥 پنل‌های اعلام حریق")
         title.setStyleSheet("font-size: 16px; font-weight: bold; padding: 4px;")
@@ -59,6 +62,29 @@ class FireAlarmPage(QWidget):
         vision_hint.setStyleSheet("color: #888; font-size: 10px;")
         vision_hint.setWordWrap(True)
         vision_layout.addWidget(vision_hint)
+        cam_hint = QLabel(
+            "دوربین‌هایی که تشخیص تصویری آتش/دود روی آن‌ها فعال باشد "
+            "(مثل پلاک‌خوان، برای هر دوربین جداگانه):")
+        cam_hint.setStyleSheet("color: #888; font-size: 10px;")
+        cam_hint.setWordWrap(True)
+        vision_layout.addWidget(cam_hint)
+        self.camera_checklist = QListWidget()
+        self.camera_checklist.setMaximumHeight(130)
+        self.camera_checklist.itemChanged.connect(self._on_camera_check_changed)
+        vision_layout.addWidget(self.camera_checklist)
+        # صدای آلارم: اختیاری، پیش‌فرض خاموش
+        sound_row = QHBoxLayout()
+        from alarm_sound import load_config, save_config
+        self._alarm_cfg = load_config()
+        self.sound_enabled_chk = QCheckBox("🔊 پخش صدای آلارم (آژیر/بیپ)")
+        self.sound_enabled_chk.setChecked(bool(self._alarm_cfg.get("enabled", False)))
+        self.sound_enabled_chk.toggled.connect(self._on_sound_enabled_toggled)
+        sound_row.addWidget(self.sound_enabled_chk)
+        sound_test_btn = QPushButton("تست صدا")
+        sound_test_btn.clicked.connect(self._on_sound_test)
+        sound_row.addWidget(sound_test_btn)
+        sound_row.addStretch()
+        vision_layout.addLayout(sound_row)
         vision_group.setLayout(vision_layout)
 
         layout = QVBoxLayout()
@@ -82,6 +108,75 @@ class FireAlarmPage(QWidget):
             self.sensitivity_combo.findData(get_sensitivity())
         )
         self.reload_fire_alarm_list()
+        self._reload_camera_checklist()
+
+    def _all_cameras(self):
+        out = []
+        try:
+            for cam in self.camera_store.standalone_cameras():
+                out.append((cam.get("id"),
+                            cam.get("name") or cam.get("ip") or "دوربین"))
+            for nvr in self.camera_store.nvrs:
+                for cam in self.camera_store.cameras_for_nvr(nvr.get("id")):
+                    out.append((cam.get("id"),
+                                cam.get("name") or cam.get("ip") or "دوربین"))
+        except Exception:
+            pass
+        return out
+
+    def _reload_camera_checklist(self):
+        if self.camera_store is None:
+            return
+        cam_by_id = {}
+        try:
+            for cam in self.camera_store.standalone_cameras():
+                cam_by_id[cam.get("id")] = cam
+            for nvr in self.camera_store.nvrs:
+                for cam in self.camera_store.cameras_for_nvr(nvr.get("id")):
+                    cam_by_id[cam.get("id")] = cam
+        except Exception:
+            pass
+        self.camera_checklist.blockSignals(True)
+        self.camera_checklist.clear()
+        for cam_id, label in self._all_cameras():
+            cam = cam_by_id.get(cam_id, {})
+            item = QListWidgetItem(f"🎥 {label}")
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked
+                               if cam.get("fire_detection") else Qt.CheckState.Unchecked)
+            item.setData(Qt.ItemDataRole.UserRole, cam_id)
+            self.camera_checklist.addItem(item)
+        self.camera_checklist.blockSignals(False)
+
+    def _on_sound_enabled_toggled(self, checked):
+        try:
+            from alarm_sound import save_config
+            self._alarm_cfg["enabled"] = bool(checked)
+            save_config(self._alarm_cfg)
+        except Exception:
+            pass
+
+    def _on_sound_test(self):
+        try:
+            from alarm_sound import AlarmSoundPlayer
+            AlarmSoundPlayer(dict(self._alarm_cfg, enabled=True)).play_once()
+        except Exception:
+            pass
+
+    def _on_camera_check_changed(self, item):
+        cam_id = item.data(Qt.ItemDataRole.UserRole)
+        enabled = item.checkState() == Qt.CheckState.Checked
+        try:
+            self.camera_store.update_camera(cam_id, fire_detection=enabled)
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "خطا", f"ذخیره‌ی تنظیم دوربین ناموفق بود:\n{e}")
+            return
+        if callable(self.on_fire_toggle):
+            try:
+                self.on_fire_toggle(cam_id, enabled)
+            except Exception:
+                pass
 
     def open_add_fire_alarm_dialog(self):
         dialog = AddFireAlarmDialog(self)

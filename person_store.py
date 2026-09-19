@@ -111,6 +111,12 @@ class PersonStore:
                     person_id TEXT PRIMARY KEY,
                     allowed_floors TEXT DEFAULT ''
                 );
+                -- کنترل تردد طبقاتی: طبقات مجاز هر «گروه کاری» (work_group
+                -- بانک چهره)؛ قانون تکی شخص نسبت به آن اولویت دارد.
+                CREATE TABLE IF NOT EXISTS work_group_floor_access (
+                    work_group TEXT PRIMARY KEY,
+                    allowed_floors TEXT DEFAULT ''
+                );
                 -- تخلفات تردد غیرمجاز در طبقات
                 CREATE TABLE IF NOT EXISTS floor_violations (
                     id TEXT PRIMARY KEY,
@@ -228,6 +234,45 @@ class PersonStore:
                     " VALUES(?, ?)",
                     (person_id, self._dump_floor_list(floors)))
             self._conn.commit()
+
+    def get_work_group_allowed_floors(self, work_group):
+        """طبقات مجاز یک گروه کاری؛ None یعنی قانونی تعریف نشده (آزاد)."""
+        work_group = (work_group or "").strip()
+        if not work_group:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT allowed_floors FROM work_group_floor_access WHERE work_group=?",
+                (work_group,)).fetchone()
+        if row is None:
+            return None
+        return self._parse_floor_list(row["allowed_floors"])
+
+    def set_work_group_allowed_floors(self, work_group, floors):
+        """floors: لیست floor_id یا «*»؛ None یعنی حذف قانون (آزاد)."""
+        work_group = (work_group or "").strip()
+        if not work_group:
+            return
+        with self._lock:
+            if floors is None:
+                self._conn.execute(
+                    "DELETE FROM work_group_floor_access WHERE work_group=?",
+                    (work_group,))
+            else:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO work_group_floor_access(work_group, allowed_floors)"
+                    " VALUES(?, ?)",
+                    (work_group, self._dump_floor_list(floors)))
+            self._conn.commit()
+
+    def list_work_group_floor_rules(self):
+        """لیست (work_group, allowed_floors) قوانین ثبت‌شده‌ی گروه‌ها."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT work_group, allowed_floors FROM work_group_floor_access"
+                " ORDER BY work_group").fetchall()
+        return [(r["work_group"], self._parse_floor_list(r["allowed_floors"]))
+                for r in rows]
 
     def get_person(self, person_id):
         """یک رکورد شخص (برای خواندن face_person_id و ...)."""

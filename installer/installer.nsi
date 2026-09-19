@@ -305,9 +305,9 @@ Function ShowWelcome
   Pop $BtnNext
   Push $BtnNext
   Push 700
-  Push 506
+  Push 546
   Push 220
-  Push 44
+  Push 40
   Call PlaceCtl
   ${NSD_OnClick} $BtnNext OnWelcomeNext
   Push "انصراف"
@@ -315,9 +315,9 @@ Function ShowWelcome
   Pop $BtnCancel
   Push $BtnCancel
   Push 40
-  Push 506
+  Push 546
   Push 150
-  Push 44
+  Push 40
   Call PlaceCtl
   ${NSD_OnClick} $BtnCancel OnCancel
 FunctionEnd
@@ -359,9 +359,9 @@ Function ShowDir
   Pop $BtnNext
   Push $BtnNext
   Push 700
-  Push 506
+  Push 546
   Push 220
-  Push 44
+  Push 40
   Call PlaceCtl
   ${NSD_OnClick} $BtnNext OnDirNext
   Push "بازگشت"
@@ -369,9 +369,9 @@ Function ShowDir
   Pop $BtnBack
   Push $BtnBack
   Push 210
-  Push 506
+  Push 546
   Push 150
-  Push 44
+  Push 40
   Call PlaceCtl
   ${NSD_OnClick} $BtnBack OnDirBack
   Push "انصراف"
@@ -379,9 +379,9 @@ Function ShowDir
   Pop $BtnCancel
   Push $BtnCancel
   Push 40
-  Push 506
+  Push 546
   Push 150
-  Push 44
+  Push 40
   Call PlaceCtl
   ${NSD_OnClick} $BtnCancel OnCancel
 FunctionEnd
@@ -482,7 +482,7 @@ FunctionEnd
 Function DoInstall
   StrCpy $R9 ""
   ${NSD_SetText} $StatusLabel "در حال ساخت پوشه‌ها…"
-  System::Call 'user32::UpdateWindow(i $StatusLabel)'
+  System::Call 'user32::RedrawWindow(i $StatusLabel, i 0, i 0, i 0x181)'
   CreateDirectory "$INSTDIR"
   ${If} ${Errors}
     StrCpy $R9 "ساخت پوشه‌ی نصب ممکن نشد: $INSTDIR"
@@ -495,7 +495,7 @@ Function DoInstall
     Return
   ${EndIf}
   ${NSD_SetText} $StatusLabel "در حال ساخت میان‌برها…"
-  System::Call 'user32::UpdateWindow(i $StatusLabel)'
+  System::Call 'user32::RedrawWindow(i $StatusLabel, i 0, i 0, i 0x181)'
   CreateDirectory "$SMPROGRAMS\${APP_NAME}"
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" \
     "$INSTDIR\${EXE_NAME}" "" "$INSTDIR\${EXE_NAME}" 0
@@ -545,9 +545,9 @@ Function ShowFinish
   Pop $BtnNext
   Push $BtnNext
   Push 700
-  Push 530
+  Push 546
   Push 220
-  Push 44
+  Push 40
   Call PlaceCtl
   ${NSD_OnClick} $BtnNext OnFinish
 FunctionEnd
@@ -674,7 +674,7 @@ Function ShowUninstMenu
   Call ApplyFontReg
   Push $StatusLabel
   Push 210
-  Push 508
+  Push 436
   Push 470
   Push 32
   Call PlaceCtl
@@ -688,9 +688,9 @@ Function ShowUninstMenu
   Pop $BtnNext
   Push $BtnNext
   Push 700
-  Push 506
+  Push 546
   Push 220
-  Push 44
+  Push 40
   Call PlaceCtl
   ${NSD_OnClick} $BtnNext OnUninstStart
   Push "انصراف"
@@ -698,9 +698,9 @@ Function ShowUninstMenu
   Pop $BtnCancel
   Push $BtnCancel
   Push 40
-  Push 506
+  Push 546
   Push 150
-  Push 44
+  Push 40
   Call PlaceCtl
   ${NSD_OnClick} $BtnCancel OnUninstCancel
 FunctionEnd
@@ -735,16 +735,58 @@ Function ShowUninstDoing
   Call PlaceCtl
 FunctionEnd
 
+Function UninstStep
+  ; Push "متن وضعیت"، Push درصد → به‌روزرسانی نوار + لیبل با نقاشی فوری
+  Pop $R0 ; pct
+  Pop $R1 ; text
+  SendMessage $ProgressBar ${PBM_SETPOS} $R0 0
+  System::Call 'user32::RedrawWindow(i $ProgressBar, i 0, i 0, i 0x181)'
+  ${NSD_SetText} $StatusLabel $R1
+  System::Call 'user32::RedrawWindow(i $StatusLabel, i 0, i 0, i 0x181)'
+FunctionEnd
+
 Function OnUninstStart
   Call ClearScreen
   Call ShowUninstDoing
   System::Call 'user32::UpdateWindow(i $Dialog)'
-  SendMessage $ProgressBar ${PBM_SETPOS} 15 0
-  ${NSD_SetText} $StatusLabel "در حال حذف کامل…"
-  System::Call 'user32::UpdateWindow(i $StatusLabel)'
-  !insertmacro FULL_CLEANUP_BODY
-  SendMessage $ProgressBar ${PBM_SETPOS} 100 0
-  System::Call 'user32::UpdateWindow(i $ProgressBar)'
+  ; پاک‌سازی مرحله‌به‌مرحله با نوار پیشرفت واقعی (مثل FULL_CLEANUP_BODY)
+  Push "در حال بستن برنامه…"
+  Push 8
+  Call UninstStep
+  nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /F /IM "${EXE_NAME}"'
+  Pop $0
+  Pop $1
+  Sleep 800
+  Push "در حال حذف میان‌برها…"
+  Push 22
+  Call UninstStep
+  Delete "$SMPROGRAMS\${APP_NAME}\*.lnk"
+  RMDir "$SMPROGRAMS\${APP_NAME}"
+  Delete "$DESKTOP\${APP_NAME}.lnk"
+  Push "در حال حذف فایل‌های برنامه…"
+  Push 45
+  Call UninstStep
+  RMDir /r "$INSTDIR"
+  Push "در حال پاک‌سازی رجیستری…"
+  Push 65
+  Call UninstStep
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}"
+  DeleteRegKey HKCU "Software\${APP_EN}"
+  DeleteRegKey HKCU "Software\ImenaraSorena"
+  Push "در حال حذف داده‌های کاربر…"
+  Push 85
+  Call UninstStep
+  RMDir /r "$APPDATA\ImenaraSorena"
+  RMDir /r "$LOCALAPPDATA\ImenaraSorena"
+  IfFileExists "$PROFILE\plate_data\plates.db" 0 +2
+    RMDir /r "$PROFILE\plate_data"
+  Push "در حال حذف فایل‌های موقت…"
+  Push 96
+  Call UninstStep
+  Delete "$TEMP\${APP_EN}*.*"
+  Push "تمام شد."
+  Push 100
+  Call UninstStep
   Sleep 400
   Call ClearScreen
   Call ShowUninstDone
@@ -759,9 +801,9 @@ Function ShowUninstDone
   Pop $BtnNext
   Push $BtnNext
   Push 700
-  Push 506
+  Push 546
   Push 220
-  Push 44
+  Push 40
   Call PlaceCtl
   ${NSD_OnClick} $BtnNext OnUninstCancel
 FunctionEnd

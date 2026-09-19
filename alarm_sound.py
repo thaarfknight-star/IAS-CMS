@@ -23,7 +23,8 @@ _DEFAULT_WAV = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "assets", "fire_alarm.wav")
 
 DEFAULT_CONFIG = {
-    "enabled": True,
+    # پیش‌فرض: خاموش — کاربر اگر خواست از تنظیمات فعال می‌کند
+    "enabled": False,
     "sound_file": "",        # خالی = فایل پیش‌فرض assets/fire_alarm.wav
     "volume": 0.9,           # 0.0 تا 1.0 (فقط برای QSoundEffect)
     "loop": True,            # تکرار تا قطع شدن

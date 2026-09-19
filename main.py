@@ -82,6 +82,7 @@ except ImportError:
     BuildingFireSettingsDialog = None
     _BUILDING_FIRE_AVAILABLE = False
 from image_settings_dialog import ImageSettingsDialog
+from settings_page import SettingsPage
 from theme import (
     apply_theme, LOGO_SHIELD, APP_NAME_FA, APP_NAME_EN, LOGO_BLUE, TEXT_MUTED,
 )
@@ -135,7 +136,15 @@ def _play_alarm_beep():
     """رفع درخواست: پخش صدای آلارم هنگام عبور شخص از خط فرضی. در یک ترد
     جداگانه اجرا می‌شود تا رابط کاربری هرگز قفل نشود. روی ویندوز (پلتفرم
     اصلی این برنامه) از winsound.Beep استفاده می‌شود؛ اگر در دسترس نبود
-    (مثلاً روی لینوکس/مک برای توسعه)، به بیپ ساده‌ی Qt برمی‌گردد."""
+    (مثلاً روی لینوکس/مک برای توسعه)، به بیپ ساده‌ی Qt برمی‌گردد.
+    اختیاری است: اگر در تنظیمات «صدای آلارم» خاموش باشد (پیش‌فرض)، هیچ
+    صدایی پخش نمی‌شود."""
+    try:
+        from alarm_sound import load_config
+        if not load_config().get("enabled", False):
+            return
+    except Exception:
+        return
     def _run():
         try:
             import winsound
@@ -1083,6 +1092,12 @@ class CameraSlotWidget(QWidget):
         if self.stream_thread is not None:
             self.stream_thread.set_plate_detection(enabled)
 
+    def set_fire_detection(self, enabled: bool):
+        """روشن/خاموش کردن زنده‌ی تشخیص حریق برای دوربینِ همین خانه
+        (از صفحه‌ی «اعلام حریق»)؛ روی ترد پخشِ جاری اعمال می‌شود."""
+        if self.stream_thread is not None:
+            self.stream_thread.set_fire_detection(enabled)
+
     def set_person_tracking(self, enabled: bool):
         """رفع درخواست «ردیابی اشخاص»: روشن/خاموش کردن زنده‌ی ردیابی اشخاص
         برای دوربینِ همین خانه (از صفحه‌ی «ردیابی اشخاص» تب «اشخاص»)؛
@@ -1251,6 +1266,9 @@ class CameraSlotWidget(QWidget):
         # پلاک‌خوان این دوربین از همان تنظیم ذخیره‌شده (cam["plate_detection"])
         # فعال می‌شود - رجوع کنید به صفحه‌ی «پلاک‌خوان» تب «تعریف پلاک‌ها».
         self.stream_thread.set_plate_detection(bool(cam.get("plate_detection")))
+        # تشخیص تصویری آتش/دود این دوربین از تنظیم ذخیره‌شده
+        # (cam["fire_detection"]) فعال می‌شود - صفحه‌ی «اعلام حریق».
+        self.stream_thread.set_fire_detection(bool(cam.get("fire_detection")))
         # رفع درخواست «ردیابی اشخاص»: مثل plate_event با محافظ نسل وصل
         # می‌شود تا رویداد ردِ ترد قبلی به دوربین جدید نرسد؛ cam (کل
         # دیکشنری دوربین) پاس داده می‌شود تا نام دوربین و nvr_id/channel در
@@ -2503,6 +2521,8 @@ class MainWindow(QMainWindow):
         self.fire_page = FireAlarmPage(
             self.fire_alarm_store, self._start_fire_alarm_monitor,
             self._stop_fire_alarm_monitor,
+            camera_store=self.camera_store,
+            on_fire_toggle=self._on_camera_fire_toggle,
         )
         self.pages.addWidget(self.fire_page)
         self.face_page = FaceLibraryPage(self.face_engine, self.get_active_camera_frame)
@@ -2537,6 +2557,11 @@ class MainWindow(QMainWindow):
                 self.camera_store,
                 on_camera_click=self._on_map_camera_click)
             self.pages.addWidget(self.map_page)
+        # صفحه‌ی «⚙️ تنظیمات»: تم (تاریک/روشن/سیستم)، زبان (فارسی/English)
+        # و «اعمال آپدیت» (از هدر به اینجا منتقل شد).
+        self.settings_page = SettingsPage(
+            on_apply_update=self._on_apply_update)
+        self.pages.addWidget(self.settings_page)
 
         main_layout.addWidget(self._build_header())
         main_layout.addWidget(self.pages, 1)
@@ -3556,6 +3581,7 @@ class MainWindow(QMainWindow):
             ("plate", "🚗 پلاک‌خوان"),
             ("person", "👥 ردیابی اشخاص"),
             ("map", "🗺 نقشه ساختمان"),
+            ("settings", "⚙️ تنظیمات"),
         ):
             btn = QPushButton(label)
             btn.setCheckable(True)
@@ -3567,15 +3593,6 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(lambda _checked=False, _key=key: self.show_page(_key))
             header_layout.addWidget(btn)
             self.nav_buttons[key] = btn
-        # دکمه‌ی «اعمال فایل آپدیت» (اکشن مستقل، نه ناوبری)
-        upd_btn = QPushButton("⬆️ اعمال آپدیت")
-        upd_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        upd_btn.setStyleSheet(
-            "QPushButton{padding: 6px 14px; border-radius: 6px; font-size: 12px; "
-            f"background: {LOGO_BLUE}; color: white; font-weight: bold;}}"
-        )
-        upd_btn.clicked.connect(self._on_apply_update)
-        header_layout.addWidget(upd_btn)
         # نشان نسخه
         ver_label = QLabel(f"v{self.app_version}")
         ver_label.setStyleSheet(
@@ -3596,7 +3613,7 @@ class MainWindow(QMainWindow):
         """تغییر صفحه‌ی فعال از طریق هدر؛ هر صفحه هنگام نمایش، داده‌هایش را
         با متد refresh خودش تازه می‌کند."""
         index = {"home": 0, "fire": 1, "face": 2, "reports": 3, "plate": 4,
-                 "person": 5, "map": 6}[key]
+                 "person": 5, "map": 6, "settings": 7}[key]
         if key == "map" and self.map_page is None:
             QMessageBox.warning(
                 self, "صفحه‌ی نقشه در دسترس نیست",
@@ -3720,6 +3737,17 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         return out
+
+    def _on_camera_fire_toggle(self, cam_id, enabled):
+        """اعمال زنده‌ی تیک «تشخیص حریق» صفحه‌ی «اعلام حریق» روی دوربینی که
+        همین حالا در شبکه‌ی نمایش باز است."""
+        try:
+            for slot in self.camera_grid.slots:
+                if slot.cam is not None and slot.cam.get("id") == cam_id:
+                    slot.cam["fire_detection"] = bool(enabled)
+                    slot.set_fire_detection(enabled)
+        except Exception as e:
+            print(f"خطا در اعمال تشخیص حریق روی دوربین باز: {e}")
 
     def _on_camera_plate_toggle(self, cam_id, enabled):
         """اعمال زنده‌ی تیک «پلاک‌خوان» صفحه‌ی پلاک‌خوان روی دوربینی که همین
@@ -3942,7 +3970,8 @@ class MainWindow(QMainWindow):
         if not floor_id:
             return  # طبقه‌ی دوربین نامشخص؛ چک نمی‌شود
         allowed, _reason, _is_defined = evaluate_floor_access(
-            person_id, face_person_id, floor_id, person_store)
+            person_id, face_person_id, floor_id, person_store,
+            face_engine=getattr(self, "face_engine", None))
         if allowed:
             return
         floor_name = get_floor_name(floor_id)

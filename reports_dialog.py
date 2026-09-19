@@ -12,7 +12,7 @@ from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QDateEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog,
-    QMessageBox,
+    QMessageBox, QTabWidget, QCheckBox,
 )
 
 from report_store import EVENT_TYPE_LABELS_FA
@@ -79,6 +79,15 @@ class ReportsPage(QWidget):
 
         layout.addLayout(filter_row)
 
+        # ----------------------------------------------------------- تب‌ها -
+        self.tabs = QTabWidget()
+        layout.addWidget(self.tabs)
+
+        events_tab = QWidget()
+        events_layout = QVBoxLayout(events_tab)
+        events_layout.setContentsMargins(0, 6, 0, 0)
+        self.tabs.addTab(events_tab, "📋 رویدادها")
+
         # ----------------------------------------------------------- جدول -
         self.table = QTableWidget(0, 10)
         self.table.setHorizontalHeaderLabels([
@@ -88,12 +97,43 @@ class ReportsPage(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        layout.addWidget(self.table)
+        events_layout.addWidget(self.table)
 
         self.summary_label = QLabel("")
-        layout.addWidget(self.summary_label)
+        events_layout.addWidget(self.summary_label)
+
+        # --- تب «تخلفات طبقاتی»: ورود افراد (تعریف‌شده و تعریف‌نشده) به
+        # طبقه‌ی غیرمجاز — از person_store.floor_violations
+        viol_tab = QWidget()
+        viol_layout = QVBoxLayout(viol_tab)
+        viol_layout.setContentsMargins(0, 6, 0, 0)
+        self.tabs.addTab(viol_tab, "🚨 تخلفات طبقاتی")
+        viol_filter = QHBoxLayout()
+        self.viol_defined_only = QCheckBox("فقط افراد تعریف‌شده")
+        self.viol_defined_only.setChecked(False)
+        self.viol_defined_only.toggled.connect(self.run_violation_search)
+        viol_filter.addWidget(self.viol_defined_only)
+        viol_refresh = QPushButton("🔄 به‌روزرسانی")
+        viol_refresh.clicked.connect(self.run_violation_search)
+        viol_filter.addWidget(viol_refresh)
+        viol_filter.addStretch()
+        viol_layout.addLayout(viol_filter)
+        self.viol_table = QTableWidget(0, 7)
+        self.viol_table.setHorizontalHeaderLabels([
+            "زمان (شمسی)", "نوع شخص", "نام / کد", "دوربین", "طبقه",
+            "وضعیت", "تصویر",
+        ])
+        self.viol_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch)
+        self.viol_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.viol_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows)
+        viol_layout.addWidget(self.viol_table)
+        self.viol_summary = QLabel("")
+        viol_layout.addWidget(self.viol_summary)
 
         self.run_search()
+        self.run_violation_search()
 
     def refresh(self):
         """هر بار که صفحه از هدر باز می‌شود صدا زده می‌شود: لیست دوربین‌ها
@@ -101,6 +141,64 @@ class ReportsPage(QWidget):
         دوباره اجرا می‌شود."""
         self._reload_camera_combo()
         self.run_search()
+        self.run_violation_search()
+
+    def run_violation_search(self):
+        """پر کردن تب «تخلفات طبقاتی» از person_store.floor_violations با
+        همان بازه‌ی تاریخی بالای صفحه."""
+        from person_store import person_store
+        from datetime import datetime as _dt
+        start = self.from_date.date().toString("yyyy-MM-dd") + " 00:00:00"
+        end = self.to_date.date().toString("yyyy-MM-dd") + " 23:59:59"
+        defined_only = self.viol_defined_only.isChecked()
+        try:
+            start_ts = _dt.strptime(start, "%Y-%m-%d %H:%M:%S").timestamp()
+            end_ts = _dt.strptime(end, "%Y-%m-%d %H:%M:%S").timestamp()
+        except Exception:
+            start_ts, end_ts = 0, 1e18
+        self.viol_table.setRowCount(0)
+        n = 0
+        try:
+            viols = person_store.list_floor_violations(limit=5000)
+        except Exception:
+            viols = []
+        for v in viols:
+            try:
+                ts = float(v.get("ts") or 0)
+            except Exception:
+                ts = 0
+            if not (start_ts <= ts <= end_ts):
+                continue
+            is_defined = bool(v.get("face_person_id") or v.get("face_name"))
+            if defined_only and not is_defined:
+                continue
+            r = self.viol_table.rowCount()
+            self.viol_table.insertRow(r)
+            self.viol_table.setItem(
+                r, 0, QTableWidgetItem(v.get("date_j") or ""))
+            self.viol_table.setItem(
+                r, 1, QTableWidgetItem(
+                    "✅ تعریف‌شده" if is_defined else "❓ تعریف‌نشده"))
+            name = v.get("face_name") or v.get("person_id") or "—"
+            self.viol_table.setItem(r, 2, QTableWidgetItem(name))
+            self.viol_table.setItem(
+                r, 3, QTableWidgetItem(v.get("camera_name") or ""))
+            self.viol_table.setItem(
+                r, 4, QTableWidgetItem(v.get("floor_name") or ""))
+            self.viol_table.setItem(
+                r, 5, QTableWidgetItem(
+                    "✔ تأییدشده" if v.get("acknowledged") else "⚠ بررسی‌نشده"))
+            img_item = QTableWidgetItem("")
+            sp = v.get("snapshot_path") or ""
+            if sp:
+                pixmap = QPixmap(sp)
+                if not pixmap.isNull():
+                    img_item.setIcon(QIcon(pixmap.scaledToHeight(
+                        48, Qt.TransformationMode.SmoothTransformation)))
+                img_item.setToolTip(sp)
+            self.viol_table.setItem(r, 6, img_item)
+            n += 1
+        self.viol_summary.setText(f"{n} تخلف یافت شد.")
 
     def _reload_camera_combo(self):
         current = self.camera_combo.currentData()

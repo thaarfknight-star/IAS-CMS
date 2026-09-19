@@ -768,6 +768,45 @@ class PersonTrackPage(QWidget):
         person_group.setLayout(person_layout)
         layout.addWidget(person_group)
 
+        # --- ۲-ب) قانون «گروه کاری»: برای همه‌ی اعضای یک گروه، یکجا
+        group_group = QGroupBox("🏷 قانون گروه‌های کاری")
+        group_layout = QVBoxLayout()
+        group_hint = QLabel(
+            "قانون هر «گروه کاری» (از بانک چهره‌ها) برای همه‌ی اعضای آن گروه "
+            "اعمال می‌شود؛ ولی قانون تکی هر شخص نسبت به قانون گروهش اولویت "
+            "دارد. اگر نه قانون تکی و نه قانون گروه باشد، شخص آزاد است.")
+        group_hint.setWordWrap(True)
+        group_hint.setStyleSheet("color: #9e9e9e; font-size: 11px;")
+        group_layout.addWidget(group_hint)
+        gsel_row = QHBoxLayout()
+        gsel_row.addWidget(QLabel("گروه کاری:"))
+        self.access_group_combo = QComboBox()
+        self.access_group_combo.setMinimumWidth(200)
+        self.access_group_combo.currentIndexChanged.connect(
+            self._on_access_group_changed)
+        gsel_row.addWidget(self.access_group_combo)
+        gsel_row.addStretch()
+        group_layout.addLayout(gsel_row)
+        self.group_floor_box = QWidget()
+        self.group_floor_layout = QVBoxLayout(self.group_floor_box)
+        self.group_floor_layout.setContentsMargins(20, 0, 0, 0)
+        group_layout.addWidget(self.group_floor_box)
+        self.group_floor_checks = []
+        self.group_rule_status = QLabel("")
+        self.group_rule_status.setStyleSheet("color: #9e9e9e; font-size: 11px;")
+        group_layout.addWidget(self.group_rule_status)
+        group_btn_row = QHBoxLayout()
+        group_save = QPushButton("💾 ذخیره‌ی قانون این گروه")
+        group_save.clicked.connect(self._save_group_rule)
+        group_clear = QPushButton("🗑 حذف قانون (آزاد)")
+        group_clear.clicked.connect(self._clear_group_rule)
+        group_btn_row.addWidget(group_save)
+        group_btn_row.addWidget(group_clear)
+        group_btn_row.addStretch()
+        group_layout.addLayout(group_btn_row)
+        group_group.setLayout(group_layout)
+        layout.addWidget(group_group)
+
         # --- ۳) تخلفات ثبت‌شده
         viol_group = QGroupBox("🚨 تخلفات تردد غیرمجاز")
         viol_layout = QVBoxLayout()
@@ -867,6 +906,26 @@ class PersonTrackPage(QWidget):
             self.access_person_combo.addItem(label, p.get("id"))
         self.access_person_combo.blockSignals(False)
         self._on_access_person_changed()
+        # لیست گروه‌های کاری: از بانک چهره + گروه‌هایی که قانون دارند
+        self._floor_checkboxes(self.group_floor_layout, self.group_floor_checks)
+        groups = set()
+        try:
+            if getattr(self, "face_engine", None) is not None:
+                groups.update(self.face_engine.list_work_groups())
+        except Exception:
+            pass
+        try:
+            for g, _r in person_store.list_work_group_floor_rules():
+                if g:
+                    groups.add(g)
+        except Exception:
+            pass
+        self.access_group_combo.blockSignals(True)
+        self.access_group_combo.clear()
+        for g in sorted(groups):
+            self.access_group_combo.addItem(f"🏷 {g}", g)
+        self.access_group_combo.blockSignals(False)
+        self._on_access_group_changed()
         self.refresh_violations()
 
     def _on_undef_all_toggled(self, checked):
@@ -912,6 +971,57 @@ class PersonTrackPage(QWidget):
                 f"قانون فعلی: {len(rule)} طبقه مجاز.")
             for chk, fid in self.person_floor_checks:
                 chk.setChecked(fid in rule)
+
+    def _on_access_group_changed(self):
+        from floor_access import ALL_FLOORS
+        grp = self.access_group_combo.currentData()
+        if not grp:
+            self.group_rule_status.setText(
+                "هنوز هیچ «گروه کاری» در بانک چهره‌ها تعریف نشده است؛ "
+                "اول در صفحه‌ی «👤 چهره‌ها» برای افراد گروه کاری تعیین کنید.")
+            return
+        try:
+            rule = person_store.get_work_group_allowed_floors(grp)
+        except Exception:
+            rule = None
+        if rule is None:
+            self.group_rule_status.setText(
+                "برای این گروه قانونی ثبت نشده — اعضایش (بدون قانون تکی) آزادند.")
+            for chk, _fid in self.group_floor_checks:
+                chk.setChecked(True)
+        elif rule == ALL_FLOORS:
+            self.group_rule_status.setText("قانون: همه‌ی طبقات (بدون محدودیت).")
+            for chk, _fid in self.group_floor_checks:
+                chk.setChecked(True)
+        else:
+            self.group_rule_status.setText(
+                f"قانون فعلی: {len(rule)} طبقه مجاز.")
+            for chk, fid in self.group_floor_checks:
+                chk.setChecked(fid in rule)
+
+    def _save_group_rule(self):
+        from floor_access import ALL_FLOORS, get_floor_list
+        grp = self.access_group_combo.currentData()
+        if not grp:
+            return
+        floors = [fid for chk, fid in self.group_floor_checks if chk.isChecked()]
+        all_floors = [fid for fid, _n in get_floor_list()]
+        if set(floors) == set(all_floors) and all_floors:
+            person_store.set_work_group_allowed_floors(grp, ALL_FLOORS)
+        else:
+            person_store.set_work_group_allowed_floors(grp, floors)
+        QMessageBox.information(self, "ذخیره شد",
+                                f"قانون تردد گروه «{grp}» ذخیره شد.")
+        self._reload_access_tab()
+
+    def _clear_group_rule(self):
+        grp = self.access_group_combo.currentData()
+        if not grp:
+            return
+        person_store.set_work_group_allowed_floors(grp, None)
+        QMessageBox.information(self, "حذف شد",
+                                f"قانون گروه «{grp}» حذف شد (آزاد).")
+        self._reload_access_tab()
 
     def _access_person_name(self, pid):
         """نام نمایشی چهره‌ی انتخاب‌شده (برای پیام‌ها)."""

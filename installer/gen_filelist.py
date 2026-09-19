@@ -67,9 +67,13 @@ def main():
                 quoted = " ".join(f'"${{DISTDIR}}\\CCTV_CMS\\{x}"' for x in names[j:j + MAX_FILES_PER_LINE])
                 L.append(f"File {quoted}")
         L.append(f'SendMessage $ProgressBar ${{PBM_SETPOS}} {pct} 0')
-        L.append("System::Call 'user32::UpdateWindow(i $ProgressBar)'")
+        # نکته‌ی مهم: وقتی نخ UI داخل دستورهای File قفل است، UpdateWindow
+        # به‌تنهایی نوار را نقاشی نمی‌کند (همین باگ «نوار لودینگ کار نمی‌کند»).
+        # RedrawWindow با RDW_UPDATENOW نقاشی را هم‌گام و فوری انجام می‌دهد.
+        L.append("System::Call 'user32::RedrawWindow(i $ProgressBar, i 0, i 0, i 0x181)'")
         L.append(f'${{NSD_SetText}} $StatusLabel "در حال کپی فایل‌ها… {pct}٪"')
-        L.append("System::Call 'user32::UpdateWindow(i $StatusLabel)'")
+        L.append("System::Call 'user32::RedrawWindow(i $StatusLabel, i 0, i 0, i 0x181)'")
+        L.append("Sleep 30")
         L.append("")
 
     Path(args.out).write_text("\n".join(L) + "\n", encoding="utf-8")

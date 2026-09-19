@@ -223,7 +223,208 @@ def _ensure_vazirmatn(app):
         pass
 
 
-def apply_theme(app):
-    """اعمال تم تیره‌ی ایمن آرا سورنا روی کل برنامه."""
+# ------------------------------------------------------- پالت تم روشن -----
+L_BG_DEEP = "#f2f4f6"      # پس‌زمینه‌ی اصلی
+L_BG_PANEL = "#ffffff"     # پنل‌ها/گروه‌ها
+L_BG_INPUT = "#ffffff"     # ورودی‌ها
+L_BORDER = "#d3dbe1"       # حاشیه‌ها
+L_TEXT = "#1c2733"          # متن اصلی
+L_TEXT_MUTED = "#6b7680"    # متن کم‌رنگ
+L_HOVER = "#e8eef3"
+
+LIGHT_STYLESHEET = f"""
+QMainWindow, QWidget {{
+    color: {L_TEXT};
+    background: transparent;
+}}
+QGroupBox {{
+    border: 1px solid {L_BORDER};
+    border-radius: 8px;
+    margin-top: 14px;
+    padding-top: 6px;
+    font-weight: bold;
+    color: {L_TEXT_MUTED};
+    background-color: {L_BG_PANEL};
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin;
+    subcontrol-position: top right;
+    padding: 0 6px;
+    color: {L_TEXT_MUTED};
+}}
+QPushButton {{
+    background-color: {L_BG_PANEL};
+    border: 1px solid {L_BORDER};
+    border-radius: 6px;
+    padding: 6px 12px;
+    color: {L_TEXT};
+}}
+QPushButton:hover {{
+    border-color: {ACCENT};
+    background-color: {L_HOVER};
+}}
+QPushButton:pressed {{
+    background-color: {ACCENT};
+    color: white;
+}}
+QPushButton:disabled {{
+    color: #a0aab3;
+    background-color: {L_BG_DEEP};
+    border-color: {L_BORDER};
+}}
+QLineEdit, QTextEdit, QComboBox, QDateEdit, QSpinBox {{
+    background-color: {L_BG_INPUT};
+    border: 1px solid {L_BORDER};
+    border-radius: 5px;
+    padding: 5px 8px;
+    color: {L_TEXT};
+    selection-background-color: {ACCENT};
+}}
+QComboBox QAbstractItemView, QListView {{
+    background-color: {L_BG_INPUT};
+    color: {L_TEXT};
+    selection-background-color: {ACCENT};
+    border: 1px solid {L_BORDER};
+}}
+QListWidget, QTreeWidget, QTableWidget {{
+    background-color: {L_BG_INPUT};
+    border: 1px solid {L_BORDER};
+    border-radius: 5px;
+    color: {L_TEXT};
+    alternate-background-color: #f7f9fb;
+    selection-background-color: {ACCENT};
+}}
+QHeaderView::section {{
+    background-color: {L_BG_PANEL};
+    color: {L_TEXT_MUTED};
+    border: none;
+    border-bottom: 1px solid {L_BORDER};
+    padding: 7px 4px;
+    font-weight: bold;
+}}
+QTableWidget::item:selected {{
+    background-color: {ACCENT};
+    color: white;
+}}
+QScrollBar:vertical {{
+    background: {L_BG_DEEP};
+    width: 12px;
+    margin: 0;
+}}
+QScrollBar::handle:vertical {{
+    background: {L_BORDER};
+    border-radius: 6px;
+    min-height: 30px;
+}}
+QScrollBar::handle:vertical:hover {{
+    background: {ACCENT};
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0;
+}}
+QScrollBar:horizontal {{
+    background: {L_BG_DEEP};
+    height: 12px;
+    margin: 0;
+}}
+QScrollBar::handle:horizontal {{
+    background: {L_BORDER};
+    border-radius: 6px;
+    min-width: 30px;
+}}
+QScrollBar::handle:horizontal:hover {{
+    background: {ACCENT};
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0;
+}}
+QSplitter::handle {{
+    background-color: {L_BORDER};
+}}
+QSplitter::handle:horizontal {{
+    width: 3px;
+}}
+QSplitter::handle:vertical {{
+    height: 3px;
+}}
+QToolTip {{
+    background-color: {L_BG_PANEL};
+    color: {L_TEXT};
+    border: 1px solid {ACCENT};
+    padding: 4px;
+}}
+QMenu {{
+    background-color: {L_BG_PANEL};
+    color: {L_TEXT};
+    border: 1px solid {L_BORDER};
+}}
+QMenu::item:selected {{
+    background-color: {ACCENT};
+    color: white;
+}}
+QMessageBox {{
+    background-color: {L_BG_PANEL};
+}}
+QTabWidget::pane {{
+    border: 1px solid {L_BORDER};
+    border-radius: 5px;
+}}
+QTabBar::tab {{
+    background: {L_BG_PANEL};
+    color: {L_TEXT_MUTED};
+    padding: 8px 16px;
+    border: 1px solid {L_BORDER};
+    border-bottom: none;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+}}
+QTabBar::tab:selected {{
+    background: {ACCENT};
+    color: white;
+    font-weight: bold;
+}}
+QCheckBox, QRadioButton {{
+    color: {L_TEXT};
+}}
+QLabel {{
+    color: {L_TEXT};
+}}
+"""
+
+THEME_MODES = ("dark", "light", "system")
+
+
+def get_system_theme():
+    """تشخیص تم سیستم‌عامل: 'dark' یا 'light' (پیش‌فرض light)."""
+    try:
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtCore import Qt
+        scheme = QApplication.styleHints().colorScheme()
+        if scheme == Qt.ColorScheme.Dark:
+            return "dark"
+        if scheme == Qt.ColorScheme.Light:
+            return "light"
+    except Exception:
+        pass
+    return "light"
+
+
+def resolve_theme(mode):
+    """تبدیل حالت ذخیره‌شده به تم واقعی ('dark'/'light')."""
+    if mode == "system":
+        return get_system_theme()
+    return mode if mode in ("dark", "light") else "dark"
+
+
+def apply_theme(app, mode=None):
+    """اعمال تم ایمن آرا سورنا روی کل برنامه.
+    mode: 'dark' | 'light' | 'system' | None (خواندن از تنظیمات)."""
     _ensure_vazirmatn(app)
-    app.setStyleSheet(APP_STYLESHEET)
+    if mode is None:
+        try:
+            from app_settings import get_theme_mode
+            mode = get_theme_mode()
+        except Exception:
+            mode = "dark"
+    real = resolve_theme(mode)
+    app.setStyleSheet(LIGHT_STYLESHEET if real == "light" else APP_STYLESHEET)

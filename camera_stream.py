@@ -555,7 +555,9 @@ class CameraStreamThread(QThread):
         # اسپم نشود.
         self._detector_status_emitted = False
 
-        # --- تشخیص تصویری آتش/دود (اختیاری، رجوع کنید به fire_smoke_detector.py) ---
+        # --- تشخیص تصویری آتش/دود (اختیاری، پیش‌فرض خاموش؛ مثل پلاک‌خوان
+        # با cam["fire_detection"] برای هر دوربین جدا فعال می‌شود) ---
+        self.fire_detection_enabled = False
         self._last_fire_detections = []  # [(box, kind, conf), ...] - فقط تأییدشده‌های چندفریمی
         self._fire_detector_available = False
         self._fire_detector_status_emitted = False
@@ -587,6 +589,13 @@ class CameraStreamThread(QThread):
         self.person_tracking_enabled = False
         self._person_local_tracker = None
         self._person_draw_list = []  # [(box, label, shirt_color)] برای رسم روی تصویر
+
+    def set_fire_detection(self, enabled: bool):
+        """روشن/خاموش کردن تشخیص تصویری آتش/دود برای این دوربین (از صفحه‌ی
+        «اعلام حریق» یا شروع پخش با cam["fire_detection"])."""
+        self.fire_detection_enabled = bool(enabled)
+        if not self.fire_detection_enabled:
+            self._last_fire_detections = []
 
     def set_person_tracking(self, enabled: bool):
         """روشن/خاموش کردن ردیابی اشخاص برای این دوربین (از صفحه‌ی
@@ -1011,27 +1020,31 @@ class CameraStreamThread(QThread):
             # همین ترد پس‌زمینه‌ی تشخیص (نه ترد اصلی خواندن فریم) اجرا می‌شود تا
             # پخش زنده هرگز منتظرش نماند.
             fparams = get_fire_params()
-            _yolo_dets = _fd.detect(frame, conf=fparams["yolo_conf"]) if _fd is not None else []
-            _small_dets = self._small_flame_detector.detect(frame)
-            _cascade_dets = cascade_yolo_confirm(frame, _small_dets, conf=fparams["yolo_conf"])
-            _merged = merge_detections(_yolo_dets + _small_dets + _cascade_dets)
-            _diag = (frame.shape[0] ** 2 + frame.shape[1] ** 2) ** 0.5
-            self._last_fire_detections = self._fire_confirmer.update(
-                _merged, k=fparams["confirm_k"], n=fparams["confirm_n"],
-                frame_diag=_diag,
-            )
-            self._fire_detector_available = bool(_fd is not None and _fd.available)
-            if not self._fire_detector_status_emitted:
-                self._fire_detector_status_emitted = True
-                self.fire_detector_status_signal.emit(
-                    self._fire_detector_available, (_fd.load_error if _fd else "") or ""
+            if not self.fire_detection_enabled:
+                self._last_fire_detections = []
+                self._fire_detector_available = False
+            else:
+                _yolo_dets = _fd.detect(frame, conf=fparams["yolo_conf"]) if _fd is not None else []
+                _small_dets = self._small_flame_detector.detect(frame)
+                _cascade_dets = cascade_yolo_confirm(frame, _small_dets, conf=fparams["yolo_conf"])
+                _merged = merge_detections(_yolo_dets + _small_dets + _cascade_dets)
+                _diag = (frame.shape[0] ** 2 + frame.shape[1] ** 2) ** 0.5
+                self._last_fire_detections = self._fire_confirmer.update(
+                    _merged, k=fparams["confirm_k"], n=fparams["confirm_n"],
+                    frame_diag=_diag,
                 )
-            now = time.time()
-            for box, kind, conf in self._last_fire_detections:
-                if now - self._last_fire_alert_ts.get(kind, 0.0) < self._FIRE_ALERT_COOLDOWN:
-                    continue  # هنوز داخل بازه‌ی کول‌داون همان نوع رویداد برای این دوربین
-                self._last_fire_alert_ts[kind] = now
-                self.fire_event_signal.emit(kind, _crop_face(frame, box), conf)
+                self._fire_detector_available = bool(_fd is not None and _fd.available)
+                if not self._fire_detector_status_emitted:
+                    self._fire_detector_status_emitted = True
+                    self.fire_detector_status_signal.emit(
+                        self._fire_detector_available, (_fd.load_error if _fd else "") or ""
+                    )
+                now = time.time()
+                for box, kind, conf in self._last_fire_detections:
+                    if now - self._last_fire_alert_ts.get(kind, 0.0) < self._FIRE_ALERT_COOLDOWN:
+                        continue  # هنوز داخل بازه‌ی کول‌داون همان نوع رویداد برای این دوربین
+                    self._last_fire_alert_ts[kind] = now
+                    self.fire_event_signal.emit(kind, _crop_face(frame, box), conf)
 
             # --- سیستم پلاک‌خوان: تشخیص ناحیه‌ی پلاک + OCR + ردیابی چندفریمی ---
             # دقیقاً همان الگوی تشخیص شخص/آتش: در همین ترد پس‌زمینه‌ی تشخیص
