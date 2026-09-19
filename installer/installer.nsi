@@ -38,9 +38,18 @@ ${StrStr}
 
 Name "${APP_NAME} v${VERSION}"
 Caption "نصب ${APP_NAME} نسخه‌ی ${VERSION}"
-OutFile "${OUTDIR}\IAS-CMS-Setup-v${VERSION}.exe"
+!ifdef UNINSTALLER_ONLY
+  ; --- حالت حذف‌کننده‌ی مستقل: فقط پاک‌سازی کامل، بدون صفحه‌ی نصب ---
+  OutFile "${OUTDIR}\IAS-CMS-Uninstall-v${VERSION}.exe"
+  Caption "حذف کامل ${APP_NAME}"
+!else
+  OutFile "${OUTDIR}\IAS-CMS-Setup-v${VERSION}.exe"
+!endif
 Icon "${ROOTDIR}\assets\app.ico"
 InstallDir "$LOCALAPPDATA\ImenaraSorena\IAS-CMS"
+; خواندن محل واقعی نصب از رجیستری — اگر کاربر پوشه را عوض کرده باشد،
+; حذف‌کننده همان مسیر واقعی را پیدا می‌کند (نه مسیر پیش‌فرض)
+InstallDirRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}" "InstallLocation"
 ShowInstDetails nevershow
 
 ; ---------- ثابت‌های Win32 از WinMessages.nsh/WinCore.nsh می‌آیند ----------
@@ -523,34 +532,94 @@ Function ShowMainPage
   nsDialogs::Show
 FunctionEnd
 
+!ifndef UNINSTALLER_ONLY
 Page custom ShowMainPage
 
 ; سکشن خالی (نصب واقعی در DoInstall انجام می‌شود)
 Section "-hidden"
 SectionEnd
+!endif
 
 ; ============================================================
-; حذف‌کننده
+; حذف کامل (Complete Uninstall) — بعد از اجرا هیچ اثری از برنامه
+; روی سیستم نمی‌ماند:
+;   ۱) بستن اجباری برنامه‌ی در حال اجرا (وگرنه فایل‌ها قفل می‌مانند)
+;   ۲) حذف میان‌برهای منوی استارت و دسکتاپ
+;   ۳) حذف کل پوشه‌ی نصب: فایل‌ها + person_data + plate_data +
+;      cameras.json + آپدیتر + version.txt + خود uninstall.exe
+;   ۴) حذف کلیدهای رجیستری (ورودی Uninstall + تنظیمات)
+;   ۵) حذف پوشه‌های داده‌ی خارج از محل نصب (AppData و plate_data کاربر)
+;   ۶) حذف فایل‌های موقت
+; این بدنه هم در uninstall.exe داخل پوشه‌ی نصب (WriteUninstaller) و هم
+; در حذف‌کننده‌ی مستقل (UNINSTALLER_ONLY) استفاده می‌شود.
 ; ============================================================
-Function un.onInit
-  MessageBox MB_YESNO|MB_ICONQUESTION "«${APP_NAME}» از سیستم حذف شود؟" IDYES NoAbort
-    Abort
-  NoAbort:
-FunctionEnd
-
-Section "Uninstall"
+!macro FULL_CLEANUP_BODY
+  nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /F /IM "${EXE_NAME}"'
+  Pop $0
+  Pop $1
+  Sleep 1000
   Delete "$SMPROGRAMS\${APP_NAME}\*.lnk"
   RMDir "$SMPROGRAMS\${APP_NAME}"
   Delete "$DESKTOP\${APP_NAME}.lnk"
   RMDir /r "$INSTDIR"
   DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}"
+  DeleteRegKey HKCU "Software\${APP_EN}"
+  DeleteRegKey HKCU "Software\ImenaraSorena"
+  RMDir /r "$APPDATA\ImenaraSorena"
+  RMDir /r "$LOCALAPPDATA\ImenaraSorena"
+  IfFileExists "$PROFILE\plate_data\plates.db" 0 +2
+    RMDir /r "$PROFILE\plate_data"
+  Delete "$TEMP\${APP_EN}*.*"
+!macroend
+
+!ifndef UNINSTALLER_ONLY
+Function un.onInit
+  MessageBox MB_YESNO|MB_ICONQUESTION \
+    "«${APP_NAME}» به‌طور کامل از سیستم حذف شود؟$\n$\nهمه‌ی فایل‌ها، تنظیمات، دوربین‌ها، بانک چهره و سوابق پلاک‌ها برای همیشه پاک می‌شوند." \
+    IDYES NoAbort
+    Abort
+  NoAbort:
+FunctionEnd
+
+Section "Uninstall"
+  !insertmacro FULL_CLEANUP_BODY
 SectionEnd
 
 UninstPage instfiles
+!endif
 
 ; ============================================================
-; آماده‌سازی اولیه
+; حذف‌کننده‌ی مستقل — داخل پکیج setup قرار می‌گیرد تا حتی اگر
+; uninstall.exe داخل پوشه‌ی نصب گم شده باشد، حذف کامل ممکن باشد.
+; کامپایل: makensis /DVERSION=2.0.0 /DUNINSTALLER_ONLY installer/installer.nsi
 ; ============================================================
+!ifdef UNINSTALLER_ONLY
+Function .onInit
+  ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}" "InstallLocation"
+  ${If} $0 != ""
+    StrCpy $INSTDIR $0
+  ${EndIf}
+  IfFileExists "$INSTDIR\${EXE_NAME}" FoundInst
+    MessageBox MB_YESNO|MB_ICONQUESTION \
+      "فایل اصلی برنامه در محل نصب پیدا نشد.$\nمحل بررسی‌شده: $INSTDIR$\n$\nآیا پوشه‌های داده و کلیدهای رجیستری پاک‌سازی شوند؟" \
+      IDYES DoClean
+    Quit
+  FoundInst:
+    MessageBox MB_YESNO|MB_ICONQUESTION \
+      "«${APP_NAME}» به‌طور کامل از این سیستم حذف شود؟$\n$\nمحل نصب: $INSTDIR$\n$\nهمه‌ی فایل‌ها، تنظیمات، دوربین‌ها، بانک چهره و سوابق پلاک‌ها برای همیشه پاک می‌شوند." \
+      IDYES DoClean
+    Quit
+  DoClean:
+    !insertmacro FULL_CLEANUP_BODY
+    MessageBox MB_ICONINFORMATION "حذف کامل انجام شد. هیچ اثری از «${APP_NAME}» روی سیستم باقی نماند."
+    Quit
+FunctionEnd
+!endif
+
+; ============================================================
+; آماده‌سازی اولیه (فقط حالت نصب)
+; ============================================================
+!ifndef UNINSTALLER_ONLY
 Function .onInit
   InitPluginsDir
   File /oname=$PLUGINSDIR\bg_welcome.bmp "${GFXDIR}\bg_welcome.bmp"
@@ -558,3 +627,4 @@ Function .onInit
   File /oname=$PLUGINSDIR\bg_install.bmp "${GFXDIR}\bg_install.bmp"
   File /oname=$PLUGINSDIR\bg_finish.bmp "${GFXDIR}\bg_finish.bmp"
 FunctionEnd
+!endif
