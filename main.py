@@ -2389,10 +2389,12 @@ class MainWindow(QMainWindow):
         self.people_toggle_btn.toggled.connect(self._on_people_toggle_all)
         grid_toolbar.addWidget(self.people_toggle_btn)
 
-        # (برگشت به نسخه‌ی پرتابل - درخواست کاربر): همه‌ی دکمه‌های رسم محدوده
-        # همیشه و ثابت روی نوار ابزار هستند؛ هیچ دکمه‌ای مخفی/نمایان نمی‌شود
-        # تا با زدن دکمه‌ها اندازه‌ی کادر دوربین‌ها عوض نشود - کادرها فقط با
-        # تغییر اندازه‌ی پنل‌ها عوض می‌شوند.
+        # (2.0.12-beta به دستور کاربر): دکمه‌های مربوط به رسم - «نوع رسم»
+        # (تشخیص خودکار/AI)، «تایید و نام‌گذاری» و «لغو رسم» - فقط وقتی دیده
+        # می‌شوند که کاربر وارد «حالت رسم» شده باشد یا یک محدوده‌ی در انتظار/
+        # در حال ویرایش روی خانه‌ی انتخاب‌شده باشد؛ بقیه‌ی وقت‌ها مخفی‌اند تا
+        # نوار ابزار خلوت بماند. چون اندازه‌ی کادر دوربین‌ها از 2.0.10 قفل
+        # است، مخفی/نمایان شدن این دکمه‌ها اندازه‌ی کادرها را عوض نمی‌کند.
         # رفع درخواست: محدوده‌ی هشدار (Zone) - جایگزین خط فرضی عبور قبلی.
         # کاربر ابتدا یک دوربین را از شبکه انتخاب می‌کند (کلیک روی خانه‌اش)،
         # سپس این دکمه را می‌زند تا بتواند با کلیک‌های متوالی روی نقاط دلخواه
@@ -2421,6 +2423,15 @@ class MainWindow(QMainWindow):
         self.draw_line_btn.toggled.connect(self._on_draw_line_toggled)
         grid_toolbar.addWidget(self.draw_line_btn)
 
+        # کانتینر دکمه‌های حالت رسم - فقط در حالت رسم نمایان می‌شود
+        # (رجوع کنید به _refresh_line_buttons).
+        self.region_draw_row = QWidget()
+        region_draw_layout = QHBoxLayout()
+        region_draw_layout.setContentsMargins(0, 0, 0, 0)
+        self.region_draw_row.setLayout(region_draw_layout)
+        self.region_draw_row.setVisible(False)
+        grid_toolbar.addWidget(self.region_draw_row)
+
         # رفع درخواست «یک حالت جدید که خودش سطح زمین رو تشخیص بده و کلش رو
         # محدوده محسوب کنه»: به‌جای کلیک‌های متوالی دستی، این دکمه بلافاصله
         # کل کادر تصویر زنده‌ی دوربین انتخاب‌شده را - در عمل معادل «کل زمینی
@@ -2442,7 +2453,7 @@ class MainWindow(QMainWindow):
             "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
         )
         self.auto_region_btn.clicked.connect(self._on_auto_region_clicked)
-        grid_toolbar.addWidget(self.auto_region_btn)
+        region_draw_layout.addWidget(self.auto_region_btn)
 
         # رفع درخواست «یک حالت جدید که خودش سطح زمین رو تشخیص بده و کلش رو
         # محدوده محسوب کنه، ولی بازم قابل ادیت باشه، دقیق‌تر با مدل هوش
@@ -2473,7 +2484,7 @@ class MainWindow(QMainWindow):
             "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
         )
         self.ai_floor_btn.clicked.connect(self._on_ai_floor_region_clicked)
-        grid_toolbar.addWidget(self.ai_floor_btn)
+        region_draw_layout.addWidget(self.ai_floor_btn)
         # نگه‌داشتن ارجاع به تردِ در حال اجرا (اگر باشد) - هم برای جلوگیری
         # از garbage-collect شدنِ زودهنگام QThread در حال اجرا، هم برای
         # اینکه بدانیم همین الان یک تشخیص در جریان است (رجوع کنید به
@@ -2490,7 +2501,7 @@ class MainWindow(QMainWindow):
             "QPushButton:enabled{background:#27ae60; color:#fff;}"
         )
         self.confirm_line_btn.clicked.connect(self._on_confirm_line_clicked)
-        grid_toolbar.addWidget(self.confirm_line_btn)
+        region_draw_layout.addWidget(self.confirm_line_btn)
 
         self.redraw_line_btn = QPushButton("❌ لغو رسم")
         self.redraw_line_btn.setEnabled(False)
@@ -2499,7 +2510,7 @@ class MainWindow(QMainWindow):
             "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
         )
         self.redraw_line_btn.clicked.connect(self._on_redraw_line_clicked)
-        grid_toolbar.addWidget(self.redraw_line_btn)
+        region_draw_layout.addWidget(self.redraw_line_btn)
 
         self.manage_regions_btn = QPushButton("📋 مدیریت محدوده‌ها")
         self.manage_regions_btn.setEnabled(False)
@@ -2643,22 +2654,10 @@ class MainWindow(QMainWindow):
         self.right_splitter.setSizes([right_h * 6 // 10, right_h * 4 // 10])
         # عرضی که پنل چپ قبل از مخفی‌شدن داشت، برای بازگرداندن آن هنگام کلیک
         # مجدد روی دکمه‌ی sidebar نگه‌داشته می‌شود.
+        # (برگشت به رفتار action #207 به دستور کاربر، 2.0.12-beta: هیچ تنظیم
+        # اضافه‌ای روی splitterها نیست - نه setCollapsible، نه ذخیره/بازیابی
+        # اندازه. این بخش را دیگر دست نزن مگر در صورت ضرورت.)
         self._left_panel_width = left_w
-        # قانون «پنل‌ها دیگر خراب نمی‌شوند» (درخواست صریح): اندازه‌ی پنل‌ها فقط
-        # با دو چیز عوض می‌شود — درگ دستی کاربر، یا فراخوانی صریح کد. برای این:
-        # ۱) هیچ پنلی با درگ کاملاً جمع نمی‌شود (setCollapsible=False)؛
-        # ۲) هر درگ دستی بلافاصله ذخیره می‌شود (splitterMoved)؛
-        # ۳) بعد از هر تغییر برنامه‌نویسی‌شده (مخفی/نمایش پنل، تمام‌صفحه و...)
-        #    اندازه‌های ذخیره‌شده‌ی کاربر برگردانده می‌شوند تا نسبت دلخواه
-        #    کاربر هیچ‌وقت «نپرد».
-        for _sp, _n in ((self.splitter, 3), (self.right_splitter, 2)):
-            _sp.setOpaqueResize(True)
-            for _i in range(_n):
-                _sp.setCollapsible(_i, False)
-        self._saved_main_sizes = list(self.splitter.sizes())
-        self._saved_right_sizes = list(self.right_splitter.sizes())
-        self.splitter.splitterMoved.connect(self._remember_splitter_sizes)
-        self.right_splitter.splitterMoved.connect(self._remember_splitter_sizes)
 
         # -------------------------------------------- صفحه‌ها + هدر بالای برنامه --
         # محتوای قبلی پنجره (پنل چپ + شبکه‌ی دوربین‌ها + پنل راست) حالا «صفحه‌ی
@@ -2728,43 +2727,19 @@ class MainWindow(QMainWindow):
         # تشخیص حریق فعال داشته باشد (وضعیت اولیه هنگام بالا آمدن برنامه).
         self._refresh_fire_panel_visibility()
 
-    def _remember_splitter_sizes(self, *_args):
-        """ذخیره‌ی اندازه‌های فعلی هر دو splitter بعد از درگ دستی کاربر (و
-        بعد از هر تغییر برنامه‌نویسی‌شده). قانون: هیچ‌چیز دیگری حق ندارد این
-        نسبت‌ها را عوض کند."""
-        try:
-            self._saved_main_sizes = list(self.splitter.sizes())
-            self._saved_right_sizes = list(self.right_splitter.sizes())
-        except Exception:
-            pass
-
-    def _restore_splitter_sizes(self):
-        """برگرداندن آخرین اندازه‌های ذخیره‌شده‌ی کاربر روی هر دو splitter
-        (بعد از تغییر حالت پنجره، مخفی/نمایش پنل و...)."""
-        try:
-            if getattr(self, "_saved_main_sizes", None):
-                self.splitter.setSizes(self._saved_main_sizes)
-            if getattr(self, "_saved_right_sizes", None):
-                self.right_splitter.setSizes(self._saved_right_sizes)
-        except Exception:
-            pass
-
     def toggle_fullscreen(self):
         """رفع درخواست «منظورم از تمام‌صفحه این حالت بود»: با دکمه‌ی «⛶
         تمام‌صفحه» یا F11 پنجره ماکسیمایز می‌شود (دقیقاً همان حالتی که در
         اسکرین‌شات دیده می‌شود - با نوار عنوان ویندوز، نه فول‌اسکرین بدون
-        حاشیه)؛ زدن دوباره به حالت پنجره‌ای عادی برمی‌گرداند. اندازه‌ی
-        پنل‌ها قبل و بعد از تغییر حالت، دقیقاً همانِ تنظیم‌شده‌ی کاربر
-        برمی‌گردد (قانون «نذار دیگه خراب بشه»)."""
+        حاشیه)؛ زدن دوباره به حالت پنجره‌ای عادی برمی‌گرداند.
+        (2.0.12-beta: رفتار اندازه‌ی پنل‌ها مثل action #207 است - این متد
+        دیگر اندازه‌ای را ذخیره/بازیابی نمی‌کند.)"""
         if self.isMaximized():
             self.showNormal()
             self.fullscreen_btn.setChecked(False)
         else:
             self.showMaximized()
             self.fullscreen_btn.setChecked(True)
-        # Qt هنگام تغییر حالت پنجره ممکن است splitterها را دوباره بچیند؛
-        # اندازه‌های ذخیره‌شده‌ی کاربر را در تیک بعدی برمی‌گردانیم.
-        QTimer.singleShot(0, self._restore_splitter_sizes)
 
     def _refresh_fire_panel_visibility(self):
         """رفع درخواست: پنل «هشدارهای حریق و دود» در صفحه‌ی اصلی فقط وقتی
@@ -2787,35 +2762,25 @@ class MainWindow(QMainWindow):
         # هیچ‌وقت مخفی نمی‌شود.
         if panel.isHidden() == (not want_visible):
             return
-        if not want_visible:
-            # قبل از مخفی کردن، نسبت فعلی (با پنل حریق) را نگه می‌داریم تا
-            # موقع نمایش مجدد، همان نسبت برگردد نه یک نسبت به‌هم‌ریخته.
-            self._saved_right_sizes_with_fire = list(self.right_splitter.sizes())
+        # (2.0.12-beta: مثل action #207 - فقط مخفی/نمایان ساده، بدون
+        # ذخیره/بازیابی اندازه‌ی splitter.)
         panel.setVisible(want_visible)
-        if want_visible and getattr(self, "_saved_right_sizes_with_fire", None):
-            self.right_splitter.setSizes(self._saved_right_sizes_with_fire)
-        # بعد از مخفی/نمایش، نسبت جدید را به‌عنوان وضعیت ذخیره‌شده ثبت کن.
-        QTimer.singleShot(0, self._remember_splitter_sizes)
 
     def toggle_sidebar(self):
         """رفع درخواست: نمایش/مخفی‌کردن پنل کناری سمت چپ با کلیک روی دکمه‌ی
-        sidebar. وقتی پنل باز است با کلیک کاملاً مخفی می‌شود و وقتی بسته است
-        با کلیک، به همان اندازه‌ی قبلی‌اش برمی‌گردد (QSplitter اندازه‌ی
-        قبل از مخفی‌شدن را خودش نگه می‌دارد).
-
-        نکته‌ی قانون «نذار دیگه خراب بشه»: چون پنل‌ها setCollapsible(False)
-        هستند، نمی‌توان با setSizes عرض را ۰ کرد (Qt به minimumSizeHint
-        کلمپ می‌کند)؛ پس مخفی‌سازی با hide/show انجام می‌شود که هم تمیزتر
-        است و هم اندازه‌ی قبلی را دقیق برمی‌گرداند."""
-        if self.left_widget.isHidden():
-            self.left_widget.show()
+        sidebar. وقتی پنل باز است با کلیک بسته می‌شود (عرض صفر) و وقتی بسته
+        است با کلیک، به آخرین عرضی که داشت باز می‌گردد.
+        (2.0.12-beta: برگشت به رفتار action #207.)"""
+        sizes = self.splitter.sizes()
+        if sizes[0] > 0:
+            self._left_panel_width = sizes[0]
+            sizes[1] += sizes[0]
+            sizes[0] = 0
         else:
-            self._left_panel_width = self.splitter.sizes()[0] or self._left_panel_width
-            self.left_widget.hide()
-        # قانون پنل‌ها: بعد از تغییر برنامه‌نویسی‌شده، وضعیت جدید ذخیره شود؛
-        # با singleShot تا بعد از اعمال layout توسط Qt صبر می‌کنیم، وگرنه
-        # اندازه‌ی «قبل از layout» (کهنه) ذخیره می‌شود.
-        QTimer.singleShot(0, self._remember_splitter_sizes)
+            restore_w = getattr(self, "_left_panel_width", 200) or 200
+            sizes[1] = max(0, sizes[1] - restore_w)
+            sizes[0] = restore_w
+        self.splitter.setSizes(sizes)
 
     def _on_grid_size_changed(self, _index):
         count = self.grid_size_combo.currentData()
@@ -3165,9 +3130,11 @@ class MainWindow(QMainWindow):
         self.manage_regions_btn.setEnabled(bool(has_confirmed))
         # دکمه‌ی تنظیمات تصویر فقط وقتی یک خانه‌ی دارای دوربین انتخاب شده.
         self.image_settings_btn.setEnabled(slot is not None and slot.cam is not None)
-        # (برگشت به نسخه‌ی پرتابل): دکمه‌های «تایید»/«لغو رسم» همیشه روی نوار
-        # ابزار هستند و فقط فعال/غیرفعال می‌شوند - مخفی/نمایان نمی‌شوند تا
-        # اندازه‌ی کادر دوربین‌ها ثابت بماند.
+        # (2.0.12-beta به دستور کاربر): دکمه‌های مربوط به رسم (نوع رسم/تایید/
+        # لغو) فقط وقتی دیده می‌شوند که کاربر وارد «حالت رسم» شده باشد یا
+        # یک محدوده‌ی در انتظار/در حال ویرایش روی خانه‌ی انتخاب‌شده باشد؛
+        # بقیه‌ی وقت‌ها مخفی‌اند. چون اندازه‌ی کادرها از 2.0.10 قفل است، این
+        # مخفی/نمایان شدن اندازه‌ی کادرها را عوض نمی‌کند.
         # رفع درخواست «قابلیت ادیت‌کردن»: وقتی یک محدوده‌ی «در انتظار» (چه
         # تازه رسم‌شده، چه محدوده‌ی خودکارِ کل تصویر، چه در حال ویرایش شکلِ
         # یک محدوده‌ی قبلی) روی تصویر هست، رسم/تشخیص خودکارِ تازه غیرفعال
@@ -3192,6 +3159,10 @@ class MainWindow(QMainWindow):
         self.draw_line_btn.blockSignals(True)
         self.draw_line_btn.setChecked(bool(slot.is_draw_mode()) if slot is not None else False)
         self.draw_line_btn.blockSignals(False)
+        # نمایش کانتینر دکمه‌های رسم فقط در حالت رسم / محدوده‌ی در انتظار /
+        # ویرایش شکل - رجوع کنید به کامنت بالای این تابع.
+        in_draw_mode = bool(slot.is_draw_mode()) if slot is not None else False
+        self.region_draw_row.setVisible(bool(in_draw_mode or has_pending or is_editing))
 
     # ------------------------------------------------------- camera list ---
 

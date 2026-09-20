@@ -2,12 +2,16 @@
 
 قانون «نذار دیگه خراب بشه»: این تست بعد از هر تغییر در main.py /
 camera_stream.py / add_nvr_dialog.py اجرا می‌شود و موارد زیر را بررسی می‌کند:
- ۱) پنل‌ها: هیچ‌کدام collapsible نیستند، opaque resize فعال است،
-    toggle_sidebar رفت‌وبرگشت، اندازه‌ی پنل راست را عوض نمی‌کند.
- ۲) تمام‌صفحه: toggle_fullscreen کرش نمی‌کند و اندازه‌های ذخیره‌شده برمی‌گردند.
-    (ماکسیمایز/پنجره‌ای - همان حالت اسکرین‌شات، نه فول‌اسکرین بدون حاشیه)
- ۲-ب) رسم محدوده برگشته به نسخه‌ی پرتابل: هر ۶ دکمه همیشه روی نوار ابزار و
-    نمایان‌اند؛ هیچ مخفی/نمایان‌شدن دکمه‌ای کادر دوربین‌ها را عوض نمی‌کند.
+ ۱) پنل‌ها (2.0.12-beta: برگشت به action #207): رفتار پیش‌فرض Qt -
+    پنل‌ها collapsible هستند و هیچ ذخیره/بازیابی اندازه‌ای در کار نیست؛
+    toggle_sidebar رفت‌وبرگشت با setSizes (عرض صفر و برگشت).
+ ۲) تمام‌صفحه: toggle_fullscreen کرش نمی‌کند (ماکسیمایز/پنجره‌ای - همان
+    حالت اسکرین‌شات، نه فول‌اسکرین بدون حاشیه) و دیگر اندازه‌ای را
+    ذخیره/بازیابی نمی‌کند.
+ ۲-ب) دکمه‌های رسم محدوده (2.0.12-beta): فقط «🖊 رسم محدوده هشدار» و
+    «📋 مدیریت محدوده‌ها» همیشه روی نوار ابزار و نمایان‌اند؛ بقیه
+    (نوع رسم/تایید/لغو) فقط در حالت رسم یا وقتی محدوده‌ی در انتظار/در حال
+    ویرایش هست دیده می‌شوند.
  ۳) پنل حریق: بدون دوربین حریق مخفی، با حداقل یک دوربین حریق نمایان.
  ۴) فالبک تشخیص حرکت: با فریم مصنوعیِ دارای جسم متحرک، باکس برمی‌گرداند و
     زنجیره‌ی _PersonRegionTracker -> region_entered بدون مدل YOLO کار می‌کند.
@@ -108,48 +112,34 @@ win.resize(1600, 900)
 win.show()
 app.processEvents()
 
-# ۱) پنل‌ها
+# ۱) پنل‌ها - برگشت به action #207: رفتار پیش‌فرض Qt؛ پنل‌ها collapsible
+# هستند و هیچ مکانیزم ذخیره/بازیابی اندازه‌ای وجود ندارد.
 for i in range(3):
-    check(f"main splitter child {i} not collapsible", not win.splitter.isCollapsible(i))
+    check(f"main splitter child {i} collapsible (default #207)", win.splitter.isCollapsible(i))
 for i in range(2):
-    check(f"right splitter child {i} not collapsible", not win.right_splitter.isCollapsible(i))
-check("main splitter opaque resize", win.splitter.opaqueResize())
-check("right splitter opaque resize", win.right_splitter.opaqueResize())
+    check(f"right splitter child {i} collapsible (default #207)", win.right_splitter.isCollapsible(i))
+check("no _remember_splitter_sizes (reverted to #207)", not hasattr(win, "_remember_splitter_sizes"))
+check("no _restore_splitter_sizes (reverted to #207)", not hasattr(win, "_restore_splitter_sizes"))
 
-# toggle_sidebar رفت‌وبرگشت (hide/show): اندازه‌ی پنل راست نباید عوض شود
+# toggle_sidebar رفت‌وبرگشت با setSizes (نسخه‌ی #207): عرض صفر و برگشت به
+# آخرین عرض؛ عرض آزادشده به خانه‌ی وسط (شبکه‌ی دوربین‌ها) می‌رسد و پنل راست
+# دست‌نخورده می‌ماند.
 before = list(win.splitter.sizes())
-right_before = before[2]
 win.toggle_sidebar()
 app.processEvents()
-check("sidebar hide -> left hidden", win.left_widget.isHidden())
 mid = list(win.splitter.sizes())
-check("sidebar hide -> left size 0", mid[0] == 0, f"sizes={mid}")
+check("sidebar toggle -> left width 0", mid[0] == 0, f"sizes={mid}")
+check("sidebar toggle -> freed width goes to middle",
+      abs(mid[1] - (before[1] + before[0])) <= 2, f"before={before} mid={mid}")
+check("sidebar toggle -> right keeps width",
+      abs(mid[2] - before[2]) <= 2, f"before={before} mid={mid}")
 win.toggle_sidebar()
 app.processEvents()
-check("sidebar show -> left visible again", not win.left_widget.isHidden())
 after = list(win.splitter.sizes())
-check("sidebar show -> left width restored", abs(after[0] - before[0]) <= 2, f"before={before} after={after}")
-check("sidebar roundtrip keeps right width", abs(after[2] - right_before) <= 2, f"before={before} after={after}")
-
-# مکانیزم بازیابی اندازه‌ها (قانون «نذار دیگه خراب بشه»): بعد از roundtrip،
-# وضعیت ذخیره‌شده باید با وضعیت واقعی یکی باشد (نه کهنه‌ی قبل از layout).
-app.processEvents()
-app.processEvents()
-check("saved sizes match actual after roundtrip",
-      all(abs(a - b) <= 2 for a, b in zip(win._saved_main_sizes, win.splitter.sizes())),
-      f"saved={win._saved_main_sizes} actual={win.splitter.sizes()}")
-win.splitter.setSizes([120, 900, 300])
-win.right_splitter.setSizes([500, 100])
-app.processEvents()
-win._remember_splitter_sizes()  # همگام‌سازی صریح برای تست قطعی مکانیزم
-win.splitter.setSizes([120, 900, 300])
-app.processEvents()
-win._restore_splitter_sizes()
-app.processEvents()
-restored = list(win.splitter.sizes())
-check("restore brings back saved main sizes",
-      all(abs(a - b) <= 2 for a, b in zip(restored, win._saved_main_sizes)),
-      f"restored={restored} saved={win._saved_main_sizes}")
+check("sidebar toggle back -> left width restored",
+      abs(after[0] - before[0]) <= 2, f"before={before} after={after}")
+check("sidebar toggle back -> right keeps width",
+      abs(after[2] - before[2]) <= 2, f"before={before} after={after}")
 
 # ۲) تمام‌صفحه: کرش نکند و حالت عوض شود (ماکسیمایز/پنجره‌ای - همان حالت اسکرین‌شات)
 win.toggle_fullscreen()
@@ -161,25 +151,68 @@ app.processEvents()
 check("fullscreen exited (normal)", not win.isMaximized())
 check("fullscreen button unchecked", not win.fullscreen_btn.isChecked())
 
-# ۲-ب) برگشت رسم محدوده به نسخه‌ی پرتابل: هیچ کانتینر مخفی/نمایان‌شونده‌ای
-# نیست؛ هر ۶ دکمه همیشه روی نوار ابزار و نمایان‌اند تا کادر دوربین‌ها ثابت بماند
+# ۲-ب) دکمه‌های رسم محدوده (2.0.12-beta): فقط دکمه‌ی ورود به حالت رسم و
+# مدیریت محدوده‌ها همیشه نمایان‌اند؛ بقیه (نوع رسم/تایید/لغو) فقط در حالت
+# رسم یا وقتی محدوده‌ی در انتظار/در حال ویرایش هست دیده می‌شوند.
 check("no region_menu_btn", not hasattr(win, "region_menu_btn"))
 check("no region_type_row", not hasattr(win, "region_type_row"))
 check("no region_action_row", not hasattr(win, "region_action_row"))
+check("region_draw_row exists", hasattr(win, "region_draw_row"))
 _region_btns = [win.draw_line_btn, win.auto_region_btn, win.ai_floor_btn,
                 win.confirm_line_btn, win.redraw_line_btn, win.manage_regions_btn]
 check("all 6 region buttons exist", all(b is not None for b in _region_btns))
-check("all 6 region buttons visible", all(b.isVisible() for b in _region_btns),
-      str([b.text() for b in _region_btns if not b.isVisible()]))
-check("all 6 region buttons share one parent (toolbar)",
-      len({b.parentWidget() for b in _region_btns}) == 1)
+check("draw buttons live in region_draw_row",
+      all(b.parentWidget() is win.region_draw_row
+          for b in (win.auto_region_btn, win.ai_floor_btn,
+                    win.confirm_line_btn, win.redraw_line_btn)))
+check("entry buttons on toolbar",
+      win.draw_line_btn.parentWidget() is not win.region_draw_row
+      and win.manage_regions_btn.parentWidget() is not win.region_draw_row)
 check("draw btn portable label", win.draw_line_btn.text() == "🖊 رسم محدوده هشدار",
       win.draw_line_btn.text())
-# _refresh_line_buttons نباید هیچ ویجتی را مخفی/نمایان کند
-win._refresh_line_buttons()
-app.processEvents()
-check("refresh keeps all region buttons visible",
-      all(b.isVisible() for b in _region_btns))
+
+class _FakeSlot:
+    """خانه‌ی ساختگی برای تست منطق نمایش/مخفی‌شدن ردیف رسم."""
+    def __init__(self, draw=False, pending=False, editing=False):
+        self.cam = {"id": "x"}
+        self.regions = []
+        self._draw, self._pending, self._editing = draw, pending, editing
+    def has_pending_region(self): return self._pending
+    def is_editing_region(self): return self._editing
+    def is_draw_mode(self): return self._draw
+
+_orig_selected_slot = win._selected_slot
+try:
+    # بدون خانه‌ی انتخاب‌شده: ردیف رسم مخفی، دکمه‌های ورود نمایان
+    win._selected_slot = lambda: None
+    win._refresh_line_buttons()
+    app.processEvents()
+    check("draw row hidden with no selection", not win.region_draw_row.isVisible())
+    check("entry buttons visible with no selection",
+          win.draw_line_btn.isVisible() and win.manage_regions_btn.isVisible())
+    # حالت رسم: ردیف نمایان
+    win._selected_slot = lambda: _FakeSlot(draw=True)
+    win._refresh_line_buttons()
+    app.processEvents()
+    check("draw row visible in draw mode", win.region_draw_row.isVisible())
+    # محدوده‌ی در انتظار (بدون حالت رسم): ردیف نمایان می‌ماند تا کاربر
+    # بتواند تایید/لغو کند
+    win._selected_slot = lambda: _FakeSlot(pending=True)
+    win._refresh_line_buttons()
+    app.processEvents()
+    check("draw row visible with pending region", win.region_draw_row.isVisible())
+    # ویرایش شکل: ردیف نمایان
+    win._selected_slot = lambda: _FakeSlot(editing=True)
+    win._refresh_line_buttons()
+    app.processEvents()
+    check("draw row visible when editing", win.region_draw_row.isVisible())
+    # حالت عادی: ردیف مخفی
+    win._selected_slot = lambda: _FakeSlot()
+    win._refresh_line_buttons()
+    app.processEvents()
+    check("draw row hidden in normal state", not win.region_draw_row.isVisible())
+finally:
+    win._selected_slot = _orig_selected_slot
 
 # ۳) پنل حریق: در این محیط تست، دوربینی با fire_detection نیست -> باید مخفی باشد
 check("fire panel hidden with no fire cams", not win.fire_panel_group.isVisible())
