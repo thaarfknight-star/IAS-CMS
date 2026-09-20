@@ -19,6 +19,7 @@
 """
 import os
 import sys
+import time
 import types
 import inspect
 import importlib.util
@@ -183,6 +184,48 @@ app.processEvents()
 check("un-maximize restores frozen tile size",
       all(s.size() == frozen4 for s in grid.slots),
       str(grid.slots[0].size()))
+
+# ---------- ۳) رگرسیون باگ «سیستم محدوده کار نمی‌کند» ----------
+# هشدار ورود به محدوده باید مستقل از سلامت تشخیص چهره کار کند: اگر
+# face_engine.recognize خطا بدهد (مثل exe که کتابخانه‌ی چهره‌اش خراب است)،
+# بلوک محدوده (که قبل از تشخیص چهره اجرا می‌شود) نباید تحت تأثیر قرار بگیرد.
+class _BrokenFaceEngine:
+    def recognize(self, frame):
+        raise RuntimeError("simulated broken face lib")
+
+    def save_unknown_face(self, crop):
+        pass
+
+    def draw_results(self, frame, results):
+        pass
+
+
+from PyQt6.QtCore import Qt as _Qt
+_Direct = _Qt.ConnectionType.DirectConnection
+
+_bg = np.full((240, 320, 3), 40, dtype=np.uint8)
+_dbg_frames = []
+for _i in range(12):
+    _f = _bg.copy()
+    if _i >= 4:
+        _x = 40 + (_i - 4) * 25
+        _f[70:170, _x:_x + 50] = 255  # جسم متحرک که وارد محدوده می‌شود
+    _dbg_frames.append(_f)
+
+_broken_events = []
+_bt = cs.CameraStreamThread("dummy", _BrokenFaceEngine(), process_every_n=5)
+_bt.region_entered.connect(
+    lambda number, name: _broken_events.append((number, name)), _Direct)
+_bt.set_regions([{"id": "r1", "number": 1, "name": "در",
+                  "points": [(0.3, 0.2), (0.7, 0.2), (0.7, 0.8), (0.3, 0.8)]}])
+for _f in _dbg_frames:
+    _bt._run_recognition(_f)
+    time.sleep(0.6)  # عبور از cooldown دیتکتور حرکت + شبیه‌سازی تیک واقعی
+check("region alert fires despite broken face engine",
+      len(_broken_events) >= 1, f"events={_broken_events}")
+if _broken_events:
+    check("broken-face region event values",
+          _broken_events[0] == (1, "در"), f"events={_broken_events}")
 
 # ---------- جمع‌بندی ----------
 print(f"\n{len(passed)} passed, {len(failed)} failed")
