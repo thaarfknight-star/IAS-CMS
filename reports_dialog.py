@@ -132,8 +132,35 @@ class ReportsPage(QWidget):
         self.viol_summary = QLabel("")
         viol_layout.addWidget(self.viol_summary)
 
+        # --- تب «تخلفات محدوده‌ها»: ورود افراد تعریف‌شده به محدوده‌ی ممنوعه —
+        # از person_store.region_violations
+        rviol_tab = QWidget()
+        rviol_layout = QVBoxLayout(rviol_tab)
+        rviol_layout.setContentsMargins(0, 6, 0, 0)
+        self.tabs.addTab(rviol_tab, "🚨 تخلفات محدوده‌ها")
+        rviol_filter = QHBoxLayout()
+        rviol_refresh = QPushButton("🔄 به‌روزرسانی")
+        rviol_refresh.clicked.connect(self.run_region_violation_search)
+        rviol_filter.addWidget(rviol_refresh)
+        rviol_filter.addStretch()
+        rviol_layout.addLayout(rviol_filter)
+        self.rviol_table = QTableWidget(0, 7)
+        self.rviol_table.setHorizontalHeaderLabels([
+            "زمان (شمسی)", "نوع شخص", "نام / کد", "دوربین", "محدوده",
+            "وضعیت", "تصویر",
+        ])
+        self.rviol_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch)
+        self.rviol_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.rviol_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows)
+        rviol_layout.addWidget(self.rviol_table)
+        self.rviol_summary = QLabel("")
+        rviol_layout.addWidget(self.rviol_summary)
+
         self.run_search()
         self.run_violation_search()
+        self.run_region_violation_search()
 
     def refresh(self):
         """هر بار که صفحه از هدر باز می‌شود صدا زده می‌شود: لیست دوربین‌ها
@@ -142,6 +169,10 @@ class ReportsPage(QWidget):
         self._reload_camera_combo()
         self.run_search()
         self.run_violation_search()
+        try:
+            self.run_region_violation_search()
+        except Exception:
+            pass
 
     def run_violation_search(self):
         """پر کردن تب «تخلفات طبقاتی» از person_store.floor_violations با
@@ -199,6 +230,62 @@ class ReportsPage(QWidget):
             self.viol_table.setItem(r, 6, img_item)
             n += 1
         self.viol_summary.setText(f"{n} تخلف یافت شد.")
+
+    def run_region_violation_search(self):
+        """پر کردن تب «تخلفات محدوده‌ها» از person_store.region_violations با
+        همان بازه‌ی تاریخی بالای صفحه."""
+        from person_store import person_store
+        from datetime import datetime as _dt
+        start = self.from_date.date().toString("yyyy-MM-dd") + " 00:00:00"
+        end = self.to_date.date().toString("yyyy-MM-dd") + " 23:59:59"
+        try:
+            start_ts = _dt.strptime(start, "%Y-%m-%d %H:%M:%S").timestamp()
+            end_ts = _dt.strptime(end, "%Y-%m-%d %H:%M:%S").timestamp()
+        except Exception:
+            start_ts, end_ts = 0, 1e18
+        self.rviol_table.setRowCount(0)
+        n = 0
+        try:
+            viols = person_store.list_region_violations(limit=5000)
+        except Exception:
+            viols = []
+        for v in viols:
+            try:
+                ts = float(v.get("ts") or 0)
+            except Exception:
+                ts = 0
+            if not (start_ts <= ts <= end_ts):
+                continue
+            is_defined = bool(v.get("face_person_id") or v.get("face_name"))
+            r = self.rviol_table.rowCount()
+            self.rviol_table.insertRow(r)
+            self.rviol_table.setItem(
+                r, 0, QTableWidgetItem(v.get("date_j") or ""))
+            self.rviol_table.setItem(
+                r, 1, QTableWidgetItem(
+                    "✅ تعریف‌شده" if is_defined else "❓ تعریف‌نشده"))
+            name = v.get("face_name") or v.get("person_id") or "—"
+            self.rviol_table.setItem(r, 2, QTableWidgetItem(name))
+            self.rviol_table.setItem(
+                r, 3, QTableWidgetItem(v.get("camera_name") or ""))
+            region_lbl = f"محدوده {v.get('region_number', '')}"
+            if v.get("region_name"):
+                region_lbl += f" / {v['region_name']}"
+            self.rviol_table.setItem(r, 4, QTableWidgetItem(region_lbl))
+            self.rviol_table.setItem(
+                r, 5, QTableWidgetItem(
+                    "✔ تأییدشده" if v.get("acknowledged") else "⚠ بررسی‌نشده"))
+            img_item = QTableWidgetItem("")
+            sp = v.get("snapshot_path") or ""
+            if sp:
+                pixmap = QPixmap(sp)
+                if not pixmap.isNull():
+                    img_item.setIcon(QIcon(pixmap.scaledToHeight(
+                        48, Qt.TransformationMode.SmoothTransformation)))
+                img_item.setToolTip(sp)
+            self.rviol_table.setItem(r, 6, img_item)
+            n += 1
+        self.rviol_summary.setText(f"{n} تخلف یافت شد.")
 
     def _reload_camera_combo(self):
         current = self.camera_combo.currentData()

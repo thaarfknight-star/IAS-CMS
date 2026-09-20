@@ -141,6 +141,7 @@ class PersonTrackPage(QWidget):
         self.tabs.addTab(self._build_persons_tab(), "👥 اشخاص ردیابی‌شده")
         self.tabs.addTab(self._build_path_tab(), "🗺 گزارش مسیر حرکت")
         self.tabs.addTab(self._build_access_tab(), "🚨 کنترل تردد طبقاتی")
+        self.tabs.addTab(self._build_region_access_tab(), "🚨 کنترل تردد محدوده‌ها")
         layout.addWidget(self.tabs, 1)
 
         self.status_label = QLabel("")
@@ -159,6 +160,10 @@ class PersonTrackPage(QWidget):
         self._update_stats()
         try:
             self._reload_access_tab()
+        except Exception:
+            pass
+        try:
+            self._reload_region_access_tab()
         except Exception:
             pass
 
@@ -869,6 +874,347 @@ class PersonTrackPage(QWidget):
             layout.addWidget(chk)
             checks_list.append((chk, fid))
         return checks_list
+
+    # ============ تب کنترل تردد محدوده‌ها ============
+    def _all_camera_regions(self):
+        """لیست همه‌ی محدوده‌های همه‌ی دوربین‌ها:
+        [(cam_id, cam_name, region_id, region_number, region_name)]"""
+        out = []
+        try:
+            cams = list(self.camera_store.standalone_cameras())
+            for nvr in self.camera_store.nvrs:
+                nvr_name = nvr.get("name") or nvr.get("ip") or ""
+                for cam in self.camera_store.cameras_for_nvr(nvr.get("id")):
+                    label = cam.get("name") or f"کانال {cam.get('channel', '')}"
+                    c = dict(cam)
+                    c["_display_name"] = f"{label} ({nvr_name})"
+                    cams.append(c)
+            for cam in cams:
+                cam_id = cam.get("id")
+                cam_name = cam.get("_display_name") or \
+                    cam.get("name") or cam.get("ip") or "؟"
+                for r in (cam.get("regions") or []):
+                    out.append((cam_id, cam_name, r.get("id"),
+                                r.get("number"), r.get("name") or ""))
+        except Exception:
+            pass
+        return out
+
+    def _region_checkboxes(self, layout, checks_list):
+        """چک‌باکس محدوده‌ها (تیک = ممنوعه)، گروه‌بندی‌شده بر اساس دوربین.
+        خروجی: لیست (QCheckBox, region_key)."""
+        from PyQt6.QtWidgets import QCheckBox
+        while layout.count():
+            item = layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        checks_list.clear()
+        regs = self._all_camera_regions()
+        if not regs:
+            lbl = QLabel("⚠ هنوز هیچ محدوده‌ی هشداری برای هیچ دوربینی تعریف نشده است.")
+            lbl.setStyleSheet("color: #fbbf24; font-size: 11px;")
+            layout.addWidget(lbl)
+            return checks_list
+        last_cam = None
+        for cam_id, cam_name, rid, rnum, rname in regs:
+            if cam_id != last_cam:
+                hdr = QLabel(f"🎥 {cam_name}")
+                hdr.setStyleSheet("font-weight: bold; font-size: 12px; "
+                                  "margin-top: 6px; color: #7dd3fc;")
+                layout.addWidget(hdr)
+                last_cam = cam_id
+            lbl = f"محدوده {rnum}" + (f" / {rname}" if rname else "")
+            chk = QCheckBox(lbl)
+            layout.addWidget(chk)
+            checks_list.append((chk, f"{cam_id}:{rid}"))
+        return checks_list
+
+    def _build_region_access_tab(self):
+        """تب «🚨 کنترل تردد محدوده‌ها»: قانون «محدوده‌های ممنوعه» برای هر
+        شخص (از بانک چهره‌ها) و هر «گروه کاری» — دقیقاً همان الگوی تب طبقاتی.
+        افراد تعریف‌نشده قانون ندارند: ورودشان همیشه «گزارش ورود به محدوده»
+        ثبت می‌شود."""
+        from PyQt6.QtWidgets import QCheckBox, QScrollArea
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        # --- ۱) قانون تکی: افراد تعریف‌شده (چهره‌محور، از بانک چهره‌ها)
+        person_group = QGroupBox("🧑 افراد تعریف‌شده — محدوده‌های ممنوعه‌ی هر شخص")
+        person_layout = QVBoxLayout()
+        person_hint = QLabel(
+            "شخص را از «بانک چهره‌ها» انتخاب کنید و تیک محدوده‌هایی را بزنید که "
+            "این شخص «نمی‌تواند» واردشان شود. اگر برای چهره‌ای قانونی ثبت نشود، "
+            "قانون «گروه کاری»‌اش بررسی می‌شود؛ اگر آن هم نباشد آزاد است. ورود "
+            "به محدوده‌ی ممنوعه، «تخلف ورود به محدوده» ثبت و بوق تخلف پخش می‌کند.")
+        person_hint.setStyleSheet("color: #9e9e9e; font-size: 11px;")
+        person_hint.setWordWrap(True)
+        person_layout.addWidget(person_hint)
+        sel_row = QHBoxLayout()
+        sel_row.addWidget(QLabel("شخص:"))
+        self.region_person_combo = QComboBox()
+        self.region_person_combo.setMinimumWidth(200)
+        self.region_person_combo.currentIndexChanged.connect(
+            self._on_region_person_changed)
+        sel_row.addWidget(self.region_person_combo)
+        sel_row.addStretch()
+        person_layout.addLayout(sel_row)
+        self.person_region_box = QWidget()
+        self.person_region_layout = QVBoxLayout(self.person_region_box)
+        self.person_region_layout.setContentsMargins(20, 0, 0, 0)
+        person_layout.addWidget(self.person_region_box)
+        self.person_region_checks = []
+        self.person_region_status = QLabel("")
+        self.person_region_status.setStyleSheet("color: #9e9e9e; font-size: 11px;")
+        person_layout.addWidget(self.person_region_status)
+        person_btn_row = QHBoxLayout()
+        person_save = QPushButton("💾 ذخیره‌ی قانون این شخص")
+        person_save.clicked.connect(self._save_person_region_rule)
+        person_clear = QPushButton("🗑 حذف قانون (آزاد)")
+        person_clear.clicked.connect(self._clear_person_region_rule)
+        person_btn_row.addWidget(person_save)
+        person_btn_row.addWidget(person_clear)
+        person_btn_row.addStretch()
+        person_layout.addLayout(person_btn_row)
+        person_group.setLayout(person_layout)
+        layout.addWidget(person_group)
+
+        # --- ۲) قانون «گروه کاری»: برای همه‌ی اعضای یک گروه، یکجا
+        group_group = QGroupBox("🏷 قانون گروه‌های کاری — محدوده‌های ممنوعه")
+        group_layout = QVBoxLayout()
+        group_hint = QLabel(
+            "قانون هر «گروه کاری» (از بانک چهره‌ها) برای همه‌ی اعضای آن گروه "
+            "اعمال می‌شود؛ ولی قانون تکی هر شخص نسبت به قانون گروهش اولویت "
+            "دارد. اگر نه قانون تکی و نه قانون گروه باشد، شخص آزاد است.")
+        group_hint.setWordWrap(True)
+        group_hint.setStyleSheet("color: #9e9e9e; font-size: 11px;")
+        group_layout.addWidget(group_hint)
+        gsel_row = QHBoxLayout()
+        gsel_row.addWidget(QLabel("گروه کاری:"))
+        self.region_group_combo = QComboBox()
+        self.region_group_combo.setMinimumWidth(200)
+        self.region_group_combo.currentIndexChanged.connect(
+            self._on_region_group_changed)
+        gsel_row.addWidget(self.region_group_combo)
+        gsel_row.addStretch()
+        group_layout.addLayout(gsel_row)
+        self.group_region_box = QWidget()
+        self.group_region_layout = QVBoxLayout(self.group_region_box)
+        self.group_region_layout.setContentsMargins(20, 0, 0, 0)
+        group_layout.addWidget(self.group_region_box)
+        self.group_region_checks = []
+        self.group_region_status = QLabel("")
+        self.group_region_status.setStyleSheet("color: #9e9e9e; font-size: 11px;")
+        group_layout.addWidget(self.group_region_status)
+        group_btn_row = QHBoxLayout()
+        group_save = QPushButton("💾 ذخیره‌ی قانون این گروه")
+        group_save.clicked.connect(self._save_group_region_rule)
+        group_clear = QPushButton("🗑 حذف قانون (آزاد)")
+        group_clear.clicked.connect(self._clear_group_region_rule)
+        group_btn_row.addWidget(group_save)
+        group_btn_row.addWidget(group_clear)
+        group_btn_row.addStretch()
+        group_layout.addLayout(group_btn_row)
+        group_group.setLayout(group_layout)
+        layout.addWidget(group_group)
+
+        # --- ۳) تخلفات ثبت‌شده
+        rviol_group = QGroupBox("🚨 تخلفات ورود غیرمجاز به محدوده")
+        rviol_layout = QVBoxLayout()
+        rviol_btn_row = QHBoxLayout()
+        rviol_btn_row.addStretch()
+        rviol_refresh = QPushButton("🔄 به‌روزرسانی")
+        rviol_refresh.clicked.connect(self.refresh_region_violations)
+        rviol_btn_row.addWidget(rviol_refresh)
+        rviol_ack = QPushButton("✔ تأیید تخلف انتخاب‌شده")
+        rviol_ack.clicked.connect(self._acknowledge_region_violation)
+        rviol_btn_row.addWidget(rviol_ack)
+        rviol_layout.addLayout(rviol_btn_row)
+        self.region_violations_table = QTableWidget(0, 6)
+        self.region_violations_table.setHorizontalHeaderLabels(
+            ["زمان (شمسی)", "شخص", "دوربین", "محدوده", "وضعیت", "شناسه"])
+        self.region_violations_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents)
+        self.region_violations_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows)
+        self.region_violations_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.region_violations_table.setMaximumHeight(220)
+        rviol_layout.addWidget(self.region_violations_table)
+        rviol_group.setLayout(rviol_layout)
+        layout.addWidget(rviol_group)
+
+        layout.addStretch()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(tab)
+        return scroll
+
+    def _reload_region_access_tab(self):
+        """بارگذاری قوانین و تخلفات در تب کنترل تردد محدوده‌ها."""
+        # چک‌باکس‌های محدوده‌ها
+        self._region_checkboxes(self.person_region_layout, self.person_region_checks)
+        self._region_checkboxes(self.group_region_layout, self.group_region_checks)
+        # لیست اشخاص: از «بانک چهره‌ها» (هویت چهره‌محور)، نه ردیابی‌شده‌ها
+        face_people = []
+        try:
+            if getattr(self, "face_engine", None) is not None:
+                face_people = self.face_engine.list_people()
+        except Exception:
+            face_people = []
+        self.region_person_combo.blockSignals(True)
+        self.region_person_combo.clear()
+        for p in face_people:
+            label = p.get("name") or "بدون نام"
+            wg = (p.get("work_group") or "").strip()
+            if wg:
+                label += f" · 🏷 {wg}"
+            self.region_person_combo.addItem(label, p.get("id"))
+        self.region_person_combo.blockSignals(False)
+        self._on_region_person_changed()
+        # لیست گروه‌های کاری: از بانک چهره + گروه‌هایی که قانون دارند
+        groups = set()
+        try:
+            if getattr(self, "face_engine", None) is not None:
+                groups.update(self.face_engine.list_work_groups())
+        except Exception:
+            pass
+        try:
+            for g, _r in person_store.list_work_group_region_rules():
+                if g:
+                    groups.add(g)
+        except Exception:
+            pass
+        self.region_group_combo.blockSignals(True)
+        self.region_group_combo.clear()
+        for g in sorted(groups):
+            self.region_group_combo.addItem(f"🏷 {g}", g)
+        self.region_group_combo.blockSignals(False)
+        self._on_region_group_changed()
+        self.refresh_region_violations()
+
+    def _on_region_person_changed(self):
+        pid = self.region_person_combo.currentData()
+        if not pid:
+            self.person_region_status.setText(
+                "هنوز هیچ چهره‌ای در «بانک چهره‌ها» تعریف نشده است؛ "
+                "اول از صفحه‌ی «👤 چهره‌ها» فرد را تعریف کنید.")
+            return
+        try:
+            rule = person_store.get_person_denied_regions(pid)
+        except Exception:
+            rule = None
+        if rule is None:
+            self.person_region_status.setText(
+                "برای این شخص قانونی ثبت نشده — آزاد است (مگر قانون گروه کاری‌اش).")
+            for chk, _k in self.person_region_checks:
+                chk.setChecked(False)
+        else:
+            self.person_region_status.setText(
+                f"قانون فعلی: {len(rule)} محدوده‌ی ممنوعه.")
+            for chk, k in self.person_region_checks:
+                chk.setChecked(k in rule)
+
+    def _on_region_group_changed(self):
+        grp = self.region_group_combo.currentData()
+        if not grp:
+            self.group_region_status.setText(
+                "هنوز هیچ «گروه کاری» در بانک چهره‌ها تعریف نشده است؛ "
+                "اول در صفحه‌ی «👤 چهره‌ها» برای افراد گروه کاری تعیین کنید.")
+            return
+        try:
+            rule = person_store.get_work_group_denied_regions(grp)
+        except Exception:
+            rule = None
+        if rule is None:
+            self.group_region_status.setText(
+                "برای این گروه قانونی ثبت نشده — اعضایش (بدون قانون تکی) آزادند.")
+            for chk, _k in self.group_region_checks:
+                chk.setChecked(False)
+        else:
+            self.group_region_status.setText(
+                f"قانون فعلی: {len(rule)} محدوده‌ی ممنوعه.")
+            for chk, k in self.group_region_checks:
+                chk.setChecked(k in rule)
+
+    def _save_person_region_rule(self):
+        pid = self.region_person_combo.currentData()
+        if not pid:
+            return
+        denied = [k for chk, k in self.person_region_checks if chk.isChecked()]
+        person_store.set_person_denied_regions(pid, denied)
+        QMessageBox.information(self, "ذخیره شد",
+                                "قانون محدوده‌های ممنوعه‌ی این شخص ذخیره شد.")
+        self._reload_region_access_tab()
+
+    def _clear_person_region_rule(self):
+        pid = self.region_person_combo.currentData()
+        if not pid:
+            return
+        person_store.set_person_denied_regions(pid, None)
+        QMessageBox.information(self, "حذف شد",
+                                "قانون این شخص حذف شد — آزاد است.")
+        self._reload_region_access_tab()
+
+    def _save_group_region_rule(self):
+        grp = self.region_group_combo.currentData()
+        if not grp:
+            return
+        denied = [k for chk, k in self.group_region_checks if chk.isChecked()]
+        person_store.set_work_group_denied_regions(grp, denied)
+        QMessageBox.information(self, "ذخیره شد",
+                                "قانون محدوده‌های ممنوعه‌ی این گروه ذخیره شد.")
+        self._reload_region_access_tab()
+
+    def _clear_group_region_rule(self):
+        grp = self.region_group_combo.currentData()
+        if not grp:
+            return
+        person_store.set_work_group_denied_regions(grp, None)
+        QMessageBox.information(self, "حذف شد",
+                                "قانون این گروه حذف شد.")
+        self._reload_region_access_tab()
+
+    def refresh_region_violations(self):
+        """به‌روزرسانی جدول تخلفات محدوده (از main.py هم هنگام تخلف تازه صدا
+        زده می‌شود)."""
+        if not hasattr(self, "region_violations_table"):
+            return
+        try:
+            viols = person_store.list_region_violations(limit=200)
+        except Exception:
+            viols = []
+        self.region_violations_table.setRowCount(0)
+        for v in viols:
+            row = self.region_violations_table.rowCount()
+            self.region_violations_table.insertRow(row)
+            who = v.get("person_id", "")
+            if v.get("face_name"):
+                who += f" · {v['face_name']}"
+            region_lbl = f"محدوده {v.get('region_number', '')}"
+            if v.get("region_name"):
+                region_lbl += f" / {v['region_name']}"
+            status = "✔ تأییدشده" if v.get("acknowledged") else "⚠ تازه"
+            vals = [v.get("date_j", ""), who, v.get("camera_name", ""),
+                    region_lbl, status, v.get("id", "")]
+            for col, val in enumerate(vals):
+                self.region_violations_table.setItem(
+                    row, col, QTableWidgetItem(str(val)))
+            if not v.get("acknowledged"):
+                for col in range(6):
+                    it = self.region_violations_table.item(row, col)
+                    if it:
+                        it.setBackground(Qt.GlobalColor.darkRed)
+
+    def _acknowledge_region_violation(self):
+        row = self.region_violations_table.currentRow()
+        if row < 0:
+            return
+        vid_item = self.region_violations_table.item(row, 5)
+        if not vid_item:
+            return
+        person_store.acknowledge_region_violation(vid_item.text())
+        self.refresh_region_violations()
 
     def _reload_access_tab(self):
         """بارگذاری قوانین و تخلفات در تب کنترل تردد."""

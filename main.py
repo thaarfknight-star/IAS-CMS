@@ -1033,7 +1033,8 @@ class CameraSlotWidget(QWidget):
         self._refresh_detector_warning()
         self.tripwire_changed.emit()
 
-    def _on_region_entered(self, number, name):
+    def _on_region_entered(self, region_id, number, name,
+                           face_person_id="", face_name=""):
         # رفع درخواست: با هر ورود، کادر قرمز می‌شود، آلارم صوتی پخش می‌شود
         # و پیام «ورود به محدوده شماره N / نام» زیر نام دوربین نمایش داده
         # می‌شود؛ تایمر با هر ورود تازه ریست می‌شود تا قرمزی/پیام حداقل چند
@@ -1044,10 +1045,16 @@ class CameraSlotWidget(QWidget):
         self.status_label.setText(f"⚠ ورود به محدوده {label}")
         _play_alarm_beep("zone")
         self._alarm_timer.start(4000)
-        if self._on_region_alert is not None and self.cam is not None:
-            # رفع درخواست «گزارش‌ها روی NVR ضبط بشه»: کل cam پاس داده می‌شود
-            # تا nvr_id/channel هم در on_region_alert در دسترس باشد.
-            self._on_region_alert(self.cam, number, name)
+        # --- ثبت گزارش ورود + کنترل تردد محدوده‌ها ---
+        # افراد تعریف‌نشده: ورودشان همیشه «گزارش ورود به محدوده» ثبت می‌شود.
+        # افراد تعریف‌شده: قانون «محدوده‌های ممنوعه» (تکی/گروهی) بررسی می‌شود؛
+        # تخلف → ثبت تخلف + بوق تخلف، ورود مجاز → گزارش عادی ورود.
+        try:
+            if self._on_region_alert is not None and self.cam is not None:
+                self._on_region_alert(self.cam, region_id, number, name,
+                                      face_person_id or "", face_name or "")
+        except Exception:
+            pass
 
     def _on_fire_event(self, kind: str, crop_frame, confidence: float):
         """رفع درخواست «سیستم تشخیص دود و اعلام حریق»: دقیقاً همان الگوی
@@ -2882,16 +2889,23 @@ class MainWindow(QMainWindow):
         dialog = ImageSettingsDialog(slot, self.camera_store, self)
         dialog.exec()
 
-    def on_region_alert(self, cam, number, name):
+    def on_region_alert(self, cam, region_id, number, name,
+                        face_person_id="", face_name=""):
         """رفع درخواست: با ورود شخصی به یکی از محدوده‌های هشدار هر دوربین
         (از CameraSlotWidget._on_region_entered)، یک ردیف متنی قرمز هم در
         پنل تشخیص چهره (سمت راست) ثبت می‌شود تا سابقه‌ی هشدارها هم در دسترس
         باشد. ``cam``: کل دیکشنری دوربین (نه فقط اسم) تا nvr_id/channel هم
-        برای لینک «پخش ویدیوی NVR» در دیالوگ گزارش‌ها ذخیره شود."""
+        برای لینک «پخش ویدیوی NVR» در دیالوگ گزارش‌ها ذخیره شود.
+        کنترل تردد محدوده‌ها: افراد تعریف‌نشده → همیشه «گزارش ورود به محدوده»
+        ثبت می‌شود؛ افراد تعریف‌شده → قانون «محدوده‌های ممنوعه» (تکی/گروهی)
+        بررسی و در صورت تخلف، «تخلف ورود به محدوده» ثبت و بوق تخلف پخش می‌شود.
+        """
         camera_name = cam.get("name", "")
+        camera_id = cam.get("id", "")
         timestamp = time.strftime("%H:%M:%S")
         label = f"شماره {number}" + (f" / {name}" if name else "")
-        text = f"[{timestamp}] {camera_name}\n⚠ ورود به محدوده {label}"
+        who = f" — {face_name}" if face_name else ""
+        text = f"[{timestamp}] {camera_name}\n⚠ ورود به محدوده {label}{who}"
         item = QListWidgetItem(text)
         item.setForeground(QColor("#e74c3c"))
         self.face_panel_list.insertItem(0, item)
@@ -2901,6 +2915,14 @@ class MainWindow(QMainWindow):
                                        nvr_id=cam.get("nvr_id"), channel=cam.get("channel"))
         while self.face_panel_list.count() > 300:
             self.face_panel_list.takeItem(self.face_panel_list.count() - 1)
+        # --- کنترل تردد محدوده‌ها (فقط افراد تعریف‌شده) ---
+        if face_person_id:
+            try:
+                self._check_person_region_access(
+                    face_person_id, face_name, camera_id, camera_name,
+                    region_id, number, name)
+            except Exception:
+                pass
 
     def on_fire_event(self, cam, kind: str, crop_frame, confidence: float):
         """رفع درخواست «سیستم تشخیص دود و اعلام حریق»: با هر تشخیص تصویری
@@ -4092,7 +4114,51 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-    def _refresh_person_detector_status(self):
+    def _check_person_region_access(self, face_person_id, face_name,
+                                    cam_id, camera_name, region_id,
+                                    region_number, region_name,
+                                    snapshot_bgr=None):
+        """کنترل تردد محدوده‌ها: اگر شخص تعریف‌شده وارد محدوده‌ی ممنوعه‌اش
+        شد، تخلف ثبت و هشدار داده می‌شود. هیچ‌وقت نباید زنجیره‌ی هشدار ورود
+        را بشکند."""
+        from region_access import evaluate_region_access, region_key
+        if not region_id or not face_person_id:
+            return
+        allowed, _reason, _is_defined = evaluate_region_access(
+            face_person_id, cam_id, region_id, person_store,
+            face_engine=getattr(self, "face_engine", None))
+        if allowed:
+            return
+        # اسنپ‌شات: آخرین فریم خام دوربین (اگر در دسترس باشد)
+        if snapshot_bgr is None:
+            try:
+                for s in self.camera_grid.slots:
+                    if getattr(s, "cam", None) is not None and \
+                            s.cam.get("id") == cam_id:
+                        snapshot_bgr = getattr(s, "latest_raw_frame", None)
+                        break
+            except Exception:
+                snapshot_bgr = None
+        viol = person_store.record_region_violation(
+            face_person_id, face_person_id or "", face_name or "",
+            cam_id or "", camera_name or "", region_id,
+            region_number, region_name or "",
+            snapshot_bgr=snapshot_bgr)
+        if viol is None:
+            return  # داخل cooldown؛ قبلاً ثبت شده
+        # هشدار صوتی تخلف — کاملاً مستقل از صدای حریق و ورود به محدوده
+        # (تک‌بوق؛ آژیر ممتد آتش جداست و با تنظیم خودش کنترل می‌شود)
+        try:
+            _play_violation_beep()
+        except Exception:
+            pass
+        # به‌روزرسانی زنده‌ی تب تخلفات (اگر صفحه باز است)
+        try:
+            page = getattr(self, "person_page", None)
+            if page is not None and hasattr(page, "refresh_region_violations"):
+                page.refresh_region_violations()
+        except Exception:
+            pass
         """به‌روزرسانی بنر وضعیت موتور تشخیص شخص در صفحه‌ی «ردیابی اشخاص».
 
         رفع درخواست «هیچ گزارشی از افراد ثبت نمیشه» بی‌هیچ توضیحی: علت

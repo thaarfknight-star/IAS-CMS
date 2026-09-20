@@ -393,11 +393,14 @@ class _PersonRegionTracker:
     def __init__(self):
         self.tracks = []  # هر رد: {"center": (x, y), "size": s, "inside": set(region_id)}
 
-    def update(self, boxes, regions, frame_w, frame_h):
+    def update(self, boxes, regions, frame_w, frame_h, face_results=None):
         """boxes: خروجی PersonDetector.detect (پیکسل خام، (top,right,bottom,left)).
         regions: لیستی از دیکشنری {"id","number","name","points"} (یا قدیمی
         "rect") که نقاطش نرمال‌شده‌ی 0..1 (نسبت به عرض/ارتفاع فریم خام) است.
-        خروجی: لیستی از (number, name) برای هر «ورود تازه» در همین دور."""
+        face_results: خروجی FaceEngine.recognize (اختیاری) برای الصاق هویت
+        چهره به باکس بدنِ واردشده.
+        خروجی: لیستی از (region_id, number, name, face_person_id, face_name)
+        برای هر «ورود تازه» در همین دور."""
         entered = []
         unmatched = list(self.tracks)
         new_tracks = []
@@ -431,12 +434,57 @@ class _PersonRegionTracker:
                 if _point_in_polygon(center, polygon_px):
                     cur_inside.add(region_id)
                     if region_id not in prev_inside:
-                        entered.append((number, name))
+                        face_pid, face_name = _match_face_to_body(
+                            box, face_results)
+                        entered.append((region_id, number, name,
+                                        face_pid, face_name))
 
             new_tracks.append({"center": center, "size": size, "inside": cur_inside})
 
         self.tracks = new_tracks
         return entered
+
+
+def _match_face_to_body(body_box, face_results):
+    """هویت چهره‌ی متعلق به یک باکس بدن: مرکز چهره باید داخل نیمه‌ی بالایی
+    باکس بدن باشد. خروجی: (face_person_id, face_name) یا ("", "") برای
+    تعریف‌نشده/پیدا‌نشده."""
+    try:
+        top, right, bottom, left = body_box
+    except Exception:
+        return "", ""
+    bw = right - left
+    bh = bottom - top
+    if bw <= 0 or bh <= 0:
+        return "", ""
+    body_cx = (left + right) / 2.0
+    best_person = None
+    best_d = None
+    for fr in (face_results or []):
+        try:
+            person = fr.get("person")
+            fbox = fr.get("box")
+            if not person or not fbox:
+                continue
+            ftop, fright, fbottom, fleft = fbox
+            fcx = (fleft + fright) / 2.0
+            fcy = (ftop + fbottom) / 2.0
+            # مرکز چهره داخل باکس بدن و در نیمه‌ی بالایی آن (ناحیه‌ی سر)
+            if not (left <= fcx <= right and top <= fcy <= top + bh * 0.6):
+                continue
+            d = abs(fcx - body_cx)
+            if best_d is None or d < best_d:
+                best_d = d
+                best_person = person
+        except Exception:
+            continue
+    if best_person:
+        try:
+            return (str(best_person.get("id") or ""),
+                    str(best_person.get("name") or ""))
+        except Exception:
+            return "", ""
+    return "", ""
 
 
 class CameraStreamThread(QThread):
@@ -456,7 +504,7 @@ class CameraStreamThread(QThread):
     # رسم‌شده توسط کاربر شود، این سیگنال با شماره و نام همان محدوده ارسال
     # می‌شود تا در main.py کادر دوربین قرمز شود، صدای آلارم پخش شود و پیام
     # مربوطه (مثلاً «ورود به محدوده شماره ۱ / اتاق سرور») نمایش داده شود.
-    region_entered = pyqtSignal(int, str)  # (number, name)
+    region_entered = pyqtSignal(str, int, str, str, str)  # (region_id, number, name, face_person_id, face_name)
     # رفع درخواست: «محدوده رسم می‌شود ولی هشدار هیچ‌وقت فعال نمی‌شود». علت
     # ریشه‌ای این بود که کل زنجیره‌ی هشدار (region_entered بالا) به بارگذاری
     # موفق مدل YOLOv8 در person_detector.py وابسته است، ولی وقتی آن مدل
@@ -948,8 +996,12 @@ class CameraStreamThread(QThread):
                 regions = self.regions
             if regions and self._person_detector_available:
                 h, w = frame.shape[:2]
-                for number, name in self._region_tracker.update(self._last_person_boxes, regions, w, h):
-                    self.region_entered.emit(number, name)
+                for region_id, number, name, face_pid, face_name in \
+                        self._region_tracker.update(
+                            self._last_person_boxes, regions, w, h,
+                            face_results=self._last_results):
+                    self.region_entered.emit(region_id, number, name,
+                                             face_pid, face_name)
 
             # --- ردیابی اشخاص بین دوربین‌ها (اختیاری، با کمک چهره) ---
             # دقیقاً همان الگوی تشخیص شخص/آتش: در همین ترد پس‌زمینه‌ی تشخیص
