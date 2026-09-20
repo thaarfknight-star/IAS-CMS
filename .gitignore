@@ -34,3 +34,4 @@ installer/files.nsi
 # گرافیک تولیدشده‌ی نصب‌کننده — در CI توسط make_graphics.py بازتولید می‌شود
 installer/graphics/*.bmp
 installer/graphics/*.png
+person_data/
