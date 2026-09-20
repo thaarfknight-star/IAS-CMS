@@ -232,9 +232,12 @@ class VideoDisplayLabel(QLabel):
         # نقطه‌ی کلیک‌شده تا زیر نشانگر ماوس.
         self._hover_norm = None
         # رفع درخواست: برخلاف خط فرضیِ قدیمی (که بعد از تایید دیگر روی
-        # تصویر دیده نمی‌شد)، محدوده‌های تایید‌شده همیشه با یک قاب نازک و
-        # برچسبِ شماره/نام‌شان روی تصویر نمایش داده می‌شوند - چون می‌توانند
-        # چندتایی و نام‌دار باشند و کاربر باید همیشه مرزشان را ببیند.
+        # تصویر دیده نمی‌شد)، محدوده‌های تایید‌شده با یک قاب نازک و برچسبِ
+        # شماره/نام‌شان روی تصویر نمایش داده می‌شوند - چون می‌توانند
+        # چندتایی و نام‌دار باشند و کاربر باید مرزشان را ببیند؛ اما طبق
+        # درخواست جدید، این نمایش پیش‌فرض «مخفی» است و فقط با دکمه‌ی
+        # «دیدن محدوده‌ها» (set_regions_visible) روشن می‌شود - تشخیص ورود
+        # و هشدار، مستقل از مخفی/نمایان بودن قاب، همیشه فعال است.
         self._confirmed_regions = []  # لیستی از دیکشنری {"number","name","points"}
         # محدوده‌ای که تازه بسته شده ولی هنوز کاربر نامش را تایید نکرده، یا
         # یک محدوده‌ی قبلاً تایید‌شده که همین الان برای ویرایش شکل/اندازه
@@ -249,6 +252,15 @@ class VideoDisplayLabel(QLabel):
         # اندیس گوشه‌ای که همین الان با درگ ماوس در حال جابه‌جایی است؛ None
         # یعنی هیچ گوشه‌ای در حال کشیده‌شدن نیست.
         self._drag_vertex_idx = None
+        # رفع درخواست «محدوده‌های رسم‌شده نباید وقتی زوم می‌کنم جابه‌جا بشن»:
+        # چون لیبل همیشه کراپِ زوم‌شده را نمایش می‌دهد ولی نقاط محدوده نرمالِ
+        # کل فریم‌اند، کراپِ جاری (نرمالِ کل فریم: x0,y0,w,h) را از
+        # CameraSlotWidget می‌گیریم تا نگاشت‌ها زوم‌محور شوند. None = کل فریم.
+        self._zoom_crop_norm = None
+        # رفع درخواست «بعد رسم محدوده نباید قابل دیدن باشه»: نمایش قابِ
+        # محدوده‌های تایید‌شده با دکمه‌ی «دیدن محدوده‌ها» کنترل می‌شود؛
+        # پیش‌فرض مخفی. تشخیص ورود (هشدار) مستقل از این فلگ کار می‌کند.
+        self._regions_visible = False
         self.setMouseTracking(True)
 
     def set_draw_mode(self, enabled: bool):
@@ -256,6 +268,16 @@ class VideoDisplayLabel(QLabel):
         self.setCursor(Qt.CursorShape.CrossCursor if self.draw_mode else Qt.CursorShape.ArrowCursor)
         self._draw_points = []
         self._hover_norm = None
+        self.update()
+
+    def set_zoom_crop_norm(self, crop):
+        """کراپِ نمایشیِ جاری (x0, y0, w, h نرمالِ کل فریم) یا None برای کل فریم."""
+        self._zoom_crop_norm = tuple(crop) if crop is not None else None
+        self.update()
+
+    def set_regions_visible(self, visible: bool):
+        """نمایش/مخفی‌کردن قابِ محدوده‌های تایید‌شده (پیش‌فرض: مخفی)."""
+        self._regions_visible = bool(visible)
         self.update()
 
     def set_pending_points_norm(self, points, editing_existing=False):
@@ -298,13 +320,24 @@ class VideoDisplayLabel(QLabel):
             return None
         x = (point.x() - rect.x()) / rect.width()
         y = (point.y() - rect.y()) / rect.height()
+        if self._zoom_crop_norm is not None:
+            x0, y0, cw, ch = self._zoom_crop_norm
+            x = x0 + x * cw
+            y = y0 + y * ch
         return (min(max(x, 0.0), 1.0), min(max(y, 0.0), 1.0))
 
     def _norm_to_widget(self, norm_point):
         rect = self._frame_rect()
         if rect is None:
             return None
-        return QPointF(rect.x() + norm_point[0] * rect.width(), rect.y() + norm_point[1] * rect.height())
+        fx, fy = norm_point[0], norm_point[1]
+        if self._zoom_crop_norm is not None:
+            x0, y0, cw, ch = self._zoom_crop_norm
+            if cw <= 0 or ch <= 0:
+                return None
+            fx = (fx - x0) / cw
+            fy = (fy - y0) / ch
+        return QPointF(rect.x() + fx * rect.width(), rect.y() + fy * rect.height())
 
     def _pending_vertex_at(self, widget_pos):
         """اندیسِ نزدیک‌ترین گوشه‌ی محدوده‌ی در انتظار به widget_pos را
@@ -465,22 +498,24 @@ class VideoDisplayLabel(QLabel):
         super().paintEvent(event)
         painter = QPainter(self)
 
-        # محدوده‌های تایید‌شده - همیشه با قاب آبی نازک و برچسب شماره/نام‌شان
-        # رسم می‌شوند (رجوع کنید به توضیح بالای کلاس).
-        for region in self._confirmed_regions:
-            pts = self._region_polygon_widget(region)
-            if pts is None:
-                continue
-            pen = QPen(QColor("#3498db"))
-            pen.setWidth(2)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawPolygon(QPolygonF(pts))
-            label = f"{region.get('number', '')}"
-            if region.get("name"):
-                label += f" / {region['name']}"
-            painter.setPen(QPen(QColor("#ffffff")))
-            painter.drawText(pts[0] + QPointF(4, 14), label)
+        # محدوده‌های تایید‌شده - فقط وقتی دکمه‌ی «دیدن محدوده‌ها» فعال باشد با
+        # قاب آبی نازک و برچسب شماره/نام‌شان رسم می‌شوند؛ وگرنه مخفی‌اند ولی
+        # تشخیص ورود (هشدار) همچنان فعال است.
+        if self._regions_visible:
+            for region in self._confirmed_regions:
+                pts = self._region_polygon_widget(region)
+                if pts is None:
+                    continue
+                pen = QPen(QColor("#3498db"))
+                pen.setWidth(2)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawPolygon(QPolygonF(pts))
+                label = f"{region.get('number', '')}"
+                if region.get("name"):
+                    label += f" / {region['name']}"
+                painter.setPen(QPen(QColor("#ffffff")))
+                painter.drawText(pts[0] + QPointF(4, 14), label)
 
         # اولویت با «رسمِ در حال انجام» (نقاطی که همین الان کاربر دارد
         # کلیک می‌کند) است؛ اگر خالی بود، پیش‌نمایش محدوده‌ی تازه‌بسته‌شده
@@ -732,11 +767,23 @@ class CameraSlotWidget(QWidget):
         self.zoom_reset_btn.setStyleSheet(_zoom_style)
         self.zoom_reset_btn.setToolTip("بازنشانی بزرگ‌نمایی (نمایش کل فریم)")
         self.zoom_reset_btn.clicked.connect(lambda: self._reset_zoom())
+        # رفع درخواست «یه دکمه برای مدیریت محدوده به اسم دیدن محدوده‌ها»:
+        # محدوده‌های تایید‌شده پیش‌فرض مخفی‌اند (ولی هشدار ورود فعال است)؛
+        # این دکمه نمایش/مخفی‌کردن قابِ آن‌ها را روی تصویر همین دوربین
+        # تغییر می‌دهد.
+        self.view_regions_btn = QPushButton("👁")
+        self.view_regions_btn.setFixedSize(26, 18)
+        self.view_regions_btn.setStyleSheet(_zoom_style)
+        self.view_regions_btn.setToolTip("دیدن محدوده‌ها")
+        self.view_regions_btn.setCheckable(True)
+        self.view_regions_btn.setChecked(False)
+        self.view_regions_btn.toggled.connect(self._on_view_regions_toggled)
         header.addWidget(self.name_label, 1)
         header.addWidget(self.people_count_label)
         header.addWidget(self.zoom_in_btn)
         header.addWidget(self.zoom_out_btn)
         header.addWidget(self.zoom_reset_btn)
+        header.addWidget(self.view_regions_btn)
         header.addWidget(self.close_btn)
 
         self.status_label = QLabel("")
@@ -1356,6 +1403,11 @@ class CameraSlotWidget(QWidget):
         show_frame = display_frame
         if self._zoom > 1.0:
             show_frame = self._zoom_crop(display_frame)
+        elif self._last_zoom_crop is not None:
+            # زوم به ۱ برگشته ولی کراپِ قبلی هنوز ست است - پاکش می‌کنیم تا
+            # محدوده‌ها دوباره نسبت به کل فریم رسم شوند.
+            self._last_zoom_crop = None
+            self.video_label.set_zoom_crop_norm(None)
         # بهینه‌سازی سرعت (۲): به‌جای تبدیل BGR→RGB روی فریم کامل ۱۰۸۰p و
         # بعد مقیاس نرم‌افزاری پرهزینه در Qt، اول با OpenCV (سریع) به اندازه‌ی
         # خودِ لیبل کوچک می‌کنیم و بعد تبدیل می‌کنیم - حدود ۱۰ برابر ارزان‌تر.
@@ -1387,6 +1439,7 @@ class CameraSlotWidget(QWidget):
         self._zoom_cx = 0.5
         self._zoom_cy = 0.5
         self._last_zoom_crop = None
+        self.video_label.set_zoom_crop_norm(None)
         self._panning = False
         self._pan_button = None
         self._refresh_zoom_buttons()
@@ -1406,6 +1459,10 @@ class CameraSlotWidget(QWidget):
         x0, y0 = int(cx - cw / 2.0), int(cy - ch / 2.0)
         cw_i, ch_i = max(1, int(cw)), max(1, int(ch))
         self._last_zoom_crop = (x0, y0, cw_i, ch_i)
+        # لیبل هم باید کراپ را بداند تا محدوده‌ها (نرمالِ کل فریم) سر جایشان
+        # رسم شوند و با زوم جابه‌جا نشوند.
+        if w > 0 and h > 0:
+            self.video_label.set_zoom_crop_norm((x0 / w, y0 / h, cw_i / w, ch_i / h))
         return frame[y0:y0 + ch_i, x0:x0 + cw_i]
 
     def _label_pos_to_frame_norm(self, label_pos):
@@ -1447,6 +1504,10 @@ class CameraSlotWidget(QWidget):
 
     def zoom_out(self):
         self._zoom_at((self._zoom_cx, self._zoom_cy), 1.0 / self._ZOOM_STEP)
+
+    def _on_view_regions_toggled(self, checked: bool):
+        """دکمه‌ی «دیدن محدوده‌ها»: نمایش/مخفی‌کردن قابِ محدوده‌های تایید‌شده."""
+        self.video_label.set_regions_visible(checked)
 
     def _refresh_zoom_buttons(self):
         has_cam = self.cam is not None

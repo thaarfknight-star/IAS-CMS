@@ -52,8 +52,11 @@ def get_app_version():
 
 
 def _ver_tuple(v):
+    # پسوند پیش‌انتشار (مثل -beta) در مقایسه‌ی عددی نادیده گرفته می‌شود تا
+    # «2.0.2-beta» درست با «2.0.2» مقایسه شود.
+    core = str(v).strip().split("-")[0].split("+")[0]
     parts = []
-    for p in str(v).strip().split("."):
+    for p in core.split("."):
         try:
             parts.append(int(p))
         except ValueError:

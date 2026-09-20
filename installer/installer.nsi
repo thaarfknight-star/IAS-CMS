@@ -203,6 +203,27 @@ Function PlaceCtl
   System::Call 'user32::SetWindowPos(i $R4, i 0, i $R3, i $R2, i $R1, i $R0, i 0x16)'
 FunctionEnd
 
+Function PlaceCtlBottom
+  ; Push hwnd, x, w, h → کنترل همیشه چسبیده به پایین صفحه (۱۴ پیکسل
+  ; حاشیه از لبه‌ی پایین ناحیه‌ی مشتری دیالوگ) - به‌جای مختصات ثابت، چون
+  ; ارتفاع واقعی پنجره روی سیستم‌های مختلف ممکن است با ۶۰۰ طراحی فرق کند.
+  Pop $R6 ; h
+  Pop $R7 ; w
+  Pop $R8 ; x
+  Pop $R9 ; hwnd
+  System::Call 'user32::GetClientRect(i $Dialog, @r9)'
+  System::Call '*$9(i.r2, i.r3, i.r4, i.r5)'
+  IntOp $R5 $R5 - $R3   ; ارتفاع ناحیه‌ی مشتری
+  IntOp $R5 $R5 - $R6   ; منهای ارتفاع کنترل
+  IntOp $R5 $R5 - 14    ; حاشیه‌ی پایین
+  Push $R9
+  Push $R8
+  Push $R5
+  Push $R7
+  Push $R6
+  Call PlaceCtl
+FunctionEnd
+
 Function ShowBackground
   ; ورودی: نام فایل BMP روی استک (مثلاً "bg_welcome.bmp").
   ; نکته: اسم فایل در $BgFile (متغیر اختصاصی) نگه داشته می‌شود، چون
@@ -221,6 +242,37 @@ Function ShowBackground
   System::Call 'user32::LoadImage(i 0, t "$PLUGINSDIR\$BgFile", i ${IMAGE_BITMAP}, i 0, i 0, i ${LR_LOADFROMFILE}) i.s'
   Pop $BgBmp
   SendMessage $BgCtl ${STM_SETIMAGE} ${IMAGE_BITMAP} $BgBmp
+  ; نوار فوتر در پایینِ واقعی صفحه (زیر دکمه‌ها) - با همان رنگ‌های تصویر
+  ; (#0D1216 با خط طلایی #D4AF37). اگر ارتفاع مشتری دقیقاً ۶۰۰ باشد، دقیقاً
+  ; روی نوارِ داخل تصویر می‌نشیند؛ وگرنه پایینِ واقعی را پوشش می‌دهد.
+  System::Call 'user32::GetClientRect(i $Dialog, @r9)'
+  System::Call '*$9(i.r2, i.r3, i.r4, i.r5)'
+  IntOp $R6 $R4 - $R2   ; عرض مشتری
+  IntOp $R7 $R5 - $R3   ; ارتفاع مشتری
+  IntOp $R7 $R7 - 60    ; y بالای نوار فوتر
+  IntOp $R8 $R7 + 2     ; y بدنه‌ی فوتر (زیر خط طلایی)
+  nsDialogs::CreateControl "STATIC" "${SS_LEFT}|${WS_CHILD}|${WS_VISIBLE}" 0 0 0 10 10 ""
+  Pop $R0
+  Push $R0
+  Call TrackCtl
+  SetCtlColors $R0 "D4AF37" "D4AF37"
+  Push $R0
+  Push 0
+  Push $R7
+  Push $R6
+  Push 2
+  Call PlaceCtl
+  nsDialogs::CreateControl "STATIC" "${SS_LEFT}|${WS_CHILD}|${WS_VISIBLE}" 0 0 0 10 10 ""
+  Pop $R0
+  Push $R0
+  Call TrackCtl
+  SetCtlColors $R0 "0D1216" "0D1216"
+  Push $R0
+  Push 0
+  Push $R8
+  Push $R6
+  Push 58
+  Call PlaceCtl
 FunctionEnd
 
 Function MakeButton
@@ -305,20 +357,18 @@ Function ShowWelcome
   Pop $BtnNext
   Push $BtnNext
   Push 700
-  Push 546
   Push 220
   Push 40
-  Call PlaceCtl
+  Call PlaceCtlBottom
   ${NSD_OnClick} $BtnNext OnWelcomeNext
   Push "انصراف"
   Call MakeGhostButton
   Pop $BtnCancel
   Push $BtnCancel
   Push 40
-  Push 546
   Push 150
   Push 40
-  Call PlaceCtl
+  Call PlaceCtlBottom
   ${NSD_OnClick} $BtnCancel OnCancel
 FunctionEnd
 
@@ -359,30 +409,27 @@ Function ShowDir
   Pop $BtnNext
   Push $BtnNext
   Push 700
-  Push 546
   Push 220
   Push 40
-  Call PlaceCtl
+  Call PlaceCtlBottom
   ${NSD_OnClick} $BtnNext OnDirNext
   Push "بازگشت"
   Call MakeGhostButton
   Pop $BtnBack
   Push $BtnBack
   Push 210
-  Push 546
   Push 150
   Push 40
-  Call PlaceCtl
+  Call PlaceCtlBottom
   ${NSD_OnClick} $BtnBack OnDirBack
   Push "انصراف"
   Call MakeGhostButton
   Pop $BtnCancel
   Push $BtnCancel
   Push 40
-  Push 546
   Push 150
   Push 40
-  Call PlaceCtl
+  Call PlaceCtlBottom
   ${NSD_OnClick} $BtnCancel OnCancel
 FunctionEnd
 
@@ -545,10 +592,9 @@ Function ShowFinish
   Pop $BtnNext
   Push $BtnNext
   Push 700
-  Push 546
   Push 220
   Push 40
-  Call PlaceCtl
+  Call PlaceCtlBottom
   ${NSD_OnClick} $BtnNext OnFinish
 FunctionEnd
 
@@ -688,20 +734,18 @@ Function ShowUninstMenu
   Pop $BtnNext
   Push $BtnNext
   Push 700
-  Push 546
   Push 220
   Push 40
-  Call PlaceCtl
+  Call PlaceCtlBottom
   ${NSD_OnClick} $BtnNext OnUninstStart
   Push "انصراف"
   Call MakeGhostButton
   Pop $BtnCancel
   Push $BtnCancel
   Push 40
-  Push 546
   Push 150
   Push 40
-  Call PlaceCtl
+  Call PlaceCtlBottom
   ${NSD_OnClick} $BtnCancel OnUninstCancel
 FunctionEnd
 
@@ -801,10 +845,9 @@ Function ShowUninstDone
   Pop $BtnNext
   Push $BtnNext
   Push 700
-  Push 546
   Push 220
   Push 40
-  Call PlaceCtl
+  Call PlaceCtlBottom
   ${NSD_OnClick} $BtnNext OnUninstCancel
 FunctionEnd
 
