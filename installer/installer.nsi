@@ -37,11 +37,19 @@ ${StrStr}
 !endif
 
 Name "${APP_NAME} v${VERSION}"
-; دستور طه (2.0.6-beta): از این نسخه به بعد هیچ Uninstaller ساخته نمی‌شود —
-; نه uninstall.exe داخل پوشه‌ی نصب (WriteUninstaller)، نه حذف‌کننده‌ی مستقل
-; (IAS-CMS-Uninstall). بلوک‌های UNINSTALLER_ONLY و سکشن Uninstall کاملاً حذف شدند.
-OutFile "${OUTDIR}\IAS-CMS-Setup-v${VERSION}.exe"
-Caption "نصب ${APP_NAME} نسخه‌ی ${VERSION}"
+; (Caption داخل بلوک UNINSTALLER_ONLY / حالت عادی تنظیم می‌شود)
+!ifdef UNINSTALLER_ONLY
+  ; --- حالت حذف‌کننده‌ی مستقل: فقط پاک‌سازی کامل، بدون صفحه‌ی نصب ---
+  OutFile "${OUTDIR}\IAS-CMS-Uninstall-v${VERSION}.exe"
+  Caption "حذف کامل ${APP_NAME} نسخه‌ی ${VERSION}"
+  ; makensis بدون حتی یک سکشن خالی، اسکریپت را «نامعتبر» می‌داند —
+  ; این سکشن هرگز اجرا نمی‌شود چون .onInit اول Quit می‌کند
+  Section "-hidden-uninstaller"
+  SectionEnd
+!else
+  OutFile "${OUTDIR}\IAS-CMS-Setup-v${VERSION}.exe"
+  Caption "نصب ${APP_NAME} نسخه‌ی ${VERSION}"
+!endif
 Icon "${ROOTDIR}\assets\app.ico"
 InstallDir "$LOCALAPPDATA\ImenaraSorena\IAS-CMS"
 ; خواندن محل واقعی نصب از رجیستری — اگر کاربر پوشه را عوض کرده باشد،
@@ -538,8 +546,27 @@ Function DoInstall
   CreateDirectory "$SMPROGRAMS\${APP_NAME}"
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" \
     "$INSTDIR\${EXE_NAME}" "" "$INSTDIR\${EXE_NAME}" 0
+  CreateShortcut "$SMPROGRAMS\${APP_NAME}\حذف برنامه.lnk" "$INSTDIR\uninstall.exe"
   CreateShortcut "$DESKTOP\${APP_NAME}.lnk" \
     "$INSTDIR\${EXE_NAME}" "" "$INSTDIR\${EXE_NAME}" 0
+  !ifndef UNINSTALLER_ONLY
+  WriteUninstaller "$INSTDIR\uninstall.exe"
+  !endif
+  ; اطلاعات حذف در رجیستری کاربر جاری (بدون نیاز به ادمین)
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}" \
+    "DisplayName" "${APP_NAME} (${APP_EN})"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}" \
+    "DisplayVersion" "${VERSION}"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}" \
+    "Publisher" "${PUBLISHER}"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}" \
+    "InstallLocation" "$INSTDIR"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}" \
+    "DisplayIcon" "$INSTDIR\${EXE_NAME}"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}" \
+    "UninstallString" '"$INSTDIR\uninstall.exe"'
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}" "NoModify" 1
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}" "NoRepair" 1
   StrCpy $R9 "ok"
 FunctionEnd
 
@@ -616,17 +643,263 @@ Function ShowMainPage
   nsDialogs::Show
 FunctionEnd
 
+!ifndef UNINSTALLER_ONLY
 Page custom ShowMainPage
 
 ; سکشن خالی (نصب واقعی در DoInstall انجام می‌شود)
 Section "-hidden"
 SectionEnd
+!endif
 
+; ============================================================
+; حذف کامل (Complete Uninstall) — بعد از اجرا هیچ اثری از برنامه
+; روی سیستم نمی‌ماند:
+;   ۱) بستن اجباری برنامه‌ی در حال اجرا (وگرنه فایل‌ها قفل می‌مانند)
+;   ۲) حذف میان‌برهای منوی استارت و دسکتاپ
+;   ۳) حذف کل پوشه‌ی نصب: فایل‌ها + person_data + plate_data +
+;      cameras.json + آپدیتر + version.txt + خود uninstall.exe
+;   ۴) حذف کلیدهای رجیستری (ورودی Uninstall + تنظیمات)
+;   ۵) حذف پوشه‌های داده‌ی خارج از محل نصب (AppData و plate_data کاربر)
+;   ۶) حذف فایل‌های موقت
+; این بدنه هم در uninstall.exe داخل پوشه‌ی نصب (WriteUninstaller) و هم
+; در حذف‌کننده‌ی مستقل (UNINSTALLER_ONLY) استفاده می‌شود.
+; ============================================================
+!macro FULL_CLEANUP_BODY
+  nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /F /IM "${EXE_NAME}"'
+  Pop $0
+  Pop $1
+  Sleep 1000
+  Delete "$SMPROGRAMS\${APP_NAME}\*.lnk"
+  RMDir "$SMPROGRAMS\${APP_NAME}"
+  Delete "$DESKTOP\${APP_NAME}.lnk"
+  RMDir /r "$INSTDIR"
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}"
+  DeleteRegKey HKCU "Software\${APP_EN}"
+  DeleteRegKey HKCU "Software\ImenaraSorena"
+  RMDir /r "$APPDATA\ImenaraSorena"
+  RMDir /r "$LOCALAPPDATA\ImenaraSorena"
+  IfFileExists "$PROFILE\plate_data\plates.db" 0 +2
+    RMDir /r "$PROFILE\plate_data"
+  Delete "$TEMP\${APP_EN}*.*"
+!macroend
 
+!ifndef UNINSTALLER_ONLY
+Function un.onInit
+  MessageBox MB_YESNO|MB_ICONQUESTION \
+    "«${APP_NAME}» به‌طور کامل از سیستم حذف شود؟$\n$\nهمه‌ی فایل‌ها، تنظیمات، دوربین‌ها، بانک چهره و سوابق پلاک‌ها برای همیشه پاک می‌شوند." \
+    IDYES NoAbort
+    Abort
+  NoAbort:
+FunctionEnd
+
+Section "Uninstall"
+  !insertmacro FULL_CLEANUP_BODY
+SectionEnd
+
+UninstPage instfiles
+!endif
+
+; ============================================================
+; حذف‌کننده‌ی مستقل — داخل پکیج setup قرار می‌گیرد تا حتی اگر
+; uninstall.exe داخل پوشه‌ی نصب گم شده باشد، حذف کامل ممکن باشد.
+; رابط: منوی موارد حذفی → پیشرفت واقعی → پایان (هم‌فونت و هم‌تم با نصب‌کننده)
+; کامپایل: makensis /DVERSION=2.0.0 /DUNINSTALLER_ONLY installer/installer.nsi
+; ============================================================
+!ifdef UNINSTALLER_ONLY
+
+Function ShowUninstMenu
+  Push "bg_uninstall.bmp"
+  Call ShowBackground
+  ; مسیر نصب شناسایی‌شده
+  nsDialogs::CreateControl "STATIC" "${SS_LEFT}|${WS_CHILD}|${WS_VISIBLE}" 0 0 0 10 10 ""
+  Pop $StatusLabel
+  Push $StatusLabel
+  Call TrackCtl
+  SetCtlColors $StatusLabel "9BA79B" "141B20"
+  Push $StatusLabel
+  Call ApplyFontReg
+  Push $StatusLabel
+  Push 210
+  Push 436
+  Push 470
+  Push 32
+  Call PlaceCtl
+  IfFileExists "$INSTDIR\${EXE_NAME}" 0 +3
+    ${NSD_SetText} $StatusLabel "محل نصب: $INSTDIR"
+    Goto MenuBtns
+  ${NSD_SetText} $StatusLabel "فایل اصلی یافت نشد؛ فقط بقایا پاک‌سازی می‌شود."
+  MenuBtns:
+  Push "حذف کامل"
+  Call MakeRedButton
+  Pop $BtnNext
+  Push $BtnNext
+  Push 700
+  Push 220
+  Push 40
+  Call PlaceCtlBottom
+  ${NSD_OnClick} $BtnNext OnUninstStart
+  Push "انصراف"
+  Call MakeGhostButton
+  Pop $BtnCancel
+  Push $BtnCancel
+  Push 40
+  Push 150
+  Push 40
+  Call PlaceCtlBottom
+  ${NSD_OnClick} $BtnCancel OnUninstCancel
+FunctionEnd
+
+Function ShowUninstDoing
+  Push "bg_uninstall_progress.bmp"
+  Call ShowBackground
+  nsDialogs::CreateControl "msctls_progress32" "${WS_CHILD}|${WS_VISIBLE}" 0 0 0 10 10 ""
+  Pop $ProgressBar
+  Push $ProgressBar
+  Call TrackCtl
+  Push $ProgressBar
+  Push 80
+  Push 308
+  Push 800
+  Push 28
+  Call PlaceCtl
+  SendMessage $ProgressBar ${PBM_SETRANGE} 0 0x640000
+  SendMessage $ProgressBar ${PBM_SETBARCOLOR} 0 0x4646C1
+  nsDialogs::CreateControl "STATIC" "${SS_LEFT}|${WS_CHILD}|${WS_VISIBLE}" 0 0 0 10 10 "در حال حذف…"
+  Pop $StatusLabel
+  Push $StatusLabel
+  Call TrackCtl
+  SetCtlColors $StatusLabel "E9EEF1" "141B20"
+  Push $StatusLabel
+  Call ApplyFontReg
+  Push $StatusLabel
+  Push 80
+  Push 366
+  Push 800
+  Push 28
+  Call PlaceCtl
+FunctionEnd
+
+Function UninstStep
+  ; Push "متن وضعیت"، Push درصد → به‌روزرسانی نوار + لیبل با نقاشی فوری
+  Pop $R0 ; pct
+  Pop $R1 ; text
+  SendMessage $ProgressBar ${PBM_SETPOS} $R0 0
+  System::Call 'user32::RedrawWindow(i $ProgressBar, i 0, i 0, i 0x181)'
+  ${NSD_SetText} $StatusLabel $R1
+  System::Call 'user32::RedrawWindow(i $StatusLabel, i 0, i 0, i 0x181)'
+FunctionEnd
+
+Function OnUninstStart
+  Call ClearScreen
+  Call ShowUninstDoing
+  System::Call 'user32::UpdateWindow(i $Dialog)'
+  ; پاک‌سازی مرحله‌به‌مرحله با نوار پیشرفت واقعی (مثل FULL_CLEANUP_BODY)
+  Push "در حال بستن برنامه…"
+  Push 8
+  Call UninstStep
+  nsExec::ExecToStack '"$SYSDIR\taskkill.exe" /F /IM "${EXE_NAME}"'
+  Pop $0
+  Pop $1
+  Sleep 800
+  Push "در حال حذف میان‌برها…"
+  Push 22
+  Call UninstStep
+  Delete "$SMPROGRAMS\${APP_NAME}\*.lnk"
+  RMDir "$SMPROGRAMS\${APP_NAME}"
+  Delete "$DESKTOP\${APP_NAME}.lnk"
+  Push "در حال حذف فایل‌های برنامه…"
+  Push 45
+  Call UninstStep
+  RMDir /r "$INSTDIR"
+  Push "در حال پاک‌سازی رجیستری…"
+  Push 65
+  Call UninstStep
+  DeleteRegKey HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}"
+  DeleteRegKey HKCU "Software\${APP_EN}"
+  DeleteRegKey HKCU "Software\ImenaraSorena"
+  Push "در حال حذف داده‌های کاربر…"
+  Push 85
+  Call UninstStep
+  RMDir /r "$APPDATA\ImenaraSorena"
+  RMDir /r "$LOCALAPPDATA\ImenaraSorena"
+  IfFileExists "$PROFILE\plate_data\plates.db" 0 +2
+    RMDir /r "$PROFILE\plate_data"
+  Push "در حال حذف فایل‌های موقت…"
+  Push 96
+  Call UninstStep
+  Delete "$TEMP\${APP_EN}*.*"
+  Push "تمام شد."
+  Push 100
+  Call UninstStep
+  Sleep 400
+  Call ClearScreen
+  Call ShowUninstDone
+  System::Call 'user32::UpdateWindow(i $Dialog)'
+FunctionEnd
+
+Function ShowUninstDone
+  Push "bg_uninstall_finish.bmp"
+  Call ShowBackground
+  Push "بستن"
+  Call MakeGhostButton
+  Pop $BtnNext
+  Push $BtnNext
+  Push 700
+  Push 220
+  Push 40
+  Call PlaceCtlBottom
+  ${NSD_OnClick} $BtnNext OnUninstCancel
+FunctionEnd
+
+Function OnUninstCancel
+  Quit
+FunctionEnd
+
+Function ShowUninstMain
+  Call HideWizardButtons
+  Push 960
+  Push 600
+  Call SetClientSize
+  nsDialogs::Create 1018
+  Pop $Dialog
+  ${If} $Dialog == error
+    Abort
+  ${EndIf}
+  System::Call 'user32::SetWindowPos(i $Dialog, i 0, i 0, i 0, i 960, i 600, i 0x16)'
+  StrCpy $Ctl0 0
+  StrCpy $Ctl1 0
+  StrCpy $Ctl2 0
+  StrCpy $Ctl3 0
+  StrCpy $Ctl4 0
+  StrCpy $Ctl5 0
+  StrCpy $Ctl6 0
+  StrCpy $Ctl7 0
+  StrCpy $Ctl8 0
+  StrCpy $Ctl9 0
+  StrCpy $BgBmp 0
+  Call ShowUninstMenu
+  nsDialogs::Show
+FunctionEnd
+
+Page custom ShowUninstMain
+
+Function .onInit
+  ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}" "InstallLocation"
+  ${If} $0 != ""
+    StrCpy $INSTDIR $0
+  ${EndIf}
+  InitPluginsDir
+  File /oname=$PLUGINSDIR\bg_uninstall.bmp "${GFXDIR}\bg_uninstall.bmp"
+  File /oname=$PLUGINSDIR\bg_uninstall_progress.bmp "${GFXDIR}\bg_uninstall_progress.bmp"
+  File /oname=$PLUGINSDIR\bg_uninstall_finish.bmp "${GFXDIR}\bg_uninstall_finish.bmp"
+  Call LoadAppFonts
+FunctionEnd
+!endif
 
 ; ============================================================
 ; آماده‌سازی اولیه (فقط حالت نصب)
 ; ============================================================
+!ifndef UNINSTALLER_ONLY
 Function .onInit
   InitPluginsDir
   File /oname=$PLUGINSDIR\bg_welcome.bmp "${GFXDIR}\bg_welcome.bmp"
@@ -635,3 +908,4 @@ Function .onInit
   File /oname=$PLUGINSDIR\bg_finish.bmp "${GFXDIR}\bg_finish.bmp"
   Call LoadAppFonts
 FunctionEnd
+!endif
