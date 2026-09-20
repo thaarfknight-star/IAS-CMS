@@ -5,6 +5,9 @@ camera_stream.py / add_nvr_dialog.py اجرا می‌شود و موارد زیر
  ۱) پنل‌ها: هیچ‌کدام collapsible نیستند، opaque resize فعال است،
     toggle_sidebar رفت‌وبرگشت، اندازه‌ی پنل راست را عوض نمی‌کند.
  ۲) تمام‌صفحه: toggle_fullscreen کرش نمی‌کند و اندازه‌های ذخیره‌شده برمی‌گردند.
+    (ماکسیمایز/پنجره‌ای - همان حالت اسکرین‌شات، نه فول‌اسکرین بدون حاشیه)
+ ۲-ب) رسم محدوده برگشته به نسخه‌ی پرتابل: هر ۶ دکمه همیشه روی نوار ابزار و
+    نمایان‌اند؛ هیچ مخفی/نمایان‌شدن دکمه‌ای کادر دوربین‌ها را عوض نمی‌کند.
  ۳) پنل حریق: بدون دوربین حریق مخفی، با حداقل یک دوربین حریق نمایان.
  ۴) فالبک تشخیص حرکت: با فریم مصنوعیِ دارای جسم متحرک، باکس برمی‌گرداند و
     زنجیره‌ی _PersonRegionTracker -> region_entered بدون مدل YOLO کار می‌کند.
@@ -145,15 +148,35 @@ check("restore brings back saved main sizes",
       all(abs(a - b) <= 2 for a, b in zip(restored, win._saved_main_sizes)),
       f"restored={restored} saved={win._saved_main_sizes}")
 
-# ۲) تمام‌صفحه: کرش نکند و حالت عوض شود
+# ۲) تمام‌صفحه: کرش نکند و حالت عوض شود (ماکسیمایز/پنجره‌ای - همان حالت اسکرین‌شات)
 win.toggle_fullscreen()
 app.processEvents()
-check("fullscreen entered", win.isFullScreen())
+check("fullscreen entered (maximized)", win.isMaximized())
 check("fullscreen button checked", win.fullscreen_btn.isChecked())
 win.toggle_fullscreen()
 app.processEvents()
-check("fullscreen exited", not win.isFullScreen())
+check("fullscreen exited (normal)", not win.isMaximized())
 check("fullscreen button unchecked", not win.fullscreen_btn.isChecked())
+
+# ۲-ب) برگشت رسم محدوده به نسخه‌ی پرتابل: هیچ کانتینر مخفی/نمایان‌شونده‌ای
+# نیست؛ هر ۶ دکمه همیشه روی نوار ابزار و نمایان‌اند تا کادر دوربین‌ها ثابت بماند
+check("no region_menu_btn", not hasattr(win, "region_menu_btn"))
+check("no region_type_row", not hasattr(win, "region_type_row"))
+check("no region_action_row", not hasattr(win, "region_action_row"))
+_region_btns = [win.draw_line_btn, win.auto_region_btn, win.ai_floor_btn,
+                win.confirm_line_btn, win.redraw_line_btn, win.manage_regions_btn]
+check("all 6 region buttons exist", all(b is not None for b in _region_btns))
+check("all 6 region buttons visible", all(b.isVisible() for b in _region_btns),
+      str([b.text() for b in _region_btns if not b.isVisible()]))
+check("all 6 region buttons share one parent (toolbar)",
+      len({b.parentWidget() for b in _region_btns}) == 1)
+check("draw btn portable label", win.draw_line_btn.text() == "🖊 رسم محدوده هشدار",
+      win.draw_line_btn.text())
+# _refresh_line_buttons نباید هیچ ویجتی را مخفی/نمایان کند
+win._refresh_line_buttons()
+app.processEvents()
+check("refresh keeps all region buttons visible",
+      all(b.isVisible() for b in _region_btns))
 
 # ۳) پنل حریق: در این محیط تست، دوربینی با fire_detection نیست -> باید مخفی باشد
 check("fire panel hidden with no fire cams", not win.fire_panel_group.isVisible())

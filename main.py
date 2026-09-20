@@ -2297,9 +2297,11 @@ class MainWindow(QMainWindow):
         self.sidebar_toggle_btn.clicked.connect(self.toggle_sidebar)
         grid_toolbar.addWidget(self.sidebar_toggle_btn)
 
-        # دکمه‌ی تمام‌صفحه (درخواست): با F11 یا این دکمه، برنامه تمام‌صفحه
-        # می‌شود تا اندازه‌ی اجزای برنامه با زدن دکمه‌ها عوض نشود و در حالت
-        # فول‌اسکرین ابعاد پایدار بماند.
+        # دکمه‌ی تمام‌صفحه (درخواست کاربر - «منظورم از تمام‌صفحه این حالت بود»):
+        # با F11 یا این دکمه، پنجره ماکسیمایز می‌شود (دقیقاً همان حالت
+        # اسکرین‌شات - با نوار عنوان ویندوز)؛ زدن دوباره به حالت پنجره‌ای
+        # عادی برمی‌گرداند. در هر حالتی، اندازه‌ی کادر دوربین‌ها فقط با
+        # تغییر اندازه‌ی پنل‌ها عوض می‌شود، نه با زدن دکمه‌ها.
         self.fullscreen_btn = QPushButton("⛶ تمام‌صفحه")
         self.fullscreen_btn.setCheckable(True)
         self.fullscreen_btn.setToolTip("تمام‌صفحه (F11)")
@@ -2334,27 +2336,10 @@ class MainWindow(QMainWindow):
         self.people_toggle_btn.toggled.connect(self._on_people_toggle_all)
         grid_toolbar.addWidget(self.people_toggle_btn)
 
-        # رفع درخواست: دکمه‌های انتخاب نوع رسم محدوده (رسم دستی/کل کادر/
-        # تشخیص با AI) فقط بعد از زدن این دکمه‌ی اصلی ظاهر می‌شوند - قبلاً
-        # همیشه هر سه کنار هم روی نوار ابزار دیده می‌شدند و شلوغ بود.
-        self.region_menu_btn = QPushButton("🖊 رسم محدوده")
-        self.region_menu_btn.setCheckable(True)
-        self.region_menu_btn.setToolTip("نمایش/مخفی‌کردن گزینه‌های رسم محدوده‌ی هشدار (رسم دستی، کل کادر، تشخیص با AI)")
-        self.region_menu_btn.setStyleSheet(
-            "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
-            "QPushButton:checked{background:#9b59b6; color:#fff;}"
-        )
-        self.region_menu_btn.toggled.connect(self._on_region_menu_toggled)
-        grid_toolbar.addWidget(self.region_menu_btn)
-
-        # ------ کانتینر سه دکمه‌ی «نوع رسم» - فقط با زدن دکمه‌ی بالا نمایان می‌شود ------
-        self.region_type_row = QWidget()
-        region_type_layout = QHBoxLayout()
-        region_type_layout.setContentsMargins(0, 0, 0, 0)
-        self.region_type_row.setLayout(region_type_layout)
-        self.region_type_row.setVisible(False)
-        grid_toolbar.addWidget(self.region_type_row)
-
+        # (برگشت به نسخه‌ی پرتابل - درخواست کاربر): همه‌ی دکمه‌های رسم محدوده
+        # همیشه و ثابت روی نوار ابزار هستند؛ هیچ دکمه‌ای مخفی/نمایان نمی‌شود
+        # تا با زدن دکمه‌ها اندازه‌ی کادر دوربین‌ها عوض نشود - کادرها فقط با
+        # تغییر اندازه‌ی پنل‌ها عوض می‌شوند.
         # رفع درخواست: محدوده‌ی هشدار (Zone) - جایگزین خط فرضی عبور قبلی.
         # کاربر ابتدا یک دوربین را از شبکه انتخاب می‌کند (کلیک روی خانه‌اش)،
         # سپس این دکمه را می‌زند تا بتواند با کلیک‌های متوالی روی نقاط دلخواه
@@ -2365,7 +2350,7 @@ class MainWindow(QMainWindow):
         # رسم» فقط نقاط در انتظار نام‌گذاری را پاک می‌کند و «مدیریت
         # محدوده‌ها» امکان مشاهده/حذف محدوده‌های از قبل تایید‌شده را می‌دهد.
         # هر دوربین می‌تواند هم‌زمان چند محدوده‌ی نام‌دار داشته باشد.
-        self.draw_line_btn = QPushButton("✏ رسم دستی")
+        self.draw_line_btn = QPushButton("🖊 رسم محدوده هشدار")
         self.draw_line_btn.setCheckable(True)
         self.draw_line_btn.setToolTip(
             "۱) یک دوربین را از شبکه انتخاب کنید (کلیک روی خانه‌اش)\n"
@@ -2381,7 +2366,7 @@ class MainWindow(QMainWindow):
             "QPushButton:checked{background:#9b59b6; color:#fff;}"
         )
         self.draw_line_btn.toggled.connect(self._on_draw_line_toggled)
-        region_type_layout.addWidget(self.draw_line_btn)
+        grid_toolbar.addWidget(self.draw_line_btn)
 
         # رفع درخواست «یک حالت جدید که خودش سطح زمین رو تشخیص بده و کلش رو
         # محدوده محسوب کنه»: به‌جای کلیک‌های متوالی دستی، این دکمه بلافاصله
@@ -2390,7 +2375,7 @@ class MainWindow(QMainWindow):
         # می‌گذارد (دقیقاً مثل رسم دستی، با همان دکمه‌های تایید/لغوِ پایین).
         # این محدوده هم مثل هر محدوده‌ی دیگری کاملاً قابل ویرایش است - قبل
         # از تایید (با کشیدن گوشه‌ها) یا بعداً از «مدیریت محدوده‌ها».
-        self.auto_region_btn = QPushButton("🌐 کل کادر")
+        self.auto_region_btn = QPushButton("🌐 تشخیص خودکار محدوده (کل تصویر)")
         self.auto_region_btn.setToolTip(
             "۱) یک دوربین را از شبکه انتخاب کنید (کلیک روی خانه‌اش)\n"
             "۲) این دکمه را بزنید - کل تصویر دوربین به‌عنوان محدوده در نظر گرفته می‌شود\n"
@@ -2404,7 +2389,7 @@ class MainWindow(QMainWindow):
             "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
         )
         self.auto_region_btn.clicked.connect(self._on_auto_region_clicked)
-        region_type_layout.addWidget(self.auto_region_btn)
+        grid_toolbar.addWidget(self.auto_region_btn)
 
         # رفع درخواست «یک حالت جدید که خودش سطح زمین رو تشخیص بده و کلش رو
         # محدوده محسوب کنه، ولی بازم قابل ادیت باشه، دقیق‌تر با مدل هوش
@@ -2417,7 +2402,7 @@ class MainWindow(QMainWindow):
         # کاملاً با ماوس قابل ویرایش است. چون بارگذاری/اجرای مدل چند ثانیه
         # طول می‌کشد، در یک ترد جدا (FloorDetectThread) اجرا می‌شود تا UI
         # فریز نشود - رجوع کنید به _on_ai_floor_region_clicked.
-        self.ai_floor_btn = QPushButton("🧭 تشخیص با AI")
+        self.ai_floor_btn = QPushButton("🧭 تشخیص هوشمند زمین (AI)")
         self.ai_floor_btn.setToolTip(
             "۱) یک دوربین را از شبکه انتخاب کنید (کلیک روی خانه‌اش)\n"
             "۲) این دکمه را بزنید - با مدل هوش مصنوعی (Segmentation)، فقط "
@@ -2435,23 +2420,12 @@ class MainWindow(QMainWindow):
             "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
         )
         self.ai_floor_btn.clicked.connect(self._on_ai_floor_region_clicked)
-        region_type_layout.addWidget(self.ai_floor_btn)
+        grid_toolbar.addWidget(self.ai_floor_btn)
         # نگه‌داشتن ارجاع به تردِ در حال اجرا (اگر باشد) - هم برای جلوگیری
         # از garbage-collect شدنِ زودهنگام QThread در حال اجرا، هم برای
         # اینکه بدانیم همین الان یک تشخیص در جریان است (رجوع کنید به
         # _on_ai_floor_region_clicked).
         self._floor_detect_thread = None
-
-        # رفع درخواست: دکمه‌های «تایید»/«لغو رسم» فقط بعد از انتخاب یکی از
-        # سه نوع رسم بالا (و تا وقتی یک محدوده‌ی در-انتظار/در-حال-ویرایش
-        # وجود دارد) نمایان می‌شوند - رجوع کنید به _refresh_line_buttons که
-        # visibility این کانتینر را هم به‌روز می‌کند.
-        self.region_action_row = QWidget()
-        region_action_layout = QHBoxLayout()
-        region_action_layout.setContentsMargins(0, 0, 0, 0)
-        self.region_action_row.setLayout(region_action_layout)
-        self.region_action_row.setVisible(False)
-        grid_toolbar.addWidget(self.region_action_row)
 
         self.confirm_line_btn = QPushButton("✅ تایید و نام‌گذاری")
         self.confirm_line_btn.setEnabled(False)
@@ -2463,7 +2437,7 @@ class MainWindow(QMainWindow):
             "QPushButton:enabled{background:#27ae60; color:#fff;}"
         )
         self.confirm_line_btn.clicked.connect(self._on_confirm_line_clicked)
-        region_action_layout.addWidget(self.confirm_line_btn)
+        grid_toolbar.addWidget(self.confirm_line_btn)
 
         self.redraw_line_btn = QPushButton("❌ لغو رسم")
         self.redraw_line_btn.setEnabled(False)
@@ -2472,7 +2446,7 @@ class MainWindow(QMainWindow):
             "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
         )
         self.redraw_line_btn.clicked.connect(self._on_redraw_line_clicked)
-        region_action_layout.addWidget(self.redraw_line_btn)
+        grid_toolbar.addWidget(self.redraw_line_btn)
 
         self.manage_regions_btn = QPushButton("📋 مدیریت محدوده‌ها")
         self.manage_regions_btn.setEnabled(False)
@@ -2723,17 +2697,17 @@ class MainWindow(QMainWindow):
             pass
 
     def toggle_fullscreen(self):
-        """رفع درخواست «با زدن دکمه‌ها اندازه‌ی اجزای برنامه عوض نشود؛
-        برنامه در حالت فول‌اسکرین ابعاد پایدار داشته باشد»: با دکمه‌ی هدر یا
-        F11 پنجره تمام‌صفحه می‌شود؛ در این حالت اندازه‌ی کلی برنامه ثابت است و
-        دکمه‌ها/تعویض صفحه نمی‌توانند آن را تغییر دهند. اندازه‌ی پنل‌ها هم
-        قبل و بعد از تغییر حالت، دقیقاً همانِ تنظیم‌شده‌ی کاربر برمی‌گردد
-        (قانون «نذار دیگه خراب بشه»)."""
-        if self.isFullScreen():
-            self.showMaximized()
+        """رفع درخواست «منظورم از تمام‌صفحه این حالت بود»: با دکمه‌ی «⛶
+        تمام‌صفحه» یا F11 پنجره ماکسیمایز می‌شود (دقیقاً همان حالتی که در
+        اسکرین‌شات دیده می‌شود - با نوار عنوان ویندوز، نه فول‌اسکرین بدون
+        حاشیه)؛ زدن دوباره به حالت پنجره‌ای عادی برمی‌گرداند. اندازه‌ی
+        پنل‌ها قبل و بعد از تغییر حالت، دقیقاً همانِ تنظیم‌شده‌ی کاربر
+        برمی‌گردد (قانون «نذار دیگه خراب بشه»)."""
+        if self.isMaximized():
+            self.showNormal()
             self.fullscreen_btn.setChecked(False)
         else:
-            self.showFullScreen()
+            self.showMaximized()
             self.fullscreen_btn.setChecked(True)
         # Qt هنگام تغییر حالت پنجره ممکن است splitterها را دوباره بچیند؛
         # اندازه‌های ذخیره‌شده‌ی کاربر را در تیک بعدی برمی‌گردانیم.
@@ -2802,11 +2776,6 @@ class MainWindow(QMainWindow):
         self.camera_grid.set_people_counting_all(checked)
 
     # ----------------------------------------------------- محدوده‌ی هشدار --
-
-    def _on_region_menu_toggled(self, checked):
-        """رفع درخواست: دکمه‌های «رسم دستی»/«کل کادر»/«تشخیص با AI» فقط با
-        زدن دکمه‌ی اصلیِ «🖊 رسم محدوده» نمایان/مخفی می‌شوند."""
-        self.region_type_row.setVisible(checked)
 
     def _selected_slot(self):
         idx = self.camera_grid.selected_index
@@ -3158,9 +3127,9 @@ class MainWindow(QMainWindow):
         self.manage_regions_btn.setEnabled(bool(has_confirmed))
         # دکمه‌ی تنظیمات تصویر فقط وقتی یک خانه‌ی دارای دوربین انتخاب شده.
         self.image_settings_btn.setEnabled(slot is not None and slot.cam is not None)
-        # رفع درخواست: دکمه‌های «تایید»/«لغو رسم» فقط وقتی یک محدوده‌ی
-        # در-انتظار یا در-حال-ویرایش وجود دارد نمایان می‌شوند (نه همیشه).
-        self.region_action_row.setVisible(bool(has_pending or is_editing))
+        # (برگشت به نسخه‌ی پرتابل): دکمه‌های «تایید»/«لغو رسم» همیشه روی نوار
+        # ابزار هستند و فقط فعال/غیرفعال می‌شوند - مخفی/نمایان نمی‌شوند تا
+        # اندازه‌ی کادر دوربین‌ها ثابت بماند.
         # رفع درخواست «قابلیت ادیت‌کردن»: وقتی یک محدوده‌ی «در انتظار» (چه
         # تازه رسم‌شده، چه محدوده‌ی خودکارِ کل تصویر، چه در حال ویرایش شکلِ
         # یک محدوده‌ی قبلی) روی تصویر هست، رسم/تشخیص خودکارِ تازه غیرفعال
@@ -4406,8 +4375,8 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     apply_theme(app)  # تم تیره‌ی سازگار با لوگوی ایمن آرا سورنا
     window = MainWindow()
-    # رفع درخواست «اندازه‌ی برنامه در حالت فول‌اسکرین پایدار باشد»: برنامه
-    # از ابتدا ماکسیمایز باز می‌شود تا اندازه‌ی کلی آن ثابت بماند و زدن
-    # دکمه‌ها نتواند ابعاد پنجره را تغییر دهد؛ کاربر با F11 تمام‌صفحه می‌شود.
+    # رفع درخواست «منظورم از تمام‌صفحه این حالت بود»: برنامه از ابتدا
+    # ماکسیمایز باز می‌شود (دقیقاً همان حالت اسکرین‌شات)؛ کاربر با دکمه‌ی
+    # «⛶ تمام‌صفحه» یا F11 بین حالت ماکسیمایز و پنجره‌ای عادی جابه‌جا می‌شود.
     window.showMaximized()
     sys.exit(app.exec())
