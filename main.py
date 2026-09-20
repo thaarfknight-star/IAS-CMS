@@ -4,6 +4,12 @@ import time
 import uuid
 import threading
 
+# مرحله‌ی دوم آپدیت (CCTV_CMS_upd.exe --apply-update ...): موتور خالص پایتون
+# بدون GUI و بدون Qt؛ باید قبل از هر import سنگین (cv2، PyQt و…) اجرا شود.
+if "--apply-update" in sys.argv:
+    from update_apply import main as _update_apply_main
+    sys.exit(_update_apply_main(sys.argv))
+
 import cv2
 
 from PyQt6.QtWidgets import (
@@ -4365,6 +4371,13 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
+    # پاک‌سازی فایل موتور آپدیت مرحله‌ی قبل (اگر آپدیتی انجام شده باشد)؛
+    # باید قبل از هر کاری انجام شود چون خود موتور در حال اجرا نیست.
+    try:
+        from update_apply import cleanup_updater_copy
+        cleanup_updater_copy()
+    except Exception:
+        pass
     # مهاجرت یک‌باره‌ی دیتای نسخه‌های قبلی (کنار exe) به پوشه‌ی یکتای دیتا؛
     # باید قبل از ساخته‌شدن هر استوری (CameraStore و…) اجرا شود.
     try:

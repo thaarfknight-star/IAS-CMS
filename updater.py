@@ -9,10 +9,12 @@
      تطابق با مانیفست).
   ۳) محتوا به‌صورت امن (بدون path traversal) در
      <install>/pending_update استخراج می‌شود.
-  ۴) updater.ps1 (داخل پوشه‌ی نصب) به‌صورت جداگانه اجرا می‌شود؛ برنامه فقط
-     وقتی بسته می‌شود که اسکریپت با نوشتن خط شروع در update.log تأیید کند
+  ۴) یک کپی از همین فایل اجرایی (CCTV_CMS_upd.exe) با پرچم
+     --apply-update به‌صورت جداگانه اجرا می‌شود (موتور خالص پایتون در
+     update_apply.py — بدون PowerShell، بدون وابستگی خارجی)؛ برنامه فقط
+     وقتی بسته می‌شود که موتور با نوشتن خط شروع در update.log تأیید کند
      بالا آمده است (handshake) — وگرنه خطا نمایش داده می‌شود و برنامه
-     باز می‌ماند. اسکریپت منتظر خروج کامل برنامه می‌ماند، فایل‌ها را با
+     باز می‌ماند. موتور منتظر خروج کامل برنامه می‌ماند، فایل‌ها را با
      بکاپ جایگزین می‌کند و برنامه را دوباره اجرا می‌کند؛ خطاهای مهلک با
      پنجره‌ی پیام قابل‌مشاهده اعلام می‌شوند (نه سکوت).
 
@@ -355,15 +357,6 @@ class UpdateDialog(__import__("PyQt6.QtWidgets", fromlist=["QDialog"]).QDialog):
         QApplication.processEvents()
 
         install_dir = get_install_dir()
-        ps1 = install_dir / "updater.ps1"
-        if not ps1.is_file():
-            self.err_lbl.setText("⚠️ فایل updater.ps1 در پوشه‌ی نصب پیدا نشد؛ "
-                                 "آپدیت ممکن نیست.")
-            self.err_card.setVisible(True)
-            self.apply_btn.setEnabled(True)
-            self.apply_btn.setText("⬆️ اعمال آپدیت")
-            return
-
         pending = install_dir / "pending_update"
         try:
             if pending.exists():
@@ -376,42 +369,81 @@ class UpdateDialog(__import__("PyQt6.QtWidgets", fromlist=["QDialog"]).QDialog):
             self.apply_btn.setText("⬆️ اعمال آپدیت")
             return
 
+        # موتور آپدیت = یک کپی از همین فایل اجرایی با پرچم --apply-update
+        # (موتور خالص پایتون در update_apply.py). جایگزین updater.ps1 شد چون
+        # روی بعضی سیستم‌ها PowerShell اصلاً بالا نمی‌آمد و هیچ لاگی از علت
+        # نمی‌داد. خواندن/کپی فایل اجرایی در حال اجرا در ویندوز آزاد است.
         try:
-            import shutil as _shutil
+            import update_apply as _ua
+            src_exe = Path(sys.executable).resolve()
+            if not src_exe.is_file():
+                raise RuntimeError("فایل اجرایی برنامه پیدا نشد.")
+            exe_name = src_exe.name
+            upd_exe = install_dir / _ua.UPDATER_EXE_NAME
+            try:
+                if upd_exe.is_file():
+                    upd_exe.unlink()
+            except Exception:
+                pass
+            shutil.copy2(src_exe, upd_exe)
+        except Exception as e:
+            shutil.rmtree(pending, ignore_errors=True)
+            self.err_lbl.setText(f"⚠️ آماده‌سازی موتور آپدیت ممکن نشد:\n{e}")
+            self.err_card.setVisible(True)
+            self.apply_btn.setEnabled(True)
+            self.apply_btn.setText("⬆️ اعمال آپدیت")
+            return
+
+        try:
             import time as _time
-            ps_exe = (_shutil.which("powershell") or _shutil.which("pwsh")
-                      or "powershell")
             spawn_ts = _time.time()
-            creationflags = getattr(subprocess, "DETACHED_PROCESS", 0)
-            creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            # stderr را به‌جای DEVNULL در فایل می‌ریزیم تا اگر powershell
-            # بلافاصله بسته شد، علت واقعی (parse error، execution policy و…)
-            # قابل‌مشاهده باشد — قبلاً نامرئی بود و فقط حدس می‌زدیم.
+            # update_err.log: لاگ لانچر (علت بالا نیامدن موتور) + خروجی موتور.
+            # اگر موتور بالا نیاید، علت دقیق همین‌جاست — دیگر «لاگ خالی» نیست.
             err_log = install_dir / "update_err.log"
             try:
                 if err_log.is_file():
                     err_log.unlink()
             except Exception:
                 pass
-            _ef = open(err_log, "w", encoding="utf-8", errors="ignore")
-            try:
-                proc = subprocess.Popen(
-                    [ps_exe, "-NoProfile", "-ExecutionPolicy", "Bypass",
-                     "-WindowStyle", "Hidden", "-File", str(ps1),
-                     "-InstallDir", str(install_dir),
-                     "-PendingDir", str(pending),
-                     "-ExeName", "CCTV_CMS"],
-                    creationflags=creationflags,
-                    close_fds=True,
-                    stdout=subprocess.DEVNULL,
-                    stderr=_ef,
-                )
-            finally:
+            _ef = open(err_log, "a", encoding="utf-8", errors="replace")
+
+            def _eflog(m):
                 try:
-                    _ef.close()
+                    _ef.write("[launcher %s] %s\n"
+                              % (_time.strftime("%H:%M:%S"), m))
+                    _ef.flush()
                 except Exception:
                     pass
+
+            cmd = [str(upd_exe), _ua.APPLY_FLAG, str(install_dir),
+                   str(pending), str(os.getpid()), exe_name]
+            _eflog("spawning: %s" % (cmd,))
+            if os.name == "nt":
+                creationflags = getattr(subprocess, "DETACHED_PROCESS", 0)
+                creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                proc = subprocess.Popen(
+                    cmd,
+                    creationflags=creationflags,
+                    close_fds=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=_ef,
+                    stderr=subprocess.STDOUT,
+                )
+            else:
+                proc = subprocess.Popen(
+                    cmd,
+                    close_fds=True,
+                    start_new_session=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=_ef,
+                    stderr=subprocess.STDOUT,
+                )
+            _eflog("spawned pid=%s" % (proc.pid,))
         except Exception as e:
+            try:
+                _ef.close()
+            except Exception:
+                pass
             shutil.rmtree(pending, ignore_errors=True)
             self.err_lbl.setText(f"⚠️ اجرای موتور آپدیت ممکن نشد:\n{e}")
             self.err_card.setVisible(True)
@@ -419,18 +451,27 @@ class UpdateDialog(__import__("PyQt6.QtWidgets", fromlist=["QDialog"]).QDialog):
             self.apply_btn.setText("⬆️ اعمال آپدیت")
             return
 
-        # دست‌تکان (handshake): مطمئن می‌شویم updater.ps1 واقعاً بالا آمده
+        # دست‌تکان (handshake): مطمئن می‌شویم موتور آپدیت واقعاً بالا آمده
         # و شروع به کار کرده، بعد برنامه را می‌بندیم. بدون این کنترل، اگر
-        # اسکریپت بالا نیاید برنامه بسته می‌شود و «هیچ اتفاقی نمی‌افتد».
+        # موتور بالا نیاید برنامه بسته می‌شود و «هیچ اتفاقی نمی‌افتد».
         self.apply_btn.setText("در حال راه‌اندازی موتور آپدیت…")
         handshake_ok, handshake_hint = self._wait_updater_handshake(
             proc, install_dir, spawn_ts)
+        try:
+            _ef.close()
+        except Exception:
+            pass
         if not handshake_ok:
+            try:
+                if proc.poll() is None:
+                    proc.kill()  # موتور گیر کرده؛ رهایش نکن
+            except Exception:
+                pass
             shutil.rmtree(pending, ignore_errors=True)
             self.err_lbl.setText(
                 "⚠️ موتور آپدیت راه‌اندازی نشد؛ برنامه بسته نشد.\n"
                 f"{handshake_hint}\n"
-                "اگر مشکل ادامه داشت، فایل update.log در پوشه‌ی نصب را بفرستید.")
+                "اگر مشکل ادامه داشت، فایل update_err.log در پوشه‌ی نصب را بفرستید.")
             self.err_card.setVisible(True)
             self.apply_btn.setEnabled(True)
             self.apply_btn.setText("⬆️ اعمال آپدیت")
@@ -441,23 +482,23 @@ class UpdateDialog(__import__("PyQt6.QtWidgets", fromlist=["QDialog"]).QDialog):
         os._exit(0)
 
     def _wait_updater_handshake(self, proc, install_dir, spawn_ts):
-        """انتظار حداکثر ~۱۰ ثانیه تا updater.ps1 خط شروع را در update.log
+        """انتظار حداکثر ~۱۵ ثانیه تا موتور آپدیت خط شروع را در update.log
         بنویسد. خروجی: (ok, hint)."""
         from PyQt6.QtWidgets import QApplication
         import time as _time
         logf = install_dir / "update.log"
         err_log = install_dir / "update_err.log"
-        for _ in range(100):
+        for _ in range(150):
             _time.sleep(0.1)
             QApplication.processEvents()
             if proc.poll() is not None:
-                hint = ("فرایند powershell بلافاصله بسته شد "
-                        "(احتمالاً خطا در اجرای updater.ps1).")
+                hint = ("فرایند موتور آپدیت بلافاصله بسته شد "
+                        "(کد خروج: %s)." % (proc.poll(),))
                 try:
                     if err_log.is_file():
                         tail = err_log.read_text(
                             encoding="utf-8",
-                            errors="ignore").strip().splitlines()[-8:]
+                            errors="ignore").strip().splitlines()[-12:]
                         if tail:
                             hint += "\n\nجزئیات خطا:\n" + "\n".join(tail)
                 except Exception:
@@ -471,7 +512,7 @@ class UpdateDialog(__import__("PyQt6.QtWidgets", fromlist=["QDialog"]).QDialog):
                         return (True, "")
             except Exception:
                 pass
-        return (False, "updater.ps1 در ۱۰ ثانیه شروع به کار نکرد.")
+        return (False, "موتور آپدیت در ۱۵ ثانیه شروع به کار نکرد.")
 
 
 def show_apply_update_dialog(parent=None):

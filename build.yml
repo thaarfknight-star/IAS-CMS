@@ -498,7 +498,6 @@ jobs:
         }
         if (-not (Test-Path "dist/CCTV_CMS/CCTV_CMS.exe")) { throw "dist/CCTV_CMS/CCTV_CMS.exe not found" }
         Copy-Item "version.txt" "dist/CCTV_CMS/version.txt" -Force
-        Copy-Item "installer/updater.ps1" "dist/CCTV_CMS/updater.ps1" -Force
         $ver = (Get-Content "version.txt" -Raw).Trim()
         "APP_VERSION=$ver" >> $env:GITHUB_ENV
         Write-Host "APP_VERSION=$ver"

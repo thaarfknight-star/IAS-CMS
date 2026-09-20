@@ -12,6 +12,9 @@ camera_stream.py / add_nvr_dialog.py اجرا می‌شود و موارد زیر
  ۴) فالبک تشخیص حرکت: با فریم مصنوعیِ دارای جسم متحرک، باکس برمی‌گرداند و
     زنجیره‌ی _PersonRegionTracker -> region_entered بدون مدل YOLO کار می‌کند.
  ۵) تطبیق IP اسکن NVR/شبکه: _subnet_of و _match_status.
+ ۶) موتور آپدیت پایتون (2.0.8-beta): جایگزینی updater.ps1 با update_apply؛
+    اعمال کامل آپدیت روی دایرکتوری موقت، بکاپ، sha256، کدهای خطا،
+    رهگیری --apply-update در main.py، بدون Qt در update_apply.
 """
 import os
 import sys
@@ -191,6 +194,125 @@ win.camera_store.remove_camera(cam["id"])
 win.reload_camera_list()
 app.processEvents()
 check("fire panel hidden after cam removed", not win.fire_panel_group.isVisible())
+
+# ---------- ۶) موتور آپدیت پایتون (2.0.8-beta، جایگزین updater.ps1) ----------
+import json as _json
+import hashlib as _hashlib
+import shutil as _shutil
+import subprocess as _sp
+import tempfile as _tf
+from pathlib import Path as _Path
+
+import update_apply as _ua
+
+_REPO = _Path(__file__).resolve().parent.parent
+
+
+def _make_update_env(tmp, old_files, new_files, version="2.0.8-beta",
+                     prev="2.0.7-beta", bad_hash=False):
+    install = _Path(tmp) / "install"
+    pending = install / "pending_update"
+    (pending / "files").mkdir(parents=True)
+    for rel, content in old_files.items():
+        p = install / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(content)
+    (install / "version.txt").write_text(prev, encoding="ascii")
+    infos = []
+    for rel, content in new_files.items():
+        (pending / "files" / rel).parent.mkdir(parents=True, exist_ok=True)
+        (pending / "files" / rel).write_bytes(content)
+        h = _hashlib.sha256(content).hexdigest()
+        if bad_hash:
+            h = "0" * 64
+        infos.append({"path": rel, "size": len(content), "sha256": h})
+    info = {"app": "IAS-CMS", "version": version, "prev_version": prev,
+            "files": infos, "removed": [],
+            "total_size": sum(len(c) for c in new_files.values())}
+    (pending / "update_info.json").write_text(_json.dumps(info), encoding="utf-8")
+    (pending / "manifest.json").write_text("{}", encoding="utf-8")
+    return install, pending
+
+
+_p = _sp.Popen(["true"])
+_p.wait()
+_dead_pid = _p.pid  # پی‌آیدیِ قطعاً مرده برای تست انتظار خروج والد
+
+# سناریوی موفق کامل
+tmp = _tf.mkdtemp()
+install, pending = _make_update_env(
+    tmp, {"app.txt": b"old", "sub/keep.txt": b"keep"},
+    {"app.txt": b"new", "sub/extra.txt": b"extra"})
+rc = _ua.apply_update(install, pending, _dead_pid, "CCTV_CMS.exe",
+                      log_file=install / "update.log", relaunch=False)
+check("updater rc==0", rc == 0, str(rc))
+check("updater replaced file", (install / "app.txt").read_bytes() == b"new")
+check("updater added file", (install / "sub" / "extra.txt").read_bytes() == b"extra")
+check("updater kept untouched", (install / "sub" / "keep.txt").read_bytes() == b"keep")
+check("updater backup old", (install / "backup" / "v2.0.7-beta" / "app.txt").read_bytes() == b"old")
+check("updater version.txt", (install / "version.txt").read_text(encoding="ascii") == "2.0.8-beta")
+check("updater pending removed", not pending.exists())
+_log = (install / "update.log").read_text(encoding="utf-8")
+check("updater handshake line", "updater started" in _log)
+check("updater ok line", "update to v2.0.8-beta OK" in _log)
+_shutil.rmtree(tmp, ignore_errors=True)
+
+# عدم تطابق sha256 -> کد ۵
+tmp = _tf.mkdtemp()
+install, pending = _make_update_env(tmp, {"app.txt": b"old"}, {"app.txt": b"new"}, bad_hash=True)
+rc = _ua.apply_update(install, pending, _dead_pid, "CCTV_CMS.exe", relaunch=False)
+check("updater bad hash rc==5", rc == 5, str(rc))
+_shutil.rmtree(tmp, ignore_errors=True)
+
+# نبود update_info.json -> کد ۳
+tmp = _tf.mkdtemp()
+install = _Path(tmp) / "install"
+install.mkdir()
+pending = install / "pending_update"
+pending.mkdir()
+rc = _ua.apply_update(install, pending, _dead_pid, "CCTV_CMS.exe", relaunch=False)
+check("updater missing info rc==3", rc == 3, str(rc))
+_shutil.rmtree(tmp, ignore_errors=True)
+
+# مسیر ناامن مسدود شود
+check("safe_rel traversal", _ua._safe_rel("../../etc/passwd") == "")
+check("safe_rel backslash traversal", _ua._safe_rel("..\\..\\x") == "")
+check("safe_rel normal", _ua._safe_rel("sub/app.txt") == "sub/app.txt".replace("/", os.sep))
+
+# main() با آرگومان کامل (relaunch واقعی با exe جعلی اجرایی)
+tmp = _tf.mkdtemp()
+install, pending = _make_update_env(tmp, {"a.txt": b"1"}, {"a.txt": b"2"})
+fake_exe = install / "CCTV_CMS.exe"
+fake_exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+fake_exe.chmod(0o755)
+rc = _ua.main(["prog", "--apply-update", str(install), str(pending),
+               str(_dead_pid), "CCTV_CMS.exe"])
+check("updater main() rc==0", rc == 0, str(rc))
+check("updater main() replaced", (install / "a.txt").read_bytes() == b"2")
+check("updater main() bad usage", _ua.main(["prog", "--apply-update"]) == 2)
+_shutil.rmtree(tmp, ignore_errors=True)
+
+# cleanup در حالت غیر-frozen کاری نکند
+check("cleanup not frozen", _ua.cleanup_updater_copy() is False)
+
+# update_apply نباید هیچ ایمپورتی از Qt داشته باشد (سبک بماند)
+_src = (_REPO / "update_apply.py").read_text(encoding="utf-8")
+check("update_apply no Qt import", "PyQt" not in _src and "PySide" not in _src)
+
+# main.py باید --apply-update را قبل از importهای سنگین رهگیری کند
+_msrc = (_REPO / "main.py").read_text(encoding="utf-8")
+_i_flag = _msrc.find("--apply-update")
+check("main.py intercepts --apply-update",
+      _i_flag != -1 and _i_flag < _msrc.find("import cv2")
+      and _i_flag < _msrc.find("from PyQt6"))
+
+# updater.py دیگر هیچ ارجاع «کدی» به updater.ps1/powershell نداشته باشد
+# (اشاره‌ی توضیحی در کامنت‌ها اشکالی ندارد)
+_usrc = (_REPO / "updater.py").read_text(encoding="utf-8")
+check("updater.py no ps1 literal", '"updater.ps1"' not in _usrc)
+check("updater.py no powershell literal", '"powershell"' not in _usrc.lower()
+      and "'powershell'" not in _usrc.lower())
+check("updater.py uses update_apply", "update_apply" in _usrc)
 
 print(f"\n{len(passed)} passed, {len(failed)} failed")
 sys.exit(1 if failed else 0)
