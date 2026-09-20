@@ -36,6 +36,17 @@ STRINGS = {
     "update_desc": {"fa": "فایل «آپدیت» را انتخاب و فقط فایل‌های تغییرکرده را جایگزین کنید.",
                     "en": "Select an “update” file to replace only the changed files."},
     "apply_update": {"fa": "⬆️ اعمال آپدیت", "en": "⬆️ Apply update"},
+    "uninstall_group": {"fa": "🗑 حذف نصب", "en": "🗑 Uninstallation"},
+    "uninstall_title": {"fa": "حذف نصب برنامه", "en": "Uninstall application"},
+    "uninstall_desc": {"fa": "برنامه را به‌طور کامل از سیستم حذف کنید (فایل‌ها، تنظیمات و داده‌ها).",
+                       "en": "Completely remove the application (files, settings and data) from this system."},
+    "uninstall_btn": {"fa": "🗑 حذف نصب برنامه", "en": "🗑 Uninstall application"},
+    "uninstall_confirm": {"fa": "«IAS-CMS» به‌طور کامل از سیستم حذف شود؟\n\nهمه‌ی فایل‌ها، تنظیمات، دوربین‌ها، بانک چهره و سوابق پلاک‌ها برای همیشه پاک می‌شوند.",
+                          "en": "Completely remove “IAS-CMS” from this system?\n\nAll files, settings, cameras, face database and plate history will be permanently deleted."},
+    "uninstall_notfound": {"fa": "فایل حذف‌کننده (uninstall.exe) کنار برنامه یافت نشد.\nاین گزینه فقط در نسخه‌ی نصب‌شده با Setup کار می‌کند.",
+                           "en": "The uninstaller (uninstall.exe) was not found next to the application.\nThis option only works in the installed (Setup) version."},
+    "uninstall_launch_err": {"fa": "اجرای حذف‌کننده ممکن نشد:\n{0}",
+                              "en": "Could not start the uninstaller:\n{0}"},
     "sound_group": {"fa": "🔊 صداهای هشدار", "en": "🔊 Alert sounds"},
     "sound_hint": {"fa": "هر صدا مستقل است؛ فعال/غیرفعال بودن یکی روی بقیه اثر ندارد.",
                    "en": "Each sound is independent of the others."},
@@ -155,6 +166,25 @@ class SettingsPage(QWidget):
         upd_group.setLayout(ulay)
         layout.addWidget(upd_group)
 
+        # --- حذف نصب (اجرای uninstall.exe کنار برنامه) ---
+        un_group = QGroupBox(self._t("uninstall_group"))
+        nlay = QVBoxLayout()
+        ndesc = QLabel(self._t("uninstall_desc"))
+        ndesc.setWordWrap(True)
+        nlay.addWidget(ndesc)
+        self.uninstall_btn = QPushButton(self._t("uninstall_btn"))
+        self.uninstall_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.uninstall_btn.setStyleSheet(
+            "QPushButton{padding: 10px 22px; border-radius: 8px; font-size: 14px; "
+            "background: #c0392b; color: white; font-weight: bold;}")
+        self.uninstall_btn.clicked.connect(self._on_uninstall_clicked)
+        nrow = QHBoxLayout()
+        nrow.addWidget(self.uninstall_btn)
+        nrow.addStretch()
+        nlay.addLayout(nrow)
+        un_group.setLayout(nlay)
+        layout.addWidget(un_group)
+
         layout.addStretch()
 
     def _on_theme_changed(self, index):
@@ -216,6 +246,54 @@ class SettingsPage(QWidget):
                 show_apply_update_dialog(parent=self)
             except Exception as e:
                 QMessageBox.warning(self, "خطا", f"باز کردن دیالوگ آپدیت ممکن نشد:\n{e}")
+
+    def _uninstall_exe_path(self):
+        """مسیر uninstall.exe کنار فایل اجرایی برنامه (فقط نسخه‌ی نصب‌شده)."""
+        import sys as _sys
+        from pathlib import Path
+        cands = []
+        for src in (getattr(_sys, "executable", ""), _sys.argv[0] if _sys.argv else ""):
+            try:
+                if src:
+                    cands.append(Path(src).resolve().parent / "uninstall.exe")
+            except Exception:
+                continue
+        for p in cands:
+            try:
+                if p.is_file():
+                    return str(p)
+            except Exception:
+                continue
+        return None
+
+    def _on_uninstall_clicked(self):
+        exe = self._uninstall_exe_path()
+        if not exe:
+            QMessageBox.information(self, self._t("uninstall_title"),
+                                    self._t("uninstall_notfound"))
+            return
+        ans = QMessageBox.question(
+            self, self._t("uninstall_title"), self._t("uninstall_confirm"),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            import subprocess
+            subprocess.Popen([exe],
+                             creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+        except Exception as e:
+            QMessageBox.warning(self, self._t("uninstall_title"),
+                                self._t("uninstall_launch_err").format(e))
+            return
+        qapp = None
+        try:
+            from PyQt6.QtWidgets import QApplication as _QA
+            qapp = _QA.instance()
+        except Exception:
+            qapp = None
+        if qapp is not None:
+            qapp.quit()
 
     def refresh(self):
         """همگام‌سازی با تنظیمات ذخیره‌شده هنگام هر بار نمایش صفحه."""

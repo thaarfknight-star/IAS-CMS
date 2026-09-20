@@ -314,5 +314,44 @@ check("updater.py no powershell literal", '"powershell"' not in _usrc.lower()
       and "'powershell'" not in _usrc.lower())
 check("updater.py uses update_apply", "update_apply" in _usrc)
 
+# ---------- ۷) دکمه‌ی «حذف نصب» در صفحه‌ی تنظیمات (2.0.9-beta بازسازی) ----------
+import settings_page as _sp
+_spage = _sp.SettingsPage()
+check("settings has uninstall btn",
+      hasattr(_spage, "uninstall_btn") and _spage.uninstall_btn.isVisibleTo(_spage)
+      and _spage.uninstall_btn.text() != "")
+# در این محیط uninstall.exe کنار پایتون نیست → مسیر None و بدون کرش
+check("uninstall path missing -> None", _spage._uninstall_exe_path() is None)
+_calls = []
+_orig_info = _sp.QMessageBox.information
+_sp.QMessageBox.information = lambda *a, **k: _calls.append(("info", a, k)) or None
+try:
+    _spage._on_uninstall_clicked()
+finally:
+    _sp.QMessageBox.information = _orig_info
+check("uninstall missing shows info", len(_calls) == 1 and _calls[0][0] == "info")
+# با فایل جعلی uninstall.exe مسیر پیدا شود (بدون اجرای واقعی)
+_fake_dir = _tf.mkdtemp(prefix="fake_uninst_")
+open(os.path.join(_fake_dir, "uninstall.exe"), "wb").write(b"x")
+_orig_exe = sys.executable
+sys.executable = os.path.join(_fake_dir, "CCTV_CMS.exe")
+try:
+    _found = _spage._uninstall_exe_path()
+finally:
+    sys.executable = _orig_exe
+check("uninstall path found", _found == os.path.join(_fake_dir, "uninstall.exe"))
+_shutil.rmtree(_fake_dir, ignore_errors=True)
+
+# در این نسخه‌ی 2.0.9-beta فقط uninstall.exe داخل setup است — فایل مستقل
+# IAS-CMS-Uninstall نباید در هیچ workflow ساخته/آپلود شود
+for _wf in ["build.yml", ".github/workflows/build.yml"]:
+    _wtxt = (_REPO / _wf).read_text(encoding="utf-8")
+    check(f"{_wf} no UNINSTALLER_ONLY", "UNINSTALLER_ONLY" not in _wtxt)
+    check(f"{_wf} no Uninstall artifact", "IAS-CMS-Uninstall" not in _wtxt)
+# ولی uninstall.exe داخل NSI (WriteUninstaller) و میان‌بر «حذف برنامه» باشد
+_nsi = (_REPO / "installer" / "installer.nsi").read_text(encoding="utf-8")
+check("nsi WriteUninstaller", "WriteUninstaller" in _nsi)
+check("nsi uninstall shortcut", "حذف برنامه" in _nsi)
+
 print(f"\n{len(passed)} passed, {len(failed)} failed")
 sys.exit(1 if failed else 0)
