@@ -4114,6 +4114,48 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _refresh_person_detector_status(self):
+        """به‌روزرسانی بنر وضعیت موتور تشخیص شخص در صفحه‌ی «ردیابی اشخاص».
+
+        رفع درخواست «هیچ گزارشی از افراد ثبت نمیشه» بی‌هیچ توضیحی: علت
+        معمولاً یکی از این‌هاست و حالا هر کدام با پیام مشخص روی همان
+        صفحه دیده می‌شود:
+        ۱) هیچ دوربینی در صفحه‌ی اصلی باز/در حال پخش نیست؛
+        ۲) مدل تشخیص شخص (YOLOv8 در person_detector.py) بارگذاری نشده؛
+        ۳) همه‌چیز سالم است و گزارش‌ها در حال ثبت‌اند.
+        """
+        page = getattr(self, "person_page", None)
+        if page is None:
+            return
+        try:
+            open_slots = [s for s in self.camera_grid.slots
+                          if getattr(s, "cam", None) is not None
+                          and getattr(s, "stream_thread", None) is not None]
+        except Exception:
+            open_slots = []
+        if not open_slots:
+            page.set_detector_status("no_camera")
+            return
+        try:
+            states = [getattr(s, "_detector_available", None) for s in open_slots]
+        except Exception:
+            states = []
+        if any(s is True for s in states):
+            page.set_detector_status("ok")
+            return
+        if states and all(s is False for s in states):
+            err = ""
+            try:
+                for s in open_slots:
+                    if getattr(s, "_detector_error", ""):
+                        err = s._detector_error
+                        break
+            except Exception:
+                pass
+            page.set_detector_status("error", err)
+            return
+        page.set_detector_status("loading")
+
     def _check_person_region_access(self, face_person_id, face_name,
                                     cam_id, camera_name, region_id,
                                     region_number, region_name,
@@ -4159,46 +4201,7 @@ class MainWindow(QMainWindow):
                 page.refresh_region_violations()
         except Exception:
             pass
-        """به‌روزرسانی بنر وضعیت موتور تشخیص شخص در صفحه‌ی «ردیابی اشخاص».
 
-        رفع درخواست «هیچ گزارشی از افراد ثبت نمیشه» بی‌هیچ توضیحی: علت
-        معمولاً یکی از این‌هاست و حالا هر کدام با پیام مشخص روی همان
-        صفحه دیده می‌شود:
-        ۱) هیچ دوربینی در صفحه‌ی اصلی باز/در حال پخش نیست؛
-        ۲) مدل تشخیص شخص (YOLOv8 در person_detector.py) بارگذاری نشده؛
-        ۳) همه‌چیز سالم است و گزارش‌ها در حال ثبت‌اند.
-        """
-        page = getattr(self, "person_page", None)
-        if page is None:
-            return
-        try:
-            open_slots = [s for s in self.camera_grid.slots
-                          if getattr(s, "cam", None) is not None
-                          and getattr(s, "stream_thread", None) is not None]
-        except Exception:
-            open_slots = []
-        if not open_slots:
-            page.set_detector_status("no_camera")
-            return
-        try:
-            states = [getattr(s, "_detector_available", None) for s in open_slots]
-        except Exception:
-            states = []
-        if any(s is True for s in states):
-            page.set_detector_status("ok")
-            return
-        if states and all(s is False for s in states):
-            err = ""
-            try:
-                for s in open_slots:
-                    if getattr(s, "_detector_error", ""):
-                        err = s._detector_error
-                        break
-            except Exception:
-                pass
-            page.set_detector_status("error", err)
-            return
-        page.set_detector_status("loading")
 
 
     # ------------------------------------------------------------- scan ---
