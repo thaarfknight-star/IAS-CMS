@@ -445,6 +445,68 @@ class _PersonRegionTracker:
         return entered
 
 
+class _MotionRegionDetector:
+    """تشخیص حرکت سبک - جایگزین PersonDetector وقتی مدل YOLO بارگذاری نشده.
+
+    ریشه‌ی گزارش «سیستم ورود به محدوده اصلاً کار نمی‌کند»: زنجیره‌ی هشدار
+    ورود قبلاً کاملاً به `_person_detector_available` گره خورده بود؛ اگر
+    مدل شخص (YOLOv8 روی torch) در نسخه‌ی exe بارگذاری نمی‌شد، هیچ‌وقت هیچ
+    هشداری صادر نمی‌شد. این فالبک با تفریق پس‌زمینه‌ی MOG2 روی فریم
+    کوچک‌شده، «توده‌های متحرک» را به‌صورت باکس (top,right,bottom,left) در
+    مختصات فریم اصلی برمی‌گرداند تا همان _PersonRegionTracker و همان سیگنال
+    region_entered بدون هیچ تغییری در زنجیره‌ی هشدار کار کنند.
+    عمداً سبک نگه داشته شده: فریم ۳۲۰ پیکسلی، خاکستری، حداکثر هر ۰.۵ ثانیه
+    یک‌بار، بدون هیچ وابستگی جدید (cv2 از قبل باندل است)."""
+
+    def __init__(self, min_area_ratio=0.004, max_area_ratio=0.5, cooldown=0.5):
+        self._bg = None
+        self._last_run = 0.0
+        self._min_area_ratio = min_area_ratio
+        self._max_area_ratio = max_area_ratio
+        self._cooldown = cooldown
+
+    def detect(self, frame):
+        now = time.monotonic()
+        if now - self._last_run < self._cooldown:
+            return []
+        self._last_run = now
+        try:
+            h, w = frame.shape[:2]
+            if h < 10 or w < 10:
+                return []
+            scale = 320.0 / w
+            small = cv2.resize(frame, (320, max(1, int(h * scale))))
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+            if self._bg is None:
+                self._bg = cv2.createBackgroundSubtractorMOG2(
+                    history=200, varThreshold=25, detectShadows=False)
+            fg = self._bg.apply(gray)
+            _, fg = cv2.threshold(fg, 200, 255, cv2.THRESH_BINARY)
+            _kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, _kernel)
+            contours, _ = cv2.findContours(
+                fg, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            sh, sw = gray.shape[:2]
+            frame_area = float(sw * sh)
+            inv = 1.0 / scale
+            boxes = []
+            for c in contours:
+                r = cv2.contourArea(c) / frame_area
+                if r < self._min_area_ratio or r > self._max_area_ratio:
+                    continue
+                x, y, bw, bh = cv2.boundingRect(c)
+                if bh < 8 or bw < 8:
+                    continue
+                if bw / max(1, bh) > 4.0:
+                    # توده‌ی خیلی کشیده‌ی افقی (سایه/نویز) - نه یک شخص
+                    continue
+                boxes.append((int(y * inv), int((x + bw) * inv),
+                              int((y + bh) * inv), int(x * inv)))
+            return boxes
+        except Exception:
+            return []
+
+
 def _match_face_to_body(body_box, face_results):
     """هویت چهره‌ی متعلق به یک باکس بدن: مرکز چهره باید داخل نیمه‌ی بالایی
     باکس بدن باشد. خروجی: (face_person_id, face_name) یا ("", "") برای
@@ -556,6 +618,9 @@ class CameraStreamThread(QThread):
         self._regions_lock = threading.Lock()
         self.regions = []
         self._region_tracker = _PersonRegionTracker()
+        # فالبک تشخیص حرکت (رجوع کنید به _MotionRegionDetector): فقط وقتی
+        # ساخته/استفاده می‌شود که مدل سنگین شخص در دسترس نباشد.
+        self._motion_detector = None
         # این مقدار دیگر تعیین‌کننده‌ی «تاخیر» نیست (چون تشخیص چهره async است)،
         # فقط فاصله‌ی ارسال فریم‌های جدید برای پردازش تشخیص چهره را کنترل می‌کند.
         self.process_every_n = max(1, process_every_n)
@@ -992,13 +1057,26 @@ class CameraStreamThread(QThread):
             # --- محدوده‌ی هشدار: بعد از هر دور تشخیص شخص، بررسی می‌شود که
             # آیا مرکز یکی از افراد تازه وارد یکی از محدوده‌های تعریف‌شده‌ی
             # کاربر شده یا نه (رجوع کنید به _PersonRegionTracker بالا).
+            # رفع باگ «هشدار ورود به محدوده اصلاً کار نمی‌کند»: قبلاً این بلوک
+            # کاملاً به در دسترس بودن مدل سنگین شخص (YOLOv8) گره خورده بود؛
+            # اگر مدل در exe بارگذاری نمی‌شد، هیچ‌وقت هیچ هشداری صادر نمی‌شد.
+            # حالا وقتی مدل در دسترس نیست، فالبک سبک «تشخیص حرکت»
+            # (_MotionRegionDetector) همان باکس‌ها را تأمین می‌کند تا زنجیره‌ی
+            # هشدار (ردیاب محدوده -> سیگنال region_entered -> قرمزی کادر/بوق/
+            # ثبت گزارش) بدون مدل سنگین هم کار کند.
             with self._regions_lock:
                 regions = self.regions
-            if regions and self._person_detector_available:
+            if regions:
                 h, w = frame.shape[:2]
+                if self._person_detector_available:
+                    region_boxes = self._last_person_boxes
+                else:
+                    if self._motion_detector is None:
+                        self._motion_detector = _MotionRegionDetector()
+                    region_boxes = self._motion_detector.detect(frame)
                 for region_id, number, name, face_pid, face_name in \
                         self._region_tracker.update(
-                            self._last_person_boxes, regions, w, h,
+                            region_boxes, regions, w, h,
                             face_results=self._last_results):
                     self.region_entered.emit(region_id, number, name,
                                              face_pid, face_name)

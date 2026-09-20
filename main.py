@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QMenu, QTreeWidget, QTreeWidgetItem, QInputDialog, QDialog,
     QGridLayout, QComboBox, QScrollArea, QSizePolicy, QSplitter, QStackedWidget
 )
-from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon, QDrag, QFontMetrics, QPainter, QPen, QColor, QPolygonF
+from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon, QDrag, QFontMetrics, QPainter, QPen, QColor, QPolygonF, QShortcut, QKeySequence
 from PyQt6.QtCore import Qt, QSize, QMimeData, QPointF, QRectF, QTimer, QEvent, pyqtSignal
 
 from face_engine import FaceEngine
@@ -1089,15 +1089,19 @@ class CameraSlotWidget(QWidget):
 
     def _refresh_detector_warning(self):
         if self._detector_available is False and self.regions:
-            msg = "⚠ تشخیص شخص غیرفعال است؛ هشدار ورود به محدوده کار نمی‌کند"
+            # رفع باگ «هشدار ورود به محدوده اصلاً کار نمی‌کند»: وقتی مدل سنگین
+            # شخص بارگذاری نشده، زنجیره‌ی هشدار با فالبک «تشخیص حرکت» ادامه
+            # پیدا می‌کند (رجوع کنید به _MotionRegionDetector)؛ پس پیام دیگر
+            # «کار نمی‌کند» نیست، بلکه «حالت جایگزین» را اعلام می‌کند.
+            msg = "⚠ مدل تشخیص شخص بارگذاری نشد؛ هشدار ورود به محدوده با «تشخیص حرکت» (حالت جایگزین) کار می‌کند"
             if self._detector_error:
                 msg += f" ({self._detector_error})"
             self.detector_warn_label.setText(msg)
             self.detector_warn_label.setToolTip(
-                "برای رفع این مشکل: مطمئن شوید کتابخانه‌ی ultralytics نصب است و فایل "
-                "وزن مدل (yolov8n.pt) در دسترس است (کنار برنامه یا با اتصال اینترنت "
-                "برای دانلود یک‌بار). اگر از نسخه‌ی exe پرتابل استفاده می‌کنید، بررسی "
-                "کنید مرحله‌ی دانلود/بسته‌بندی این فایل در بیلد گیت‌هاب موفق بوده است."
+                "برای فعال شدن تشخیص دقیق شخص (به‌جای تشخیص حرکت): مطمئن شوید "
+                "کتابخانه‌ی ultralytics نصب است و فایل وزن مدل (yolov8n.pt) در "
+                "دسترس است. اگر از نسخه‌ی exe استفاده می‌کنید، بررسی کنید مرحله‌ی "
+                "دانلود/بسته‌بندی این فایل در بیلد گیت‌هاب موفق بوده است."
             )
             self.detector_warn_label.setVisible(True)
         else:
@@ -2293,6 +2297,18 @@ class MainWindow(QMainWindow):
         self.sidebar_toggle_btn.clicked.connect(self.toggle_sidebar)
         grid_toolbar.addWidget(self.sidebar_toggle_btn)
 
+        # دکمه‌ی تمام‌صفحه (درخواست): با F11 یا این دکمه، برنامه تمام‌صفحه
+        # می‌شود تا اندازه‌ی اجزای برنامه با زدن دکمه‌ها عوض نشود و در حالت
+        # فول‌اسکرین ابعاد پایدار بماند.
+        self.fullscreen_btn = QPushButton("⛶ تمام‌صفحه")
+        self.fullscreen_btn.setCheckable(True)
+        self.fullscreen_btn.setToolTip("تمام‌صفحه (F11)")
+        self.fullscreen_btn.clicked.connect(self.toggle_fullscreen)
+        grid_toolbar.addWidget(self.fullscreen_btn)
+        _fs_shortcut = QShortcut(QKeySequence("F11"), self)
+        _fs_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        _fs_shortcut.activated.connect(self.toggle_fullscreen)
+
         grid_toolbar_label = QLabel("تعداد نمایش هم‌زمان دوربین‌ها:")
         grid_toolbar_label.setStyleSheet("font-size: 11px;")
         self.grid_size_combo = QComboBox()
@@ -2527,6 +2543,7 @@ class MainWindow(QMainWindow):
         # در همین‌جا (و هم‌زمان در «گزارش‌ها») ثبت می‌شوند - جدا از پنل
         # تشخیص چهره‌ی بالا تا با آن قاطی نشود.
         fire_panel_group = QGroupBox("🔥 هشدارهای حریق و دود")
+        self.fire_panel_group = fire_panel_group  # برای نمایش/مخفی‌شدن خودکار
         fire_panel_layout = QVBoxLayout()
         self.fire_panel_list = QListWidget()
         self.fire_panel_list.setIconSize(QSize(64, 64))
@@ -2600,6 +2617,21 @@ class MainWindow(QMainWindow):
         # عرضی که پنل چپ قبل از مخفی‌شدن داشت، برای بازگرداندن آن هنگام کلیک
         # مجدد روی دکمه‌ی sidebar نگه‌داشته می‌شود.
         self._left_panel_width = left_w
+        # قانون «پنل‌ها دیگر خراب نمی‌شوند» (درخواست صریح): اندازه‌ی پنل‌ها فقط
+        # با دو چیز عوض می‌شود — درگ دستی کاربر، یا فراخوانی صریح کد. برای این:
+        # ۱) هیچ پنلی با درگ کاملاً جمع نمی‌شود (setCollapsible=False)؛
+        # ۲) هر درگ دستی بلافاصله ذخیره می‌شود (splitterMoved)؛
+        # ۳) بعد از هر تغییر برنامه‌نویسی‌شده (مخفی/نمایش پنل، تمام‌صفحه و...)
+        #    اندازه‌های ذخیره‌شده‌ی کاربر برگردانده می‌شوند تا نسبت دلخواه
+        #    کاربر هیچ‌وقت «نپرد».
+        for _sp, _n in ((self.splitter, 3), (self.right_splitter, 2)):
+            _sp.setOpaqueResize(True)
+            for _i in range(_n):
+                _sp.setCollapsible(_i, False)
+        self._saved_main_sizes = list(self.splitter.sizes())
+        self._saved_right_sizes = list(self.right_splitter.sizes())
+        self.splitter.splitterMoved.connect(self._remember_splitter_sizes)
+        self.right_splitter.splitterMoved.connect(self._remember_splitter_sizes)
 
         # -------------------------------------------- صفحه‌ها + هدر بالای برنامه --
         # محتوای قبلی پنجره (پنل چپ + شبکه‌ی دوربین‌ها + پنل راست) حالا «صفحه‌ی
@@ -2665,21 +2697,98 @@ class MainWindow(QMainWindow):
         main_widget.setLayout(main_layout)
         self.setCentralWidget(main_widget)
         self.show_page("home")
+        # پنل «هشدارهای حریق و دود» فقط وقتی دیده می‌شود که حداقل یک دوربین
+        # تشخیص حریق فعال داشته باشد (وضعیت اولیه هنگام بالا آمدن برنامه).
+        self._refresh_fire_panel_visibility()
+
+    def _remember_splitter_sizes(self, *_args):
+        """ذخیره‌ی اندازه‌های فعلی هر دو splitter بعد از درگ دستی کاربر (و
+        بعد از هر تغییر برنامه‌نویسی‌شده). قانون: هیچ‌چیز دیگری حق ندارد این
+        نسبت‌ها را عوض کند."""
+        try:
+            self._saved_main_sizes = list(self.splitter.sizes())
+            self._saved_right_sizes = list(self.right_splitter.sizes())
+        except Exception:
+            pass
+
+    def _restore_splitter_sizes(self):
+        """برگرداندن آخرین اندازه‌های ذخیره‌شده‌ی کاربر روی هر دو splitter
+        (بعد از تغییر حالت پنجره، مخفی/نمایش پنل و...)."""
+        try:
+            if getattr(self, "_saved_main_sizes", None):
+                self.splitter.setSizes(self._saved_main_sizes)
+            if getattr(self, "_saved_right_sizes", None):
+                self.right_splitter.setSizes(self._saved_right_sizes)
+        except Exception:
+            pass
+
+    def toggle_fullscreen(self):
+        """رفع درخواست «با زدن دکمه‌ها اندازه‌ی اجزای برنامه عوض نشود؛
+        برنامه در حالت فول‌اسکرین ابعاد پایدار داشته باشد»: با دکمه‌ی هدر یا
+        F11 پنجره تمام‌صفحه می‌شود؛ در این حالت اندازه‌ی کلی برنامه ثابت است و
+        دکمه‌ها/تعویض صفحه نمی‌توانند آن را تغییر دهند. اندازه‌ی پنل‌ها هم
+        قبل و بعد از تغییر حالت، دقیقاً همانِ تنظیم‌شده‌ی کاربر برمی‌گردد
+        (قانون «نذار دیگه خراب بشه»)."""
+        if self.isFullScreen():
+            self.showMaximized()
+            self.fullscreen_btn.setChecked(False)
+        else:
+            self.showFullScreen()
+            self.fullscreen_btn.setChecked(True)
+        # Qt هنگام تغییر حالت پنجره ممکن است splitterها را دوباره بچیند؛
+        # اندازه‌های ذخیره‌شده‌ی کاربر را در تیک بعدی برمی‌گردانیم.
+        QTimer.singleShot(0, self._restore_splitter_sizes)
+
+    def _refresh_fire_panel_visibility(self):
+        """رفع درخواست: پنل «هشدارهای حریق و دود» در صفحه‌ی اصلی فقط وقتی
+        دیده می‌شود که حداقل یک دوربین «تشخیص حریق» فعال داشته باشد؛ با
+        فعال/غیرفعال شدن تیک حریق هر دوربین یا افزودن/حذف دوربین، پنل خودکار
+        ظاهر/مخفی می‌شود."""
+        try:
+            store = getattr(self, "camera_store", None)
+            cams = list(getattr(store, "cameras", None) or [])
+            any_fire = any(bool(c.get("fire_detection")) for c in cams)
+        except Exception:
+            any_fire = False
+        panel = getattr(self, "fire_panel_group", None)
+        if panel is None:
+            return
+        want_visible = bool(any_fire)
+        # نکته: isVisible() زنجیره‌ی والدها را هم چک می‌کند و قبل از
+        # show() شدن پنجره همیشه False است؛ برای مقایسه‌ی «وضعیتِ خواسته‌شده»
+        # باید پرچم صریح خودِ ویجت (isHidden) را خواند، وگرنه در startup
+        # هیچ‌وقت مخفی نمی‌شود.
+        if panel.isHidden() == (not want_visible):
+            return
+        if not want_visible:
+            # قبل از مخفی کردن، نسبت فعلی (با پنل حریق) را نگه می‌داریم تا
+            # موقع نمایش مجدد، همان نسبت برگردد نه یک نسبت به‌هم‌ریخته.
+            self._saved_right_sizes_with_fire = list(self.right_splitter.sizes())
+        panel.setVisible(want_visible)
+        if want_visible and getattr(self, "_saved_right_sizes_with_fire", None):
+            self.right_splitter.setSizes(self._saved_right_sizes_with_fire)
+        # بعد از مخفی/نمایش، نسبت جدید را به‌عنوان وضعیت ذخیره‌شده ثبت کن.
+        QTimer.singleShot(0, self._remember_splitter_sizes)
 
     def toggle_sidebar(self):
         """رفع درخواست: نمایش/مخفی‌کردن پنل کناری سمت چپ با کلیک روی دکمه‌ی
-        sidebar. وقتی پنل باز است با کلیک بسته می‌شود (عرض صفر) و وقتی بسته
-        است با کلیک، به آخرین عرضی که داشت باز می‌گردد."""
-        sizes = self.splitter.sizes()
-        if sizes[0] > 0:
-            self._left_panel_width = sizes[0]
-            sizes[1] += sizes[0]
-            sizes[0] = 0
+        sidebar. وقتی پنل باز است با کلیک کاملاً مخفی می‌شود و وقتی بسته است
+        با کلیک، به همان اندازه‌ی قبلی‌اش برمی‌گردد (QSplitter اندازه‌ی
+        قبل از مخفی‌شدن را خودش نگه می‌دارد).
+
+        نکته‌ی قانون «نذار دیگه خراب بشه»: چون پنل‌ها setCollapsible(False)
+        هستند، نمی‌توان با setSizes عرض را ۰ کرد (Qt به minimumSizeHint
+        کلمپ می‌کند)؛ پس مخفی‌سازی با hide/show انجام می‌شود که هم تمیزتر
+        است و هم اندازه‌ی قبلی را دقیق برمی‌گرداند."""
+        if self.left_widget.isHidden():
+            self.left_widget.show()
         else:
-            restore_w = getattr(self, "_left_panel_width", 200) or 200
-            sizes[1] = max(0, sizes[1] - restore_w)
-            sizes[0] = restore_w
-        self.splitter.setSizes(sizes)
+            self._left_panel_width = self.splitter.sizes()[0] or self._left_panel_width
+            self.left_widget.hide()
+        # قانون پنل‌ها: بعد از تغییر برنامه‌نویسی‌شده، وضعیت جدید ذخیره شود؛
+        # با singleShot تا بعد از اعمال layout توسط Qt صبر می‌کنیم، وگرنه
+        # اندازه‌ی «قبل از layout» (کهنه) ذخیره می‌شود.
+        QTimer.singleShot(0, self._remember_splitter_sizes)
 
     def _on_grid_size_changed(self, _index):
         count = self.grid_size_combo.currentData()
@@ -2832,18 +2941,18 @@ class MainWindow(QMainWindow):
             self.camera_store.update_camera(slot.cam["id"], regions=list(slot.regions))
         # رفع درخواست: قبلاً اگر تشخیص شخص (YOLOv8) بارگذاری نشده بود، کاربر
         # محدوده را تایید می‌کرد و فکر می‌کرد همه‌چیز فعال شده، در حالی که
-        # هشدار هرگز صادر نمی‌شد و هیچ توضیحی هم نمی‌دید. اگر همین الان
-        # می‌دانیم وضعیت تشخیص شخص False است، بلافاصله (نه فقط با برچسب
-        # کوچک زیر تصویر) به کاربر اطلاع می‌دهیم.
+        # هشدار هرگز صادر نمی‌شد و هیچ توضیحی هم نمی‌دید. حالا هشدار با فالبک
+        # «تشخیص حرکت» کار می‌کند؛ فقط به کاربر اطلاع می‌دهیم که حالت جایگزین
+        # فعال است (نه تشخیص دقیق شخص).
         if region is not None and slot._detector_available is False:
-            QMessageBox.warning(
-                self, "محدوده ذخیره شد، ولی هشدار فعلاً کار نمی‌کند",
-                "این محدوده ذخیره شد و روی تصویر دیده می‌شود، اما تشخیص شخص (YOLOv8) "
-                "روی این برنامه بارگذاری نشده، پس ورود کسی به این محدوده هنوز هشدار "
-                "(کادر قرمز/بوق) صادر نمی‌کند.\n\n"
-                "برای رفع: مطمئن شوید کتابخانه‌ی ultralytics نصب است و فایل وزن مدل "
-                "(yolov8n.pt) در دسترس است، یا نسخه‌ی exe را با بسته‌بندی درستِ این "
-                "فایل دوباره بسازید."
+            QMessageBox.information(
+                self, "محدوده ذخیره شد (حالت جایگزین)",
+                "این محدوده ذخیره شد و هشدار ورود به آن فعال است، اما چون مدل "
+                "تشخیص شخص (YOLOv8) روی این برنامه بارگذاری نشده، فعلاً با "
+                "«تشخیص حرکت» کار می‌کند (حساس‌تر به حرکت‌های غیرانسانی).\n\n"
+                "برای فعال شدن تشخیص دقیق شخص: مطمئن شوید کتابخانه‌ی ultralytics "
+                "نصب است و فایل وزن مدل (yolov8n.pt) در دسترس است، یا نسخه‌ی exe "
+                "را با بسته‌بندی درستِ این فایل دوباره بسازید."
             )
         self.draw_line_btn.blockSignals(True)
         self.draw_line_btn.setChecked(False)
@@ -3081,6 +3190,9 @@ class MainWindow(QMainWindow):
 
     def reload_camera_list(self):
         self.camera_list.clear()
+        # پنل «هشدارهای حریق و دود» فقط وقتی دیده می‌شود که حداقل یک دوربین
+        # تشخیص حریق فعال داشته باشد (با افزودن/حذف/ویرایش دوربین تازه می‌شود).
+        self._refresh_fire_panel_visibility()
 
         # NVRها به‌صورت گره‌های والد و کانال‌های آن‌ها به‌صورت فرزند نمایش داده می‌شوند.
         for nvr in self.camera_store.nvrs:
@@ -3867,6 +3979,9 @@ class MainWindow(QMainWindow):
                     slot.set_fire_detection(enabled)
         except Exception as e:
             print(f"خطا در اعمال تشخیص حریق روی دوربین باز: {e}")
+        # پنل «هشدارهای حریق و دود» صفحه‌ی اصلی فقط وقتی دیده می‌شود که
+        # حداقل یک دوربین تشخیص حریق فعال داشته باشد.
+        self._refresh_fire_panel_visibility()
 
     def _on_camera_plate_toggle(self, cam_id, enabled):
         """اعمال زنده‌ی تیک «پلاک‌خوان» صفحه‌ی پلاک‌خوان روی دوربینی که همین
@@ -4291,5 +4406,8 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     apply_theme(app)  # تم تیره‌ی سازگار با لوگوی ایمن آرا سورنا
     window = MainWindow()
-    window.show()
+    # رفع درخواست «اندازه‌ی برنامه در حالت فول‌اسکرین پایدار باشد»: برنامه
+    # از ابتدا ماکسیمایز باز می‌شود تا اندازه‌ی کلی آن ثابت بماند و زدن
+    # دکمه‌ها نتواند ابعاد پنجره را تغییر دهد؛ کاربر با F11 تمام‌صفحه می‌شود.
+    window.showMaximized()
     sys.exit(app.exec())

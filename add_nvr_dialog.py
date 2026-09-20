@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 )
 
 from nvr_scanner import NVRScanThread, BRAND_LABELS
+from scanner import NetworkScanThread
 
 
 class AddNVRDialog(QDialog):
@@ -17,6 +18,11 @@ class AddNVRDialog(QDialog):
         self.setWindowTitle("افزودن NVR")
         self.setMinimumWidth(420)
         self.scan_thread = None
+        self.net_scan_thread = None
+        # نتیجه‌ی اسکن موازی شبکه (لیست {"ip","ports"})؛ تا تمام نشده None است
+        # تا کانال‌های پیداشده با «در انتظار اسکن شبکه» نمایش داده شوند.
+        self._net_devices = None
+        self._net_scan_done = False
         self.found_channels = []  # [{"channel": int, "name": str, "path_or_url": str, "is_full_url": bool}]
 
         self.name_input = QLineEdit()
@@ -114,11 +120,22 @@ class AddNVRDialog(QDialog):
 
     # ------------------------------------------------------------- scan ---
 
+    @staticmethod
+    def _subnet_of(ip):
+        """ساب‌نت (سه اکتت اول) یک IPv4 معتبر؛ در غیر این صورت None."""
+        try:
+            parts = ip.strip().split(".")
+            if len(parts) == 4 and all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+                return ".".join(parts[:3])
+        except Exception:
+            pass
+        return None
+
     def start_scan(self):
         if self.scan_thread is not None and self.scan_thread.isRunning():
             # دکمه در حالت اسکن به «لغو جستجو» تبدیل شده؛ کلیک دوباره یعنی لغو.
             self.status_label.setText("در حال لغو جستجو...")
-            self.scan_thread.cancel()
+            self._cancel_all_scans()
             self.scan_btn.setEnabled(False)
             return
 
@@ -129,6 +146,8 @@ class AddNVRDialog(QDialog):
 
         self.channels_list.clear()
         self.found_channels = []
+        self._net_devices = None
+        self._net_scan_done = False
         self.scan_btn.setText("لغو جستجو")
         # فقط دکمه‌ی OK غیرفعال می‌شود (چون نتایج هنوز کامل نیست)؛ خود
         # QDialogButtonBox دیگر به‌صورت کامل غیرفعال نمی‌شود تا کاربر همیشه
@@ -136,7 +155,7 @@ class AddNVRDialog(QDialog):
         ok_btn = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
         if ok_btn:
             ok_btn.setEnabled(False)
-        self.status_label.setText("در حال جستجوی کانال‌های متصل به NVR...")
+        self.status_label.setText("در حال جستجوی کانال‌ها از وب NVR + اسکن شبکه...")
 
         onvif_port = self.onvif_port_input.text().strip()
         self.scan_thread = NVRScanThread(
@@ -154,6 +173,53 @@ class AddNVRDialog(QDialog):
         self.scan_thread.finished_signal.connect(self._on_scan_finished)
         self.scan_thread.failed_signal.connect(self._on_scan_failed)
         self.scan_thread.start()
+
+        # رفع درخواست: هم‌زمان با جستجوی کانال‌ها از وب NVR، کل ساب‌نت همان
+        # IP هم اسکن می‌شود؛ IPهایی که هم در کانال‌های NVR باشند و هم در
+        # اسکن شبکه دیده شوند، به‌عنوان «دوربین تأییدشده» علامت می‌خورند.
+        subnet = self._subnet_of(ip)
+        if subnet:
+            self.net_scan_thread = NetworkScanThread(subnet, self)
+            self.net_scan_thread.finished_signal.connect(self._on_network_scan_finished)
+            self.net_scan_thread.start()
+        else:
+            self._net_scan_done = True
+
+    def _cancel_all_scans(self):
+        if self.scan_thread is not None and self.scan_thread.isRunning():
+            self.scan_thread.cancel()
+        if self.net_scan_thread is not None and self.net_scan_thread.isRunning():
+            self.net_scan_thread.cancel()
+
+    def _net_ips(self):
+        try:
+            return {d.get("ip") for d in (self._net_devices or []) if d.get("ip")}
+        except Exception:
+            return set()
+
+    def _match_status(self, camera_ip):
+        """وضعیت تطبیق IP دوربین کانال با اسکن شبکه:
+        None=نامشخص (کانال آنالوگ/بدون IP)، 'pending'=اسکن شبکه هنوز تمام
+        نشده، 'matched'=در شبکه دیده شد، 'not_found'=در شبکه دیده نشد."""
+        if not camera_ip:
+            return None
+        if not self._net_scan_done:
+            return "pending"
+        return "matched" if camera_ip in self._net_ips() else "not_found"
+
+    def _channel_item_text(self, entry, default_name):
+        is_full_url = entry.get("is_full_url")
+        camera_ip = entry.get("camera_ip") or ""
+        source_label = "ONVIF" if is_full_url else entry.get("path_or_url", "")
+        if camera_ip:
+            source_label += f"  —  IP دوربین: {camera_ip}"
+            source_label += " (اتصال مستقیم)" if (entry.get("direct") or is_full_url) else " (از طریق NVR)"
+        status = self._match_status(camera_ip)
+        if status == "matched":
+            source_label += "  ✅ در شبکه تأیید شد"
+        elif status == "not_found":
+            source_label += "  ⚠ در اسکن شبکه دیده نشد"
+        return f"{default_name}   ({source_label})"
 
     def _on_channel_found(self, channel, name, path_or_url, camera_ip="", direct=False):
         is_full_url = path_or_url.startswith("rtsp://")
@@ -173,16 +239,40 @@ class AddNVRDialog(QDialog):
         self.found_channels.append(entry)
 
         default_name = f"{self.name_input.text().strip() or 'NVR'} - کانال {channel}"
-        source_label = "ONVIF" if is_full_url else path_or_url
-        if camera_ip:
-            source_label += f"  —  IP دوربین: {camera_ip}"
-            source_label += " (اتصال مستقیم)" if (direct or is_full_url) else " (از طریق NVR)"
-        item = QListWidgetItem(f"{default_name}   ({source_label})")
+        item = QListWidgetItem(self._channel_item_text(entry, default_name))
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
         item.setCheckState(Qt.CheckState.Checked)
         item.setData(Qt.ItemDataRole.UserRole, entry)
         item.setData(Qt.ItemDataRole.UserRole + 1, default_name)
         self.channels_list.addItem(item)
+
+    def _on_network_scan_finished(self, devices):
+        """اسکن موازی شبکه تمام شد؛ برچسب تطبیق همه‌ی کانال‌های پیداشده
+        (حتی آن‌هایی که قبل از پایان اسکن شبکه پیدا شده بودند) تازه می‌شود."""
+        self._net_devices = list(devices or [])
+        self._net_scan_done = True
+        self._refresh_channel_match_annotations()
+        # اگر جستجوی کانال‌ها زودتر تمام شده بود، وضعیت نهایی را اعلام کن.
+        if self.scan_thread is not None and not self.scan_thread.isRunning():
+            self._update_done_status()
+
+    def _refresh_channel_match_annotations(self):
+        for i in range(self.channels_list.count()):
+            item = self.channels_list.item(i)
+            entry = item.data(Qt.ItemDataRole.UserRole)
+            default_name = item.data(Qt.ItemDataRole.UserRole + 1)
+            if entry is None:
+                continue
+            item.setText(self._channel_item_text(entry, default_name or ""))
+
+    def _update_done_status(self):
+        count = len(self.found_channels)
+        matched = sum(1 for e in self.found_channels
+                      if self._match_status(e.get("camera_ip") or "") == "matched")
+        if count:
+            extra = f" ({matched} دوربین در شبکه تأیید شد)" if matched else ""
+            self.status_label.setText(
+                f"{count} کانال یافت شد{extra}. کانال‌های موردنظر برای افزودن را تیک بزنید.")
 
     def _on_scan_finished(self, count):
         self.scan_btn.setEnabled(True)
@@ -190,8 +280,11 @@ class AddNVRDialog(QDialog):
         ok_btn = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
         if ok_btn:
             ok_btn.setEnabled(True)
-        if count:
-            self.status_label.setText(f"{count} کانال یافت شد. کانال‌های موردنظر برای افزودن را تیک بزنید.")
+        if self._net_scan_done:
+            self._update_done_status()
+        else:
+            self.status_label.setText(
+                f"{count} کانال یافت شد؛ اسکن شبکه هنوز ادامه دارد...")
 
     def _on_scan_failed(self, msg):
         self.scan_btn.setEnabled(True)
@@ -199,6 +292,9 @@ class AddNVRDialog(QDialog):
         ok_btn = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
         if ok_btn:
             ok_btn.setEnabled(True)
+        # اگر اسکن شبکه هنوز ادامه دارد، لغوش کن تا دیالوگ در حالت تمیز بماند.
+        self._cancel_all_scans()
+        self._net_scan_done = True
         self.status_label.setText(msg)
         QMessageBox.warning(self, "نتیجه جستجو", msg)
 
@@ -206,10 +302,12 @@ class AddNVRDialog(QDialog):
         """در صورت فعال بودن اسکن، آن را لغو و منتظر پایان امن ترد می‌ماند.
         بدون این کار، اگر کاربر دیالوگ را حین اسکن ببندد، Qt هنگام تخریب یک
         QThread هنوز در حال اجرا کرش می‌کند - یکی از منابع بسته شدن ناگهانی
-        برنامه هنگام کار با NVR."""
-        if self.scan_thread is not None and self.scan_thread.isRunning():
-            self.scan_thread.cancel()
-            self.scan_thread.wait(3000)
+        برنامه هنگام کار با NVR. هر دو ترد (جستجوی کانال NVR و اسکن موازی
+        شبکه) لغو/منتظر می‌مانند."""
+        self._cancel_all_scans()
+        for thread in (self.scan_thread, self.net_scan_thread):
+            if thread is not None and thread.isRunning():
+                thread.wait(3000)
 
     def closeEvent(self, event):
         self._stop_scan_thread()

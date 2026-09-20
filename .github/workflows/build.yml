@@ -545,11 +545,9 @@ jobs:
         makensis /DVERSION=$env:APP_VERSION /DROOTDIR="$root" /DDISTDIR="$root\dist" /DGFXDIR="$root\installer\graphics" /DOUTDIR="$root\dist" installer/installer.nsi
         if ($LASTEXITCODE -ne 0) { throw "makensis failed with code $LASTEXITCODE" }
         Get-ChildItem dist/IAS-CMS-Setup-*.exe
-        # حذف‌کننده‌ی مستقل و کامل — داخل پکیج setup قرار می‌گیرد تا حتی اگر
-        # uninstall.exe داخل پوشه‌ی نصب گم شده باشد، حذف کامل ممکن باشد
-        makensis /DVERSION=$env:APP_VERSION /DUNINSTALLER_ONLY /DROOTDIR="$root" /DDISTDIR="$root\dist" /DGFXDIR="$root\installer\graphics" /DOUTDIR="$root\dist" installer/installer.nsi
-        if ($LASTEXITCODE -ne 0) { throw "makensis (uninstaller) failed with code $LASTEXITCODE" }
-        Get-ChildItem dist/IAS-CMS-Uninstall-*.exe
+        # دستور طه (2.0.6-beta): از این نسخه به بعد هیچ Uninstaller ساخته
+        # نمی‌شود — نه uninstall.exe داخل setup (از installer.nsi حذف شد)،
+        # نه حذف‌کننده‌ی مستقل IAS-CMS-Uninstall.
 
     - name: Fetch previous manifest (for diff update)
       if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
@@ -645,7 +643,6 @@ jobs:
         name: IAS-CMS-Setup-Windows
         path: |
           dist/IAS-CMS-Setup-*.exe
-          dist/IAS-CMS-Uninstall-*.exe
         if-no-files-found: warn
 
     - name: Upload update package artifact

@@ -27,18 +27,30 @@ def scan_single_host(ip: str):
         return {"ip": ip, "ports": open_ports}
     return None
 
-def scan_subnet(base_subnet: str = "192.168.1", max_threads: int = DEFAULT_SCAN_THREADS):
+def scan_subnet(base_subnet: str = "192.168.1", max_threads: int = DEFAULT_SCAN_THREADS,
+               cancel_check=None):
     """اسکن شبکه: تمام IPهای یک ساب‌نت را برای پورت‌های رایج دوربین/NVR بررسی
     می‌کند (554=RTSP, 80=HTTP/ONVIF, 8000/37777/8899=مدیریت NVRهای رایج).
     این اسکن فقط پورت‌های باز را گزارش می‌دهد و به‌تنهایی نمی‌تواند تشخیص دهد
     دستگاه یک دوربین تکی است یا یک NVR چندکاناله؛ این تصمیم در UI از کاربر
-    پرسیده می‌شود (رجوع کنید به MainWindow.on_scan_result_selected)."""
+    پرسیده می‌شود (رجوع کنید به MainWindow.on_scan_result_selected).
+    cancel_check: تابع اختیاری بدون آرگومان که اگر True برگرداند، اسکن
+    بی‌درنگ لغو می‌شود (برای بستن امن دیالوگ حین اسکن)."""
     active_devices = []
     ip_list = [f"{base_subnet}.{i}" for i in range(1, 255)]
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_threads) as executor:
-        results = executor.map(scan_single_host, ip_list)
-        for res in results:
+        future_to_ip = {executor.submit(scan_single_host, ip): ip for ip in ip_list}
+        for future in concurrent.futures.as_completed(future_to_ip):
+            if cancel_check is not None and cancel_check():
+                # لغو: فیوچرهای باقی‌مانده دیگر خوانده نمی‌شوند؛ تردهای
+                # کارگر فعلی تمام می‌شوند ولی نتیجه‌شان نادیده گرفته می‌شود.
+                executor.shutdown(wait=False, cancel_futures=True)
+                break
+            try:
+                res = future.result()
+            except Exception:
+                res = None
             if res:
                 active_devices.append(res)
 
@@ -61,7 +73,14 @@ class NetworkScanThread(QThread):
     def __init__(self, subnet, parent=None):
         super().__init__(parent)
         self.subnet = subnet
+        self._is_cancelled = False
+
+    def cancel(self):
+        """لغو اسکن (برای بستن امن دیالوگ حین اسکن، مثل دیالوگ افزودن NVR)."""
+        self._is_cancelled = True
 
     def run(self):
-        devices = scan_subnet(self.subnet)
-        self.finished_signal.emit(devices)
+        devices = scan_subnet(self.subnet,
+                              cancel_check=lambda: self._is_cancelled)
+        if not self._is_cancelled:
+            self.finished_signal.emit(devices)
