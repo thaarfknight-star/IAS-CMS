@@ -132,58 +132,78 @@ check("floor violations tab still exists",
 check("events tab still exists (region alerts logged there)",
       any("رویدادها" in t for t in rtab_texts), str(rtab_texts))
 
-# ---------- ۲) قفل اندازه‌ی کادرها ----------
+# ---------- ۲) کادرهای سیال: با فضای در دسترس بزرگ/کوچک می‌شوند ----------
 grid = win.camera_grid
-frozen = grid.slots[0].size()
-check("tiles have measured size", frozen.width() > 100 and frozen.height() > 60,
-      f"{frozen.width()}x{frozen.height()}")
-check("tile size locked in grid", grid._tile_size == (frozen.width(), frozen.height()),
-      str(grid._tile_size))
-check("all tiles same fixed size",
-      all(s.size() == frozen and s.minimumSize() == s.maximumSize() for s in grid.slots))
+s0 = grid.slots[0].size()
+check("tiles have real size", s0.width() > 100 and s0.height() > 60,
+      f"{s0.width()}x{s0.height()}")
+check("tiles are NOT fixed-size",
+      all(s.minimumSize() != s.maximumSize() for s in grid.slots),
+      str([(s.minimumSize().width(), s.maximumSize().width()) for s in grid.slots][:2]))
 
-# toggle_sidebar رفت‌وبرگشت نباید اندازه‌ی کادرها را عوض کند
-win.toggle_sidebar()
-app.processEvents()
-win.toggle_sidebar()
-app.processEvents()
-check("tile size frozen across sidebar toggle",
-      all(s.size() == frozen for s in grid.slots),
-      str([f"{s.size().width()}x{s.size().height()}" for s in grid.slots]))
+# کوچک شدن پنل تشخیص چهره (اسپلیتر) -> کادرها باید بزرگ‌تر شوند (درخواست ۱)
+splitter = win.splitter
+sizes = splitter.sizes()
+face_idx = splitter.indexOf(win.right_splitter)
+old_w = grid.slots[0].width()
+# پنل راست را حسابی کوچک می‌کنیم؛ فضای آزادشده باید به شبکه‌ی دوربین‌ها برسد
+new_sizes = list(sizes)
+freed = min(220, max(0, new_sizes[face_idx] - 40))
+new_sizes[face_idx] -= freed
+splitter.setSizes(new_sizes)
+app.processEvents(); app.processEvents()
+grown_w = grid.slots[0].width()
+check("tiles grow when face panel shrinks", grown_w > old_w,
+      f"{old_w} -> {grown_w} (freed {freed}px from panel)")
+# پنل نباید له شده باشد (صفر نشده باشد)
+check("face panel not crushed to zero", splitter.sizes()[face_idx] > 0,
+      str(splitter.sizes()))
 
-# toggle_fullscreen نباید اندازه‌ی کادرها را عوض کند
-win.toggle_fullscreen()
-app.processEvents()
-win.toggle_fullscreen()
-app.processEvents()
-check("tile size frozen across fullscreen toggle",
-      all(s.size() == frozen for s in grid.slots))
+# کوچک شدن پنجره -> کادرها کوچک می‌شوند و پنل راست له نمی‌شود (درخواست ۲)
+win.resize(1100, 700)
+app.processEvents(); app.processEvents()
+small_w = grid.slots[0].width()
+check("tiles shrink when window shrinks", small_w < grown_w,
+      f"{grown_w} -> {small_w}")
+check("face panel survives window shrink", splitter.sizes()[face_idx] > 0,
+      str(splitter.sizes()))
+# برگشت به اندازه‌ی اول -> کادرها دوباره بزرگ می‌شوند
+win.resize(1600, 900)
+splitter.setSizes(sizes)
+app.processEvents(); app.processEvents()
+back_w = grid.slots[0].width()
+check("tiles grow back on restore", back_w > small_w, f"{small_w} -> {back_w}")
 
 # تغییر تعداد نمایش -> اندازه عوض می‌شود
 grid.set_grid_size(16)
 app.processEvents()
 s16 = grid.slots[0].size()
-check("tile size changes on grid count change", s16 != frozen,
-      f"4x4={frozen.width()}x{frozen.height()} 16x16? -> {s16.width()}x{s16.height()}")
-check("16-grid tiles smaller", s16.width() < frozen.width())
+check("tile size changes on grid count change", s16.width() != s0.width(),
+      f"4-grid={s0.width()}x{s0.height()} 16-grid={s16.width()}x{s16.height()}")
+check("16-grid tiles smaller", s16.width() < s0.width())
 grid.set_grid_size(4)
 app.processEvents()
 s4 = grid.slots[0].size()
 check("4-grid tiles bigger than 16-grid", s4.width() > s16.width(),
       f"{s4.width()} vs {s16.width()}")
 
-# دابل‌کلیک (maximize) رفت‌وبرگشت -> اندازه‌ی قفل‌شده برمی‌گردد
-frozen4 = grid.slots[0].size()
+# دابل‌کلیک (maximize) رفت‌وبرگشت -> چیدمان شبکه‌ای برمی‌گردد
+base4 = grid.slots[0].size()
 grid.toggle_maximize(0)
 app.processEvents()
 big = grid.slots[0].size()
-check("maximized tile bigger", big.width() >= frozen4.width(),
-      f"{frozen4.width()} -> {big.width()}")
+check("maximized tile bigger", big.width() >= base4.width(),
+      f"{base4.width()} -> {big.width()}")
+check("others hidden when maximized",
+      all(not s.isVisible() for i, s in enumerate(grid.slots) if i != 0))
 grid.toggle_maximize(0)
 app.processEvents()
-check("un-maximize restores frozen tile size",
-      all(s.size() == frozen4 for s in grid.slots),
-      str(grid.slots[0].size()))
+check("un-maximize restores grid layout",
+      all(s.isVisible() for s in grid.slots))
+restored = grid.slots[0].size()
+check("un-maximize restores tile size (fluid)",
+      abs(restored.width() - base4.width()) <= 4,
+      f"{base4.width()} -> {restored.width()}")
 
 # ---------- ۳) رگرسیون باگ «سیستم محدوده کار نمی‌کند» ----------
 # هشدار ورود به محدوده باید مستقل از سلامت تشخیص چهره کار کند: اگر

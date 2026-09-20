@@ -124,19 +124,6 @@ GRID_LAYOUTS = {
     64: (8, 8),
 }
 
-# اندازه‌ی پیش‌فرض هر کادر دوربین (16:9) برای وقتی که هنوز اندازه‌ی واقعی
-# ناحیه‌ی نمایش معلوم نیست (قبل از اولین نمایش پنجره). با اولین نمایش واقعی،
-# اندازه از روی فضای در دسترس محاسبه و «قفل» می‌شود - رجوع کنید به
-# CameraGridWidget._apply_tile_sizes.
-GRID_TILE_FALLBACK = {
-    1: (960, 540),
-    4: (620, 349),
-    9: (440, 248),
-    16: (330, 186),
-    32: (260, 146),
-    64: (190, 107),
-}
-
 
 def _bgr_to_pixmap(frame):
     """تبدیل یک فریم OpenCV (BGR، numpy) به QPixmap برای نمایش در UI."""
@@ -1864,13 +1851,12 @@ class CameraGridWidget(QWidget):
         self.on_external_camera_drop = on_external_camera_drop
         self.slots = []
         self.selected_index = None
-        # رفع درخواست «عرض و ارتفاع هیچ‌کدام از کادر دوربین‌ها حق تغییر در
-        # هیچ شرایطی را ندارند»: اندازه‌ی هر کادر فقط وقتی تعیین/عوض می‌شود
-        # که «تعداد نمایش هم‌زمان» عوض شود (set_grid_size)؛ در بقیه‌ی
-        # شرایط (تغییر اندازه‌ی پنجره/پنل‌ها، تمام‌صفحه و ...) کادرها ثابت
-        # می‌مانند و اسکرول‌بار ظاهر می‌شود.
-        self._tile_size = None      # (w, h) قفل‌شده‌ی فعلی هر کادر
-        self._tile_measured = False  # True یعنی از روی فضای واقعی محاسبه شده
+        # کادرهای دوربین «سیال»‌اند: اندازه‌ی هر کادر از چیدمان (QGridLayout)
+        # می‌آید و فضای در دسترس شبکه را پر می‌کند؛ با کوچک/بزرگ شدن
+        # پنل‌ها یا پنجره، کادرها هم کوچک/بزرگ می‌شوند (رفتار استاندارد
+        # VMS). هیچ setFixedSizeای روی کادرها گذاشته نمی‌شود تا موقع
+        # تغییر اندازه‌ی پنجره، پنل کناری له نشود و اسکرول‌بار بی‌مورد
+        # ظاهر نشود.
         # رفع درخواست: با دابل‌کلیک روی یک خانه، آن خانه تمام فضای شبکه را
         # اشغال می‌کند (بزرگ‌نمایی) و بقیه‌ی خانه‌ها مخفی می‌شوند؛ برای بازگشت
         # به حالت قبل، موقعیت اصلی (ردیف/ستون) هر خانه را نگه می‌داریم.
@@ -1936,66 +1922,6 @@ class CameraGridWidget(QWidget):
         for cam, rtsp_url in previous[:total]:
             if rtsp_url:
                 self.assign_camera(cam, rtsp_url)
-
-        # قفل اندازه‌ی کادرها: فقط با تغییر تعداد نمایش، اندازه عوض می‌شود.
-        self._apply_tile_sizes()
-
-    # ------------------------------------------------------------- tile size --
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        # اولین نمایش واقعی: اگر اندازه‌ی کادرها هنوز از روی فضای واقعی
-        # محاسبه نشده (در __init__ فقط مقدار پیش‌فرض گذاشته شد)، یک‌بار بعد
-        # از اتمام چیدمان، از روی اندازه‌ی واقعی ناحیه‌ی نمایش محاسبه و قفل
-        # شود. بعد از آن، هیچ‌چیز (تغییر پنجره/پنل) آن را عوض نمی‌کند.
-        if not self._tile_measured:
-            QTimer.singleShot(0, self._measure_tiles_once)
-
-    def _measure_tiles_once(self):
-        if self._tile_measured or self._maximized_index is not None:
-            return
-        self._tile_measured = True
-        self._apply_tile_sizes()
-
-    def _scroll_viewport_size(self):
-        """اندازه‌ی ناحیه‌ی قابل‌مشاهده‌ی QScrollArea والد (یا (0,0))."""
-        try:
-            w = self.parentWidget()
-            while w is not None:
-                if isinstance(w, QScrollArea):
-                    vs = w.viewport().size()
-                    return vs.width(), vs.height()
-                w = w.parentWidget()
-        except Exception:
-            pass
-        return 0, 0
-
-    def _compute_tile_size(self):
-        """اندازه‌ی هر کادر برای چیدمان فعلی: پر کردن فضای در دسترس با
-        نسبت 16:9. فقط از set_grid_size (تغییر تعداد نمایش) صدا زده می‌شود."""
-        rows, cols = self._rows, self._cols
-        vw, vh = self._scroll_viewport_size()
-        if vw > 0 and vh > 0:
-            self._tile_measured = True
-            spacing = self._layout.spacing()
-            m = self._layout.contentsMargins()
-            avail_w = max(200, vw - m.left() - m.right() - spacing * (cols - 1))
-            avail_h = max(150, vh - m.top() - m.bottom() - spacing * (rows - 1))
-            tw = avail_w // max(1, cols)
-            th = avail_h // max(1, rows)
-            th = min(th, int(tw * 9 / 16))
-            tw = int(th * 16 / 9)
-            return max(120, tw), max(68, th)
-        return GRID_TILE_FALLBACK.get(rows * cols, (330, 186))
-
-    def _apply_tile_sizes(self):
-        """قفل کردن اندازه‌ی همه‌ی کادرها روی مقدار محاسبه‌شده."""
-        if self._maximized_index is not None:
-            return  # در حالت بزرگ‌نماییِ یک کادر، اندازه دست نمی‌خورد
-        w, h = self._compute_tile_size()
-        self._tile_size = (w, h)
-        for slot in self.slots:
-            slot.setFixedSize(w, h)
 
     def set_people_counting_all(self, enabled: bool):
         """رفع درخواست: یک گزینه‌ی واحد بالای تمام پنجره‌های دوربین‌ها که
@@ -2119,26 +2045,22 @@ class CameraGridWidget(QWidget):
         """رفع درخواست: با دابل‌کلیک روی تصویر یک دوربین، آن خانه بزرگ می‌شود
         (کل فضای شبکه را می‌گیرد و بقیه‌ی خانه‌ها مخفی می‌شوند) و با دابل‌کلیک
         دوباره روی همان خانه، به اندازه و چیدمان قبلی (شبکه‌ای) برمی‌گردد.
-        این یک ژست عمدی کاربر است و از قانون «قفل اندازه‌ی کادرها» مستثناست."""
+        کادرها سیال‌اند، پس بزرگ‌نمایی فقط یعنی اشغال کل خانه‌های شبکه؛
+        چیدمان (QGridLayout) خودش اندازه را پر می‌کند."""
         if self._maximized_index == idx:
-            # بازگشت به چیدمان عادی شبکه‌ای + اندازه‌ی قفل‌شده.
+            # بازگشت به چیدمان عادی شبکه‌ای.
             for i, s in enumerate(self.slots):
                 self._layout.removeWidget(s)
                 r, c = self._slot_positions[i]
                 self._layout.addWidget(s, r, c)
                 s.setVisible(True)
-                if self._tile_size:
-                    s.setFixedSize(*self._tile_size)
             self._maximized_index = None
         else:
-            vw, vh = self._scroll_viewport_size()
             for i, s in enumerate(self.slots):
                 self._layout.removeWidget(s)
                 if i == idx:
                     self._layout.addWidget(s, 0, 0, self._rows, self._cols)
                     s.setVisible(True)
-                    if vw > 0 and vh > 0:
-                        s.setFixedSize(max(120, vw - 8), max(68, vh - 8))
                 else:
                     s.setVisible(False)
             self._maximized_index = idx
