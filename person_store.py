@@ -29,6 +29,13 @@ from jalali import gregorian_to_jalali, jalali_now_str, jalali_date_str
 
 
 def _base_dir():
+    # پوشه‌ی یکتای دیتای کاربر (app_paths) تا نسخه‌ی نصب‌شده و portable
+    # دیتابیس جدا نسازند؛ در حالت توسعه مثل قبل کنار سورس.
+    try:
+        from app_paths import get_data_dir
+        return get_data_dir()
+    except Exception:
+        pass
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))

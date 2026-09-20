@@ -17,8 +17,15 @@ import json
 import os
 import threading
 
-_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "alarm_sound_config.json")
+def _config_dir():
+    try:
+        from app_paths import get_data_dir
+        return get_data_dir()
+    except Exception:
+        return os.path.dirname(os.path.abspath(__file__))
+
+
+_CONFIG_PATH = os.path.join(_config_dir(), "alarm_sound_config.json")
 _DEFAULT_WAV = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "assets", "fire_alarm.wav")
 

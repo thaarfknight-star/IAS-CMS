@@ -31,8 +31,16 @@ import sqlite3
 import time
 from contextlib import closing
 
-DB_PATH = "reports.db"
-IMAGES_DIR = "report_images"
+def _default_data_dir():
+    try:
+        from app_paths import get_data_dir
+        return get_data_dir()
+    except Exception:
+        return os.path.dirname(os.path.abspath(__file__))
+
+
+DB_PATH = os.path.join(_default_data_dir(), "reports.db")
+IMAGES_DIR = os.path.join(_default_data_dir(), "report_images")
 
 EVENT_TYPE_LABELS_FA = {
     "face_known": "چهره شناخته‌شده",

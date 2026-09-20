@@ -16,7 +16,19 @@ class CameraStore:
     زیر همان NVR گروه‌بندی شود.
     """
 
-    def __init__(self, path="cameras.json", nvr_path="nvrs.json"):
+    def __init__(self, path=None, nvr_path=None):
+        # مسیر پیش‌فرض: پوشه‌ی یکتای دیتای کاربر (app_paths) تا نسخه‌ی
+        # نصب‌شده و portable دیتابیس جدا نسازند.
+        if path is None or nvr_path is None:
+            try:
+                from app_paths import get_data_dir
+                _dd = get_data_dir()
+            except Exception:
+                _dd = "."
+            if path is None:
+                path = os.path.join(_dd, "cameras.json")
+            if nvr_path is None:
+                nvr_path = os.path.join(_dd, "nvrs.json")
         self.path = path
         self.nvr_path = nvr_path
         self.cameras = []

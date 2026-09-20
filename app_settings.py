@@ -7,8 +7,15 @@
 import json
 import os
 
-_SETTINGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "app_settings.json")
+def _settings_dir():
+    try:
+        from app_paths import get_data_dir
+        return get_data_dir()
+    except Exception:
+        return os.path.dirname(os.path.abspath(__file__))
+
+
+_SETTINGS_PATH = os.path.join(_settings_dir(), "app_settings.json")
 
 DEFAULTS = {
     "theme": "dark",      # dark | light | system

@@ -4278,6 +4278,13 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
+    # مهاجرت یک‌باره‌ی دیتای نسخه‌های قبلی (کنار exe) به پوشه‌ی یکتای دیتا؛
+    # باید قبل از ساخته‌شدن هر استوری (CameraStore و…) اجرا شود.
+    try:
+        from app_paths import migrate_legacy_data
+        migrate_legacy_data()
+    except Exception:
+        pass
     app = QApplication(sys.argv)
     apply_theme(app)  # تم تیره‌ی سازگار با لوگوی ایمن آرا سورنا
     window = MainWindow()

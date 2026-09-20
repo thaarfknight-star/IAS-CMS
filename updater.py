@@ -30,16 +30,22 @@ from pathlib import Path
 
 
 # ------------------------------------------------------------- ابزارها ---
+# (تک‌منبع حقیقت در app_paths.py؛ اینجا فقط re-export برای سازگاری)
+try:
+    from app_paths import is_frozen, get_install_dir as _get_install_dir_str
+except Exception:  # pragma: no cover
+    def is_frozen():
+        return getattr(sys, "frozen", False)
 
-def is_frozen():
-    return getattr(sys, "frozen", False)
+    def _get_install_dir_str():
+        if is_frozen():
+            return str(Path(sys.executable).resolve().parent)
+        return str(Path(__file__).resolve().parent)
 
 
 def get_install_dir():
     """پوشه‌ی نصب (کنار فایل اجرایی) یا ریشه‌ی مخزن در حالت توسعه."""
-    if is_frozen():
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent
+    return Path(_get_install_dir_str())
 
 
 def get_app_version():
@@ -378,17 +384,33 @@ class UpdateDialog(__import__("PyQt6.QtWidgets", fromlist=["QDialog"]).QDialog):
             spawn_ts = _time.time()
             creationflags = getattr(subprocess, "DETACHED_PROCESS", 0)
             creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            proc = subprocess.Popen(
-                [ps_exe, "-NoProfile", "-ExecutionPolicy", "Bypass",
-                 "-WindowStyle", "Hidden", "-File", str(ps1),
-                 "-InstallDir", str(install_dir),
-                 "-PendingDir", str(pending),
-                 "-ExeName", "CCTV_CMS"],
-                creationflags=creationflags,
-                close_fds=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            # stderr را به‌جای DEVNULL در فایل می‌ریزیم تا اگر powershell
+            # بلافاصله بسته شد، علت واقعی (parse error، execution policy و…)
+            # قابل‌مشاهده باشد — قبلاً نامرئی بود و فقط حدس می‌زدیم.
+            err_log = install_dir / "update_err.log"
+            try:
+                if err_log.is_file():
+                    err_log.unlink()
+            except Exception:
+                pass
+            _ef = open(err_log, "w", encoding="utf-8", errors="ignore")
+            try:
+                proc = subprocess.Popen(
+                    [ps_exe, "-NoProfile", "-ExecutionPolicy", "Bypass",
+                     "-WindowStyle", "Hidden", "-File", str(ps1),
+                     "-InstallDir", str(install_dir),
+                     "-PendingDir", str(pending),
+                     "-ExeName", "CCTV_CMS"],
+                    creationflags=creationflags,
+                    close_fds=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=_ef,
+                )
+            finally:
+                try:
+                    _ef.close()
+                except Exception:
+                    pass
         except Exception as e:
             shutil.rmtree(pending, ignore_errors=True)
             self.err_lbl.setText(f"⚠️ اجرای موتور آپدیت ممکن نشد:\n{e}")
@@ -424,12 +446,23 @@ class UpdateDialog(__import__("PyQt6.QtWidgets", fromlist=["QDialog"]).QDialog):
         from PyQt6.QtWidgets import QApplication
         import time as _time
         logf = install_dir / "update.log"
+        err_log = install_dir / "update_err.log"
         for _ in range(100):
             _time.sleep(0.1)
             QApplication.processEvents()
             if proc.poll() is not None:
-                return (False, "فرایند powershell بلافاصله بسته شد "
-                               "(احتمالاً خطا در اجرای updater.ps1).")
+                hint = ("فرایند powershell بلافاصله بسته شد "
+                        "(احتمالاً خطا در اجرای updater.ps1).")
+                try:
+                    if err_log.is_file():
+                        tail = err_log.read_text(
+                            encoding="utf-8",
+                            errors="ignore").strip().splitlines()[-8:]
+                        if tail:
+                            hint += "\n\nجزئیات خطا:\n" + "\n".join(tail)
+                except Exception:
+                    pass
+                return (False, hint)
             try:
                 if logf.is_file() and logf.stat().st_mtime >= spawn_ts - 1:
                     tail = logf.read_text(

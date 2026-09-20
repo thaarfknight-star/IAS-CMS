@@ -1,4 +1,4 @@
-# updater.ps1 — اعمال «فایل آپدیت» ایمن آرا سورنا
+﻿# updater.ps1 — اعمال «فایل آپدیت» ایمن آرا سورنا
 # این اسکریپت توسط خود برنامه (updater.py) بعد از خروج کامل برنامه اجرا می‌شود:
 #   powershell -ExecutionPolicy Bypass -WindowStyle Hidden -File updater.ps1 `
 #       -InstallDir "C:\...\IAS-CMS" -PendingDir "C:\...\IAS-CMS\pending_update" -ExeName "CCTV_CMS"

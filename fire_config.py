@@ -56,6 +56,11 @@ _SETTINGS_FILENAME = "fire_settings.json"
 
 def _settings_path():
     try:
+        from app_paths import get_data_dir
+        return os.path.join(get_data_dir(), _SETTINGS_FILENAME)
+    except Exception:
+        pass
+    try:
         base = os.path.dirname(os.path.abspath(__file__))
     except NameError:
         base = os.getcwd()

@@ -26,8 +26,15 @@ import time
 import urllib.request
 import urllib.error
 
-_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "building_fire_config.json")
+def _config_dir():
+    try:
+        from app_paths import get_data_dir
+        return get_data_dir()
+    except Exception:
+        return os.path.dirname(os.path.abspath(__file__))
+
+
+_CONFIG_PATH = os.path.join(_config_dir(), "building_fire_config.json")
 
 DEFAULT_CONFIG = {
     "enabled": False,

@@ -206,7 +206,19 @@ from jalali import gregorian_to_jalali, jalali_now_str, jalali_date_str
 # --------------------------------------------------------------------------
 
 def _default_base_dir():
-    """پوشه‌ی داده‌ی پلاک‌خوان: کنار فایل اجرایی (حالت portable) یا پوشه‌ی جاری."""
+    """پوشه‌ی داده‌ی پلاک‌خوان: پوشه‌ی یکتای دیتای کاربر (app_paths) تا نسخه‌ی
+    نصب‌شده و portable دیتابیس جدا نسازند؛ در حالت توسعه مثل قبل."""
+    try:
+        from app_paths import get_data_dir
+        d = os.path.join(get_data_dir(), "plate_data")
+        os.makedirs(d, exist_ok=True)
+        probe = os.path.join(d, ".write_probe")
+        with open(probe, "w") as f:
+            f.write("ok")
+        os.remove(probe)
+        return d
+    except Exception:
+        pass
     for base in (
         os.path.dirname(os.path.abspath(sys.argv[0])) if sys.argv and sys.argv[0] else "",
         os.getcwd(),

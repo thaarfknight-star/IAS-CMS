@@ -18,13 +18,27 @@ class FaceEngine:
 
     def __init__(
         self,
-        db_path="face_db.json",
-        faces_dir="faces",
-        unknown_faces_dir="unknown_faces",
+        db_path=None,
+        faces_dir=None,
+        unknown_faces_dir=None,
         tolerance=0.5,
         unknown_alert_cooldown=6.0,
         known_alert_cooldown=15.0,
     ):
+        # مسیر پیش‌فرض: پوشه‌ی یکتای دیتای کاربر (app_paths) تا نسخه‌ی
+        # نصب‌شده و portable دیتابیس جدا نسازند.
+        if db_path is None or faces_dir is None or unknown_faces_dir is None:
+            try:
+                from app_paths import get_data_dir
+                _dd = get_data_dir()
+            except Exception:
+                _dd = "."
+            if db_path is None:
+                db_path = os.path.join(_dd, "face_db.json")
+            if faces_dir is None:
+                faces_dir = os.path.join(_dd, "faces")
+            if unknown_faces_dir is None:
+                unknown_faces_dir = os.path.join(_dd, "unknown_faces")
         self.db_path = db_path
         self.faces_dir = faces_dir
         # رفع درخواست: چهره‌های شناسایی‌شده که در بانک چهره‌ها تعریف نشده‌اند
