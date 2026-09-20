@@ -124,6 +124,19 @@ GRID_LAYOUTS = {
     64: (8, 8),
 }
 
+# اندازه‌ی پیش‌فرض هر کادر دوربین (16:9) برای وقتی که هنوز اندازه‌ی واقعی
+# ناحیه‌ی نمایش معلوم نیست (قبل از اولین نمایش پنجره). با اولین نمایش واقعی،
+# اندازه از روی فضای در دسترس محاسبه و «قفل» می‌شود - رجوع کنید به
+# CameraGridWidget._apply_tile_sizes.
+GRID_TILE_FALLBACK = {
+    1: (960, 540),
+    4: (620, 349),
+    9: (440, 248),
+    16: (330, 186),
+    32: (260, 146),
+    64: (190, 107),
+}
+
 
 def _bgr_to_pixmap(frame):
     """تبدیل یک فریم OpenCV (BGR، numpy) به QPixmap برای نمایش در UI."""
@@ -238,12 +251,9 @@ class VideoDisplayLabel(QLabel):
         # نقطه‌ی کلیک‌شده تا زیر نشانگر ماوس.
         self._hover_norm = None
         # رفع درخواست: برخلاف خط فرضیِ قدیمی (که بعد از تایید دیگر روی
-        # تصویر دیده نمی‌شد)، محدوده‌های تایید‌شده با یک قاب نازک و برچسبِ
-        # شماره/نام‌شان روی تصویر نمایش داده می‌شوند - چون می‌توانند
-        # چندتایی و نام‌دار باشند و کاربر باید مرزشان را ببیند؛ اما طبق
-        # درخواست جدید، این نمایش پیش‌فرض «مخفی» است و فقط با دکمه‌ی
-        # «دیدن محدوده‌ها» (set_regions_visible) روشن می‌شود - تشخیص ورود
-        # و هشدار، مستقل از مخفی/نمایان بودن قاب، همیشه فعال است.
+        # تصویر دیده نمی‌شد)، محدوده‌های تایید‌شده همیشه با یک قاب نازک و
+        # برچسبِ شماره/نام‌شان روی تصویر نمایش داده می‌شوند - چون می‌توانند
+        # چندتایی و نام‌دار باشند و کاربر باید مرزشان را ببیند.
         self._confirmed_regions = []  # لیستی از دیکشنری {"number","name","points"}
         # محدوده‌ای که تازه بسته شده ولی هنوز کاربر نامش را تایید نکرده، یا
         # یک محدوده‌ی قبلاً تایید‌شده که همین الان برای ویرایش شکل/اندازه
@@ -263,10 +273,6 @@ class VideoDisplayLabel(QLabel):
         # کل فریم‌اند، کراپِ جاری (نرمالِ کل فریم: x0,y0,w,h) را از
         # CameraSlotWidget می‌گیریم تا نگاشت‌ها زوم‌محور شوند. None = کل فریم.
         self._zoom_crop_norm = None
-        # رفع درخواست «بعد رسم محدوده نباید قابل دیدن باشه»: نمایش قابِ
-        # محدوده‌های تایید‌شده با دکمه‌ی «دیدن محدوده‌ها» کنترل می‌شود؛
-        # پیش‌فرض مخفی. تشخیص ورود (هشدار) مستقل از این فلگ کار می‌کند.
-        self._regions_visible = False
         self.setMouseTracking(True)
 
     def set_draw_mode(self, enabled: bool):
@@ -279,11 +285,6 @@ class VideoDisplayLabel(QLabel):
     def set_zoom_crop_norm(self, crop):
         """کراپِ نمایشیِ جاری (x0, y0, w, h نرمالِ کل فریم) یا None برای کل فریم."""
         self._zoom_crop_norm = tuple(crop) if crop is not None else None
-        self.update()
-
-    def set_regions_visible(self, visible: bool):
-        """نمایش/مخفی‌کردن قابِ محدوده‌های تایید‌شده (پیش‌فرض: مخفی)."""
-        self._regions_visible = bool(visible)
         self.update()
 
     def set_pending_points_norm(self, points, editing_existing=False):
@@ -504,24 +505,22 @@ class VideoDisplayLabel(QLabel):
         super().paintEvent(event)
         painter = QPainter(self)
 
-        # محدوده‌های تایید‌شده - فقط وقتی دکمه‌ی «دیدن محدوده‌ها» فعال باشد با
-        # قاب آبی نازک و برچسب شماره/نام‌شان رسم می‌شوند؛ وگرنه مخفی‌اند ولی
-        # تشخیص ورود (هشدار) همچنان فعال است.
-        if self._regions_visible:
-            for region in self._confirmed_regions:
-                pts = self._region_polygon_widget(region)
-                if pts is None:
-                    continue
-                pen = QPen(QColor("#3498db"))
-                pen.setWidth(2)
-                painter.setPen(pen)
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawPolygon(QPolygonF(pts))
-                label = f"{region.get('number', '')}"
-                if region.get("name"):
-                    label += f" / {region['name']}"
-                painter.setPen(QPen(QColor("#ffffff")))
-                painter.drawText(pts[0] + QPointF(4, 14), label)
+        # محدوده‌های تایید‌شده همیشه با قاب آبی نازک و برچسب شماره/نام‌شان
+        # رسم می‌شوند.
+        for region in self._confirmed_regions:
+            pts = self._region_polygon_widget(region)
+            if pts is None:
+                continue
+            pen = QPen(QColor("#3498db"))
+            pen.setWidth(2)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPolygon(QPolygonF(pts))
+            label = f"{region.get('number', '')}"
+            if region.get("name"):
+                label += f" / {region['name']}"
+            painter.setPen(QPen(QColor("#ffffff")))
+            painter.drawText(pts[0] + QPointF(4, 14), label)
 
         # اولویت با «رسمِ در حال انجام» (نقاطی که همین الان کاربر دارد
         # کلیک می‌کند) است؛ اگر خالی بود، پیش‌نمایش محدوده‌ی تازه‌بسته‌شده
@@ -773,23 +772,11 @@ class CameraSlotWidget(QWidget):
         self.zoom_reset_btn.setStyleSheet(_zoom_style)
         self.zoom_reset_btn.setToolTip("بازنشانی بزرگ‌نمایی (نمایش کل فریم)")
         self.zoom_reset_btn.clicked.connect(lambda: self._reset_zoom())
-        # رفع درخواست «یه دکمه برای مدیریت محدوده به اسم دیدن محدوده‌ها»:
-        # محدوده‌های تایید‌شده پیش‌فرض مخفی‌اند (ولی هشدار ورود فعال است)؛
-        # این دکمه نمایش/مخفی‌کردن قابِ آن‌ها را روی تصویر همین دوربین
-        # تغییر می‌دهد.
-        self.view_regions_btn = QPushButton("👁")
-        self.view_regions_btn.setFixedSize(26, 18)
-        self.view_regions_btn.setStyleSheet(_zoom_style)
-        self.view_regions_btn.setToolTip("دیدن محدوده‌ها")
-        self.view_regions_btn.setCheckable(True)
-        self.view_regions_btn.setChecked(False)
-        self.view_regions_btn.toggled.connect(self._on_view_regions_toggled)
         header.addWidget(self.name_label, 1)
         header.addWidget(self.people_count_label)
         header.addWidget(self.zoom_in_btn)
         header.addWidget(self.zoom_out_btn)
         header.addWidget(self.zoom_reset_btn)
-        header.addWidget(self.view_regions_btn)
         header.addWidget(self.close_btn)
 
         self.status_label = QLabel("")
@@ -1039,8 +1026,7 @@ class CameraSlotWidget(QWidget):
         self._refresh_detector_warning()
         self.tripwire_changed.emit()
 
-    def _on_region_entered(self, region_id, number, name,
-                           face_person_id="", face_name=""):
+    def _on_region_entered(self, number, name):
         # رفع درخواست: با هر ورود، کادر قرمز می‌شود، آلارم صوتی پخش می‌شود
         # و پیام «ورود به محدوده شماره N / نام» زیر نام دوربین نمایش داده
         # می‌شود؛ تایمر با هر ورود تازه ریست می‌شود تا قرمزی/پیام حداقل چند
@@ -1051,16 +1037,10 @@ class CameraSlotWidget(QWidget):
         self.status_label.setText(f"⚠ ورود به محدوده {label}")
         _play_alarm_beep("zone")
         self._alarm_timer.start(4000)
-        # --- ثبت گزارش ورود + کنترل تردد محدوده‌ها ---
-        # افراد تعریف‌نشده: ورودشان همیشه «گزارش ورود به محدوده» ثبت می‌شود.
-        # افراد تعریف‌شده: قانون «محدوده‌های ممنوعه» (تکی/گروهی) بررسی می‌شود؛
-        # تخلف → ثبت تخلف + بوق تخلف، ورود مجاز → گزارش عادی ورود.
-        try:
-            if self._on_region_alert is not None and self.cam is not None:
-                self._on_region_alert(self.cam, region_id, number, name,
-                                      face_person_id or "", face_name or "")
-        except Exception:
-            pass
+        if self._on_region_alert is not None and self.cam is not None:
+            # رفع درخواست «گزارش‌ها روی NVR ضبط بشه»: کل cam پاس داده می‌شود
+            # تا nvr_id/channel هم در on_region_alert در دسترس باشد.
+            self._on_region_alert(self.cam, number, name)
 
     def _on_fire_event(self, kind: str, crop_frame, confidence: float):
         """رفع درخواست «سیستم تشخیص دود و اعلام حریق»: دقیقاً همان الگوی
@@ -1522,10 +1502,6 @@ class CameraSlotWidget(QWidget):
     def zoom_out(self):
         self._zoom_at((self._zoom_cx, self._zoom_cy), 1.0 / self._ZOOM_STEP)
 
-    def _on_view_regions_toggled(self, checked: bool):
-        """دکمه‌ی «دیدن محدوده‌ها»: نمایش/مخفی‌کردن قابِ محدوده‌های تایید‌شده."""
-        self.video_label.set_regions_visible(checked)
-
     def _refresh_zoom_buttons(self):
         has_cam = self.cam is not None
         drawing = self.is_draw_mode()
@@ -1888,6 +1864,13 @@ class CameraGridWidget(QWidget):
         self.on_external_camera_drop = on_external_camera_drop
         self.slots = []
         self.selected_index = None
+        # رفع درخواست «عرض و ارتفاع هیچ‌کدام از کادر دوربین‌ها حق تغییر در
+        # هیچ شرایطی را ندارند»: اندازه‌ی هر کادر فقط وقتی تعیین/عوض می‌شود
+        # که «تعداد نمایش هم‌زمان» عوض شود (set_grid_size)؛ در بقیه‌ی
+        # شرایط (تغییر اندازه‌ی پنجره/پنل‌ها، تمام‌صفحه و ...) کادرها ثابت
+        # می‌مانند و اسکرول‌بار ظاهر می‌شود.
+        self._tile_size = None      # (w, h) قفل‌شده‌ی فعلی هر کادر
+        self._tile_measured = False  # True یعنی از روی فضای واقعی محاسبه شده
         # رفع درخواست: با دابل‌کلیک روی یک خانه، آن خانه تمام فضای شبکه را
         # اشغال می‌کند (بزرگ‌نمایی) و بقیه‌ی خانه‌ها مخفی می‌شوند؛ برای بازگشت
         # به حالت قبل، موقعیت اصلی (ردیف/ستون) هر خانه را نگه می‌داریم.
@@ -1954,7 +1937,65 @@ class CameraGridWidget(QWidget):
             if rtsp_url:
                 self.assign_camera(cam, rtsp_url)
 
-    # ------------------------------------------------------ people count --
+        # قفل اندازه‌ی کادرها: فقط با تغییر تعداد نمایش، اندازه عوض می‌شود.
+        self._apply_tile_sizes()
+
+    # ------------------------------------------------------------- tile size --
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # اولین نمایش واقعی: اگر اندازه‌ی کادرها هنوز از روی فضای واقعی
+        # محاسبه نشده (در __init__ فقط مقدار پیش‌فرض گذاشته شد)، یک‌بار بعد
+        # از اتمام چیدمان، از روی اندازه‌ی واقعی ناحیه‌ی نمایش محاسبه و قفل
+        # شود. بعد از آن، هیچ‌چیز (تغییر پنجره/پنل) آن را عوض نمی‌کند.
+        if not self._tile_measured:
+            QTimer.singleShot(0, self._measure_tiles_once)
+
+    def _measure_tiles_once(self):
+        if self._tile_measured or self._maximized_index is not None:
+            return
+        self._tile_measured = True
+        self._apply_tile_sizes()
+
+    def _scroll_viewport_size(self):
+        """اندازه‌ی ناحیه‌ی قابل‌مشاهده‌ی QScrollArea والد (یا (0,0))."""
+        try:
+            w = self.parentWidget()
+            while w is not None:
+                if isinstance(w, QScrollArea):
+                    vs = w.viewport().size()
+                    return vs.width(), vs.height()
+                w = w.parentWidget()
+        except Exception:
+            pass
+        return 0, 0
+
+    def _compute_tile_size(self):
+        """اندازه‌ی هر کادر برای چیدمان فعلی: پر کردن فضای در دسترس با
+        نسبت 16:9. فقط از set_grid_size (تغییر تعداد نمایش) صدا زده می‌شود."""
+        rows, cols = self._rows, self._cols
+        vw, vh = self._scroll_viewport_size()
+        if vw > 0 and vh > 0:
+            self._tile_measured = True
+            spacing = self._layout.spacing()
+            m = self._layout.contentsMargins()
+            avail_w = max(200, vw - m.left() - m.right() - spacing * (cols - 1))
+            avail_h = max(150, vh - m.top() - m.bottom() - spacing * (rows - 1))
+            tw = avail_w // max(1, cols)
+            th = avail_h // max(1, rows)
+            th = min(th, int(tw * 9 / 16))
+            tw = int(th * 16 / 9)
+            return max(120, tw), max(68, th)
+        return GRID_TILE_FALLBACK.get(rows * cols, (330, 186))
+
+    def _apply_tile_sizes(self):
+        """قفل کردن اندازه‌ی همه‌ی کادرها روی مقدار محاسبه‌شده."""
+        if self._maximized_index is not None:
+            return  # در حالت بزرگ‌نماییِ یک کادر، اندازه دست نمی‌خورد
+        w, h = self._compute_tile_size()
+        self._tile_size = (w, h)
+        for slot in self.slots:
+            slot.setFixedSize(w, h)
 
     def set_people_counting_all(self, enabled: bool):
         """رفع درخواست: یک گزینه‌ی واحد بالای تمام پنجره‌های دوربین‌ها که
@@ -2077,21 +2118,27 @@ class CameraGridWidget(QWidget):
     def toggle_maximize(self, idx):
         """رفع درخواست: با دابل‌کلیک روی تصویر یک دوربین، آن خانه بزرگ می‌شود
         (کل فضای شبکه را می‌گیرد و بقیه‌ی خانه‌ها مخفی می‌شوند) و با دابل‌کلیک
-        دوباره روی همان خانه، به اندازه و چیدمان قبلی (شبکه‌ای) برمی‌گردد."""
+        دوباره روی همان خانه، به اندازه و چیدمان قبلی (شبکه‌ای) برمی‌گردد.
+        این یک ژست عمدی کاربر است و از قانون «قفل اندازه‌ی کادرها» مستثناست."""
         if self._maximized_index == idx:
-            # بازگشت به چیدمان عادی شبکه‌ای.
+            # بازگشت به چیدمان عادی شبکه‌ای + اندازه‌ی قفل‌شده.
             for i, s in enumerate(self.slots):
                 self._layout.removeWidget(s)
                 r, c = self._slot_positions[i]
                 self._layout.addWidget(s, r, c)
                 s.setVisible(True)
+                if self._tile_size:
+                    s.setFixedSize(*self._tile_size)
             self._maximized_index = None
         else:
+            vw, vh = self._scroll_viewport_size()
             for i, s in enumerate(self.slots):
                 self._layout.removeWidget(s)
                 if i == idx:
                     self._layout.addWidget(s, 0, 0, self._rows, self._cols)
                     s.setVisible(True)
+                    if vw > 0 and vh > 0:
+                        s.setFixedSize(max(120, vw - 8), max(68, vh - 8))
                 else:
                     s.setVisible(False)
             self._maximized_index = idx
@@ -2973,23 +3020,16 @@ class MainWindow(QMainWindow):
         dialog = ImageSettingsDialog(slot, self.camera_store, self)
         dialog.exec()
 
-    def on_region_alert(self, cam, region_id, number, name,
-                        face_person_id="", face_name=""):
+    def on_region_alert(self, cam, number, name):
         """رفع درخواست: با ورود شخصی به یکی از محدوده‌های هشدار هر دوربین
         (از CameraSlotWidget._on_region_entered)، یک ردیف متنی قرمز هم در
         پنل تشخیص چهره (سمت راست) ثبت می‌شود تا سابقه‌ی هشدارها هم در دسترس
         باشد. ``cam``: کل دیکشنری دوربین (نه فقط اسم) تا nvr_id/channel هم
-        برای لینک «پخش ویدیوی NVR» در دیالوگ گزارش‌ها ذخیره شود.
-        کنترل تردد محدوده‌ها: افراد تعریف‌نشده → همیشه «گزارش ورود به محدوده»
-        ثبت می‌شود؛ افراد تعریف‌شده → قانون «محدوده‌های ممنوعه» (تکی/گروهی)
-        بررسی و در صورت تخلف، «تخلف ورود به محدوده» ثبت و بوق تخلف پخش می‌شود.
-        """
+        برای لینک «پخش ویدیوی NVR» در دیالوگ گزارش‌ها ذخیره شود."""
         camera_name = cam.get("name", "")
-        camera_id = cam.get("id", "")
         timestamp = time.strftime("%H:%M:%S")
         label = f"شماره {number}" + (f" / {name}" if name else "")
-        who = f" — {face_name}" if face_name else ""
-        text = f"[{timestamp}] {camera_name}\n⚠ ورود به محدوده {label}{who}"
+        text = f"[{timestamp}] {camera_name}\n⚠ ورود به محدوده {label}"
         item = QListWidgetItem(text)
         item.setForeground(QColor("#e74c3c"))
         self.face_panel_list.insertItem(0, item)
@@ -2999,14 +3039,6 @@ class MainWindow(QMainWindow):
                                        nvr_id=cam.get("nvr_id"), channel=cam.get("channel"))
         while self.face_panel_list.count() > 300:
             self.face_panel_list.takeItem(self.face_panel_list.count() - 1)
-        # --- کنترل تردد محدوده‌ها (فقط افراد تعریف‌شده) ---
-        if face_person_id:
-            try:
-                self._check_person_region_access(
-                    face_person_id, face_name, camera_id, camera_name,
-                    region_id, number, name)
-            except Exception:
-                pass
 
     def on_fire_event(self, cam, kind: str, crop_frame, confidence: float):
         """رفع درخواست «سیستم تشخیص دود و اعلام حریق»: با هر تشخیص تصویری
@@ -4245,53 +4277,6 @@ class MainWindow(QMainWindow):
             page.set_detector_status("error", err)
             return
         page.set_detector_status("loading")
-
-    def _check_person_region_access(self, face_person_id, face_name,
-                                    cam_id, camera_name, region_id,
-                                    region_number, region_name,
-                                    snapshot_bgr=None):
-        """کنترل تردد محدوده‌ها: اگر شخص تعریف‌شده وارد محدوده‌ی ممنوعه‌اش
-        شد، تخلف ثبت و هشدار داده می‌شود. هیچ‌وقت نباید زنجیره‌ی هشدار ورود
-        را بشکند."""
-        from region_access import evaluate_region_access, region_key
-        if not region_id or not face_person_id:
-            return
-        allowed, _reason, _is_defined = evaluate_region_access(
-            face_person_id, cam_id, region_id, person_store,
-            face_engine=getattr(self, "face_engine", None))
-        if allowed:
-            return
-        # اسنپ‌شات: آخرین فریم خام دوربین (اگر در دسترس باشد)
-        if snapshot_bgr is None:
-            try:
-                for s in self.camera_grid.slots:
-                    if getattr(s, "cam", None) is not None and \
-                            s.cam.get("id") == cam_id:
-                        snapshot_bgr = getattr(s, "latest_raw_frame", None)
-                        break
-            except Exception:
-                snapshot_bgr = None
-        viol = person_store.record_region_violation(
-            face_person_id, face_person_id or "", face_name or "",
-            cam_id or "", camera_name or "", region_id,
-            region_number, region_name or "",
-            snapshot_bgr=snapshot_bgr)
-        if viol is None:
-            return  # داخل cooldown؛ قبلاً ثبت شده
-        # هشدار صوتی تخلف — کاملاً مستقل از صدای حریق و ورود به محدوده
-        # (تک‌بوق؛ آژیر ممتد آتش جداست و با تنظیم خودش کنترل می‌شود)
-        try:
-            _play_violation_beep()
-        except Exception:
-            pass
-        # به‌روزرسانی زنده‌ی تب تخلفات (اگر صفحه باز است)
-        try:
-            page = getattr(self, "person_page", None)
-            if page is not None and hasattr(page, "refresh_region_violations"):
-                page.refresh_region_violations()
-        except Exception:
-            pass
-
 
 
     # ------------------------------------------------------------- scan ---

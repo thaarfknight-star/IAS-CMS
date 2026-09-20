@@ -59,8 +59,6 @@ _DEFAULT_SETTINGS = {
     "floor_violation_sound": "1",
     # حداقل فاصله‌ی بین دو تخلف ثبت‌شده برای یک شخص در یک طبقه (دقیقه)
     "floor_violation_cooldown_min": "15",
-    # حداقل فاصله‌ی بین دو تخلف ثبت‌شده برای یک شخص در یک محدوده (دقیقه)
-    "region_violation_cooldown_min": "15",
 }
 
 
@@ -145,38 +143,6 @@ class PersonStore:
                     ON floor_violations(person_id, ts);
                 CREATE INDEX IF NOT EXISTS idx_viol_floor
                     ON floor_violations(floor_id, ts);
-                -- کنترل تردد محدوده‌ها: محدوده‌های ممنوعه‌ی هر شخص
-                -- (JSON لیست «camera_id:region_id»)
-                CREATE TABLE IF NOT EXISTS person_region_access (
-                    person_id TEXT PRIMARY KEY,
-                    denied_regions TEXT DEFAULT ''
-                );
-                -- کنترل تردد محدوده‌ها: محدوده‌های ممنوعه‌ی هر «گروه کاری»
-                -- (بانک چهره)؛ قانون تکی شخص نسبت به آن اولویت دارد.
-                CREATE TABLE IF NOT EXISTS work_group_region_access (
-                    work_group TEXT PRIMARY KEY,
-                    denied_regions TEXT DEFAULT ''
-                );
-                -- تخلفات ورود غیرمجاز به محدوده‌ها
-                CREATE TABLE IF NOT EXISTS region_violations (
-                    id TEXT PRIMARY KEY,
-                    ts REAL NOT NULL,
-                    person_id TEXT DEFAULT '',
-                    face_person_id TEXT DEFAULT '',
-                    face_name TEXT DEFAULT '',
-                    camera_id TEXT DEFAULT '',
-                    camera_name TEXT DEFAULT '',
-                    region_id TEXT DEFAULT '',
-                    region_number INTEGER DEFAULT 0,
-                    region_name TEXT DEFAULT '',
-                    snapshot_path TEXT DEFAULT '',
-                    acknowledged INTEGER DEFAULT 0,
-                    date_j TEXT DEFAULT ''
-                );
-                CREATE INDEX IF NOT EXISTS idx_rviol_person
-                    ON region_violations(person_id, ts);
-                CREATE INDEX IF NOT EXISTS idx_rviol_region
-                    ON region_violations(camera_id, region_id, ts);
             """)
             for k, v in _DEFAULT_SETTINGS.items():
                 self._conn.execute(
@@ -316,157 +282,7 @@ class PersonStore:
                 for r in rows]
 
     # -- کنترل تردد محدوده‌ها --
-    @staticmethod
-    def _parse_region_list(raw):
-        """رشته‌ی JSON → لیست «camera_id:region_id»؛ None یعنی قانونی نیست."""
-        import json as _json
-        if raw is None:
-            return None
-        try:
-            val = _json.loads(raw) if isinstance(raw, str) else raw
-        except Exception:
-            return None
-        if isinstance(val, list):
-            return [str(x) for x in val]
-        return None
 
-    @staticmethod
-    def _dump_region_list(val):
-        import json as _json
-        return _json.dumps(val, ensure_ascii=False)
-
-    def get_person_denied_regions(self, person_id):
-        """محدوده‌های ممنوعه‌ی یک شخص تعریف‌شده؛ None یعنی قانونی ثبت نشده
-        (آزاد). person_id همان face_person_id (هویت چهره در بانک چهره‌ها)."""
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT denied_regions FROM person_region_access WHERE person_id=?",
-                (person_id,)).fetchone()
-        if row is None:
-            return None
-        return self._parse_region_list(row["denied_regions"])
-
-    def set_person_denied_regions(self, person_id, regions):
-        """regions: لیست «camera_id:region_id»؛ None یعنی حذف قانون (آزاد)."""
-        with self._lock:
-            if regions is None:
-                self._conn.execute(
-                    "DELETE FROM person_region_access WHERE person_id=?",
-                    (person_id,))
-            else:
-                self._conn.execute(
-                    "INSERT OR REPLACE INTO person_region_access(person_id, denied_regions)"
-                    " VALUES(?, ?)",
-                    (person_id, self._dump_region_list(regions)))
-            self._conn.commit()
-
-    def get_work_group_denied_regions(self, work_group):
-        """محدوده‌های ممنوعه‌ی یک گروه کاری؛ None یعنی قانونی ثبت نشده."""
-        work_group = (work_group or "").strip()
-        if not work_group:
-            return None
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT denied_regions FROM work_group_region_access WHERE work_group=?",
-                (work_group,)).fetchone()
-        if row is None:
-            return None
-        return self._parse_region_list(row["denied_regions"])
-
-    def set_work_group_denied_regions(self, work_group, regions):
-        """regions: لیست «camera_id:region_id»؛ None یعنی حذف قانون."""
-        work_group = (work_group or "").strip()
-        if not work_group:
-            return
-        with self._lock:
-            if regions is None:
-                self._conn.execute(
-                    "DELETE FROM work_group_region_access WHERE work_group=?",
-                    (work_group,))
-            else:
-                self._conn.execute(
-                    "INSERT OR REPLACE INTO work_group_region_access(work_group, denied_regions)"
-                    " VALUES(?, ?)",
-                    (work_group, self._dump_region_list(regions)))
-            self._conn.commit()
-
-    def list_work_group_region_rules(self):
-        """لیست (work_group, denied_regions) قوانین ثبت‌شده‌ی گروه‌ها."""
-        with self._lock:
-            rows = self._conn.execute(
-                "SELECT work_group, denied_regions FROM work_group_region_access"
-                " ORDER BY work_group").fetchall()
-        return [(r["work_group"], self._parse_region_list(r["denied_regions"]))
-                for r in rows]
-
-    def record_region_violation(self, person_id, face_person_id, face_name,
-                                camera_id, camera_name, region_id,
-                                region_number, region_name,
-                                snapshot_bgr=None, snapshot_path=""):
-        """ثبت تخلف ورود غیرمجاز به محدوده (با cooldown). خروجی: dict تخلف یا
-        None اگر داخل پنجره‌ی cooldown تخلف مشابهی ثبت شده باشد."""
-        import time as _time, uuid as _uuid
-        now = _time.time()
-        try:
-            cooldown_min = float(self.get_setting("region_violation_cooldown_min", "15"))
-        except Exception:
-            cooldown_min = 15.0
-        with self._lock:
-            dup = self._conn.execute(
-                """SELECT id FROM region_violations
-                   WHERE person_id=? AND camera_id=? AND region_id=? AND ts > ?
-                   ORDER BY ts DESC LIMIT 1""",
-                (person_id, camera_id, region_id,
-                 now - cooldown_min * 60)).fetchone()
-            if dup:
-                return None
-            vid = _uuid.uuid4().hex[:12]
-            snap = snapshot_path or ""
-            if snapshot_bgr is not None and not snap:
-                try:
-                    snap = self._save_image(snapshot_bgr, f"rviol_{vid}", now)
-                except Exception:
-                    snap = ""
-            date_j = jalali_now_str(now)
-            self._conn.execute(
-                """INSERT INTO region_violations(id, ts, person_id, face_person_id,
-                   face_name, camera_id, camera_name, region_id, region_number,
-                   region_name, snapshot_path, acknowledged, date_j)
-                   VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)""",
-                (vid, now, person_id, face_person_id or "", face_name or "",
-                 camera_id or "", camera_name or "", region_id or "",
-                 int(region_number or 0), region_name or "", snap, date_j))
-            self._conn.commit()
-            return {"id": vid, "ts": now, "person_id": person_id,
-                    "face_person_id": face_person_id or "",
-                    "face_name": face_name or "", "camera_id": camera_id or "",
-                    "camera_name": camera_name or "", "region_id": region_id or "",
-                    "region_number": int(region_number or 0),
-                    "region_name": region_name or "", "snapshot_path": snap,
-                    "acknowledged": 0, "date_j": date_j}
-
-    def list_region_violations(self, limit=200, only_unacked=False):
-        with self._lock:
-            q = "SELECT * FROM region_violations"
-            if only_unacked:
-                q += " WHERE acknowledged=0"
-            q += " ORDER BY ts DESC LIMIT ?"
-            rows = self._conn.execute(q, (limit,)).fetchall()
-        return [dict(r) for r in rows]
-
-    def acknowledge_region_violation(self, viol_id):
-        with self._lock:
-            self._conn.execute(
-                "UPDATE region_violations SET acknowledged=1 WHERE id=?",
-                (viol_id,))
-            self._conn.commit()
-
-    def count_unacked_region_violations(self):
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT COUNT(*) c FROM region_violations WHERE acknowledged=0"
-            ).fetchone()
-        return int(row["c"]) if row else 0
 
     def get_person(self, person_id):
         """یک رکورد شخص (برای خواندن face_person_id و ...)."""
