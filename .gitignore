@@ -35,3 +35,6 @@ installer/files.nsi
 installer/graphics/*.bmp
 installer/graphics/*.png
 person_data/
+
+# کلید مبهم‌سازی توسعه‌ی credential_vault (فقط محیط توسعه؛ هرگز کامیت نشود)
+.vault_key

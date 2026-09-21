@@ -17,6 +17,7 @@ sqlite3 استاندارد + cv2 برای ذخیره‌ی تصویر) تا هم 
 
 import csv
 import difflib
+import json
 import os
 import sqlite3
 import sys
@@ -318,6 +319,71 @@ class PlateStore:
                     c.execute("UPDATE plates SET plate_type=? WHERE id=?",
                               (kind, r["id"]))
                 self._conn.commit()
+            # (2.0.15-beta) موتور قوانین جهت تردد پلاک‌خوان: وضعیت لحظه‌ای
+            # هر پلاک + لاگ عبورها با جهت/مسیر + تخلفات.
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS plate_states (
+                    plate_text TEXT PRIMARY KEY,
+                    state TEXT NOT NULL,
+                    last_event_id TEXT DEFAULT '',
+                    last_camera_id TEXT DEFAULT '',
+                    last_ts REAL,
+                    updated_at REAL
+                )
+            """)
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS plate_crossings (
+                    id TEXT PRIMARY KEY,
+                    ts REAL NOT NULL,
+                    date_g TEXT NOT NULL,
+                    time_g TEXT NOT NULL,
+                    date_j TEXT NOT NULL,
+                    plate_text TEXT NOT NULL,
+                    plate_display TEXT DEFAULT '',
+                    plate_id TEXT,
+                    owner_name TEXT DEFAULT '',
+                    camera_id TEXT DEFAULT '',
+                    camera_name TEXT DEFAULT '',
+                    lane_id TEXT DEFAULT '',
+                    crossing_type TEXT NOT NULL,
+                    travel TEXT DEFAULT '',
+                    event_id TEXT DEFAULT '',
+                    snapshot_path TEXT DEFAULT ''
+                )
+            """)
+            c.execute("CREATE INDEX IF NOT EXISTS idx_cross_plate ON plate_crossings(plate_text, ts)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_cross_ts ON plate_crossings(ts)")
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS plate_violations (
+                    id TEXT PRIMARY KEY,
+                    ts REAL NOT NULL,
+                    date_g TEXT NOT NULL,
+                    time_g TEXT NOT NULL,
+                    date_j TEXT NOT NULL,
+                    violation_type TEXT NOT NULL,
+                    plate_text TEXT NOT NULL,
+                    plate_display TEXT DEFAULT '',
+                    plate_id TEXT,
+                    owner_name TEXT DEFAULT '',
+                    camera_id TEXT DEFAULT '',
+                    camera_name TEXT DEFAULT '',
+                    lane_id TEXT DEFAULT '',
+                    detail TEXT DEFAULT '',
+                    crossing_id TEXT DEFAULT '',
+                    snapshot_path TEXT DEFAULT '',
+                    acknowledged INTEGER DEFAULT 0
+                )
+            """)
+            c.execute("CREATE INDEX IF NOT EXISTS idx_pviol_plate ON plate_violations(plate_text, ts)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_pviol_ts ON plate_violations(ts)")
+            # مهاجرت: لینک دوربین/مسیر روی رویدادهای عبور قدیمی
+            ev_cols = [r["name"] for r in
+                       c.execute("PRAGMA table_info(plate_events)").fetchall()]
+            if "camera_id" not in ev_cols:
+                c.execute("ALTER TABLE plate_events ADD COLUMN camera_id TEXT DEFAULT ''")
+            if "lane_id" not in ev_cols:
+                c.execute("ALTER TABLE plate_events ADD COLUMN lane_id TEXT DEFAULT ''")
+            self._conn.commit()
 
     # ------------------------------------------------------------- تنظیمات -
 
@@ -717,6 +783,213 @@ class PlateStore:
         except Exception:
             pass
         return removed
+
+    # --------------------------------------- موتور جهت تردد (2.0.15-beta) --
+
+    VIOLATION_LABELS = {
+        "exit_without_entry": "خروج بدون ورود ثبت‌شده",
+        "reentry_without_exit": "ورود مجدد بدون خروج قبلی",
+        "wrong_way": "تردد خلاف جهت مجاز مسیر",
+    }
+
+    CROSSING_LABELS = {"entry": "ورود", "exit": "خروج"}
+    TRAVEL_LABELS = {"going": "رفت", "return": "برگشت"}
+
+    def get_lanes(self):
+        """تعریف مسیرها: {lane_id: {"name":..., "allowed": "going"|"return"}}."""
+        try:
+            raw = self.get_setting("lanes", "")
+            lanes = json.loads(raw) if raw else {}
+            return lanes if isinstance(lanes, dict) else {}
+        except Exception:
+            return {}
+
+    def set_lanes(self, lanes):
+        self.set_setting("lanes", json.dumps(lanes or {}, ensure_ascii=False))
+
+    @property
+    def reentry_grace_seconds(self):
+        """پنجره‌ی اغماض برای خوانش تکراری هم‌جهت در یک گیت (پیش‌فرض ۱۲۰ ثانیه)."""
+        try:
+            return int(float(self.get_setting("reentry_grace_seconds", "120")))
+        except ValueError:
+            return 120
+
+    @reentry_grace_seconds.setter
+    def reentry_grace_seconds(self, v):
+        self.set_setting("reentry_grace_seconds", str(int(v)))
+
+    def get_plate_state(self, plate_text):
+        canonical = normalize_plate_text(plate_text)
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM plate_states WHERE plate_text=?",
+                (canonical,)).fetchone()
+            return dict(row) if row else None
+
+    def set_plate_state(self, plate_text, state, last_event_id="",
+                        last_camera_id="", last_ts=None):
+        canonical = normalize_plate_text(plate_text)
+        ts = last_ts if last_ts is not None else time.time()
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO plate_states(plate_text, state, last_event_id,
+                                            last_camera_id, last_ts, updated_at)
+                   VALUES(?,?,?,?,?,?)
+                   ON CONFLICT(plate_text) DO UPDATE SET
+                     state=excluded.state, last_event_id=excluded.last_event_id,
+                     last_camera_id=excluded.last_camera_id,
+                     last_ts=excluded.last_ts, updated_at=excluded.updated_at""",
+                (canonical, state, last_event_id or "", last_camera_id or "",
+                 ts, ts))
+            self._conn.commit()
+
+    def log_crossing(self, plate_text, camera_id="", camera_name="", lane_id="",
+                     crossing_type="entry", travel="", event_id="",
+                     snapshot_path="", plate_display="", plate_id=None,
+                     owner_name=""):
+        ts = time.time()
+        dt = datetime.fromtimestamp(ts)
+        cid = uuid.uuid4().hex
+        canonical = normalize_plate_text(plate_text)
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO plate_crossings(id, ts, date_g, time_g, date_j,
+                       plate_text, plate_display, plate_id, owner_name,
+                       camera_id, camera_name, lane_id, crossing_type, travel,
+                       event_id, snapshot_path)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (cid, ts, dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M:%S"),
+                 jalali_date_str(ts), canonical,
+                 plate_display or prettify_plate(canonical), plate_id,
+                 owner_name or "", camera_id or "", camera_name or "",
+                 lane_id or "", crossing_type, travel or "", event_id or "",
+                 snapshot_path or ""))
+            self._conn.commit()
+        return cid
+
+    def log_violation(self, violation_type, plate_text, camera_id="",
+                      camera_name="", lane_id="", detail="", crossing_id="",
+                      snapshot_path="", plate_display="", plate_id=None,
+                      owner_name=""):
+        """ثبت تخلف؛ خروجی id تخلف. ضدتکرار: اگر همین پلاک با همین نوع تخلف
+        در ۶۰ ثانیه‌ی اخیر ثبت شده باشد، همان id قبلی برمی‌گردد."""
+        canonical = normalize_plate_text(plate_text)
+        now = time.time()
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT id FROM plate_violations
+                   WHERE plate_text=? AND violation_type=? AND ts>?
+                   ORDER BY ts DESC LIMIT 1""",
+                (canonical, violation_type, now - 60)).fetchone()
+            if row:
+                return row["id"]
+        ts = now
+        dt = datetime.fromtimestamp(ts)
+        vid = uuid.uuid4().hex
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO plate_violations(id, ts, date_g, time_g, date_j,
+                       violation_type, plate_text, plate_display, plate_id,
+                       owner_name, camera_id, camera_name, lane_id, detail,
+                       crossing_id, snapshot_path, acknowledged)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? ,0)""",
+                (vid, ts, dt.strftime("%Y-%m-%d"), dt.strftime("%H:%M:%S"),
+                 jalali_date_str(ts), violation_type, canonical,
+                 plate_display or prettify_plate(canonical), plate_id,
+                 owner_name or "", camera_id or "", camera_name or "",
+                 lane_id or "", detail or "", crossing_id or "",
+                 snapshot_path or ""))
+            self._conn.commit()
+        return vid
+
+    def list_violations(self, date_from=None, date_to=None,
+                        violation_type=None, search="", acknowledged=None,
+                        limit=5000):
+        with self._lock:
+            conds, vals = [], []
+            if date_from:
+                conds.append("date_g>=?")
+                vals.append(date_from)
+            if date_to:
+                conds.append("date_g<=?")
+                vals.append(date_to)
+            if violation_type:
+                conds.append("violation_type=?")
+                vals.append(violation_type)
+            if acknowledged is True:
+                conds.append("acknowledged=1")
+            elif acknowledged is False:
+                conds.append("acknowledged=0")
+            if search:
+                s = f"%{search}%"
+                conds.append("(plate_text LIKE ? OR plate_display LIKE ? OR owner_name LIKE ? OR camera_name LIKE ?)")
+                vals += [s, s, s, s]
+            q = "SELECT * FROM plate_violations"
+            if conds:
+                q += " WHERE " + " AND ".join(conds)
+            q += " ORDER BY ts DESC LIMIT ?"
+            vals.append(int(limit))
+            return [dict(r) for r in self._conn.execute(q, vals).fetchall()]
+
+    def acknowledge_violation(self, vid, acknowledged=True):
+        with self._lock:
+            self._conn.execute(
+                "UPDATE plate_violations SET acknowledged=? WHERE id=?",
+                (1 if acknowledged else 0, vid))
+            self._conn.commit()
+
+    def count_unacked_violations(self):
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) c FROM plate_violations WHERE acknowledged=0").fetchone()
+            return int(row["c"]) if row else 0
+
+    def query_crossings(self, date_from=None, date_to=None, plate_text="",
+                        lane_id="", crossing_type="", limit=5000):
+        with self._lock:
+            conds, vals = [], []
+            if date_from:
+                conds.append("date_g>=?")
+                vals.append(date_from)
+            if date_to:
+                conds.append("date_g<=?")
+                vals.append(date_to)
+            if plate_text:
+                conds.append("plate_text=?")
+                vals.append(normalize_plate_text(plate_text))
+            if lane_id:
+                conds.append("lane_id=?")
+                vals.append(lane_id)
+            if crossing_type:
+                conds.append("crossing_type=?")
+                vals.append(crossing_type)
+            q = "SELECT * FROM plate_crossings"
+            if conds:
+                q += " WHERE " + " AND ".join(conds)
+            q += " ORDER BY ts DESC LIMIT ?"
+            vals.append(int(limit))
+            return [dict(r) for r in self._conn.execute(q, vals).fetchall()]
+
+    def export_violations_csv(self, path, date_from=None, date_to=None,
+                              violation_type=None, search=""):
+        rows = self.list_violations(date_from=date_from, date_to=date_to,
+                                    violation_type=violation_type,
+                                    search=search, limit=100000)
+        with open(path, "w", newline="", encoding="utf-8-sig") as f:
+            w = csv.writer(f)
+            w.writerow(["تاریخ شمسی", "ساعت", "نوع تخلف", "پلاک", "مالک",
+                        "دوربین", "مسیر", "جزئیات", "وضعیت بررسی"])
+            for r in rows:
+                w.writerow([
+                    r.get("date_j", ""), r.get("time_g", ""),
+                    self.VIOLATION_LABELS.get(r.get("violation_type"), ""),
+                    r.get("plate_display", ""), r.get("owner_name", ""),
+                    r.get("camera_name", ""), r.get("lane_id", ""),
+                    r.get("detail", ""),
+                    "بررسی‌شده" if r.get("acknowledged") else "بررسی‌نشده",
+                ])
+        return len(rows)
 
 
 # نمونه‌ی سراسری (مثل report_store): همه‌ی بخش‌های برنامه از همین استفاده می‌کنند.

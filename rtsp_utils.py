@@ -44,9 +44,17 @@ CAPTURE_OPEN_LOCK = threading.Lock()
 PROBE_FFMPEG_OPTS = "rtsp_transport;tcp|stimeout;3500000"
 
 # گزینه‌ی کم‌تاخیر برای پخش زنده‌ی طولانی‌مدت.
+# (2.0.15-beta - پایداری) reconnect و rw_timeout اضافه شد: اگر استریم وسط
+# پخش قطع شود، cap.read() قبلاً می‌توانست مدت طولانی بلاک بماند و با
+# stop()/wait() روی ترد GUI، کل برنامه «Not Responding» می‌شد. با این
+# گزینه‌ها، خواندنِ گیرکرده حداکثر بعد از ~۵ ثانیه خطا می‌دهد و ناظر اتصال
+# (رجوع کنید به CameraStreamThread در camera_stream.py) خودش reconnect
+# می‌کند.
 STREAM_FFMPEG_OPTS = (
     "rtsp_transport;tcp|stimeout;5000000|max_delay;300000|"
-    "buffer_size;102400|fflags;nobuffer|flags;low_delay"
+    "buffer_size;102400|fflags;nobuffer|flags;low_delay|"
+    "reconnect;1|reconnect_streamed;1|reconnect_delay_max;5|"
+    "rw_timeout;5000000"
 )
 
 # حداکثر تعداد تلاش برای خواندن یک فریم بعد از باز شدن اتصال، حین «کشف/تست»

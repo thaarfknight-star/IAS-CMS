@@ -3,6 +3,16 @@ import os
 import uuid
 
 from rtsp_utils import build_rtsp_url as _build_rtsp_url
+import credential_vault as _vault
+
+
+def _save_passwords_enabled():
+    """آیا ذخیره‌ی امن رمزها فعال است؟ (پیش‌فرض: بله - دستور کاربر 2.0.15)"""
+    try:
+        from app_settings import load_settings
+        return bool(load_settings().get("save_passwords", True))
+    except Exception:
+        return True
 
 
 class CameraStore:
@@ -51,56 +61,90 @@ class CameraStore:
                 print(f"خطا در بارگذاری لیست NVRها: {e}")
                 self.nvrs = []
 
-        # رفع درخواست امنیتی: رمزهای عبور دیگر روی دیسک ذخیره نمی‌شوند (به
-        # save/save_nvrs زیر رجوع کنید). اگر فایل‌های cameras.json/nvrs.json
-        # از نسخه‌ی قبلی برنامه (که رمز را مستقیم روی دیسک ذخیره می‌کرد) باقی
-        # مانده باشند، همین‌جا در همان اولین بارگذاری پاک و دوباره نوشته
-        # می‌شوند تا هیچ رمزی روی دیسک نماند.
-        if any(c.get("pass") for c in self.cameras):
-            for c in self.cameras:
-                c["pass"] = ""
-            self.save()
-        if any(n.get("pass") for n in self.nvrs):
-            for n in self.nvrs:
-                n["pass"] = ""
-            self.save_nvrs()
+        # (2.0.15-beta به دستور کاربر) رمزها دیگر متن ساده روی دیسک نیستند؛
+        # اگر ذخیره‌ی امن فعال باشد، pass_enc (رمزنگاری‌شده با DPAPI ویندوز)
+        # خوانده و در حافظه به pass تبدیل می‌شود تا پخش زنده بدون پرسیدن
+        # دوباره کار کند. اگر فایل‌های قدیمی رمز متن‌ساده داشته باشند، موقع
+        # ذخیره‌ی بعدی رمزنگاری می‌شوند (مهاجرت خودکار)؛ اگر ذخیره‌ی امن
+        # خاموش باشد، رفتار قبلی برمی‌گردد: رمز هرگز روی دیسک نمی‌ماند.
+        if _save_passwords_enabled():
+            for item in list(self.cameras) + list(self.nvrs):
+                blob = item.get("pass_enc")
+                if blob and not item.get("pass"):
+                    plain = _vault.decrypt(blob)
+                    if plain:
+                        item["pass"] = plain
+        else:
+            if any(c.get("pass") for c in self.cameras):
+                for c in self.cameras:
+                    c["pass"] = ""
+                self.save()
+            if any(n.get("pass") for n in self.nvrs):
+                for n in self.nvrs:
+                    n["pass"] = ""
+                self.save_nvrs()
 
     def save(self):
         try:
             with open(self.path, "w", encoding="utf-8") as f:
-                json.dump(self._without_passwords(self.cameras), f, ensure_ascii=False, indent=2)
+                json.dump(self._for_disk(self.cameras), f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"خطا در ذخیره لیست دوربین‌ها: {e}")
 
     def save_nvrs(self):
         try:
             with open(self.nvr_path, "w", encoding="utf-8") as f:
-                json.dump(self._without_passwords(self.nvrs), f, ensure_ascii=False, indent=2)
+                json.dump(self._for_disk(self.nvrs), f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"خطا در ذخیره لیست NVRها: {e}")
 
     @staticmethod
-    def _without_passwords(items):
-        """رفع درخواست امنیتی: رمز عبور هرگز روی دیسک نوشته نمی‌شود؛ فقط در
-        حافظه (در طول همان اجرای برنامه) نگه‌داشته می‌شود تا پخش زنده در همان
-        نشست کار کند. با هر بار اجرای مجدد برنامه، رمز خالی بارگذاری می‌شود و
-        دوباره از کاربر پرسیده می‌شود (به camera_store.clear_all_passwords و
-        main.py._ensure_password رجوع کنید)."""
+    def _for_disk(items):
+        """آماده‌سازی آیتم‌ها برای نوشتن روی دیسک.
+
+        - اگر ذخیره‌ی امن فعال باشد: رمز حافظه (pass) رمزنگاری و در pass_enc
+          نوشته می‌شود؛ pass متن‌ساده هرگز روی دیسک نمی‌رود.
+        - اگر خاموش باشد: رفتار قبلی (رمز کلاً ذخیره نمی‌شود).
+        """
         cleaned = []
         for item in items:
             item_copy = dict(item)
+            pwd = item_copy.pop("pass", "") or ""
+            if _save_passwords_enabled() and pwd:
+                blob = _vault.encrypt(pwd)
+                if blob:
+                    item_copy["pass_enc"] = blob
+                # اگر رمزنگاری شکست خورد، pass_enc قبلی (در صورت وجود) حفظ
+                # می‌شود تا رمز از دست نرود.
+            elif not _save_passwords_enabled():
+                item_copy.pop("pass_enc", None)
+            # pass متن‌ساده هرگز نوشته نمی‌شود
             item_copy["pass"] = ""
             cleaned.append(item_copy)
         return cleaned
 
+    @staticmethod
+    def _without_passwords(items):
+        """نگه‌داشته‌شده برای سازگاری؛ حالا _for_disk جایگزین آن است."""
+        return CameraStore._for_disk(items)
+
     def clear_all_passwords(self):
-        """تمام رمزهای عبور نگه‌داشته‌شده در حافظه (نه فایل - که اصلاً رمزی
-        در آن ذخیره نمی‌شود) را پاک می‌کند؛ هنگام خروج از برنامه صدا زده
-        می‌شود."""
+        """رمزهای حافظه (pass) را پاک می‌کند؛ pass_enc روی دیسک دست‌نخورده
+        می‌ماند تا در اجرای بعدی دوباره خوانده شود. هنگام خروج از برنامه
+        صدا زده می‌شود."""
         for cam in self.cameras:
             cam["pass"] = ""
         for nvr in self.nvrs:
             nvr["pass"] = ""
+
+    def wipe_saved_passwords(self):
+        """حذف کامل رمزهای ذخیره‌شده (از دیسک و حافظه)؛ وقتی کاربر ذخیره‌ی
+        امن را در تنظیمات خاموش می‌کند صدا زده می‌شود."""
+        for item in list(self.cameras) + list(self.nvrs):
+            item["pass"] = ""
+            item.pop("pass_enc", None)
+        self.save()
+        self.save_nvrs()
 
     # ------------------------------------------------------------ cameras --
 

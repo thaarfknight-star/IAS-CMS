@@ -20,6 +20,10 @@ _SETTINGS_PATH = os.path.join(_settings_dir(), "app_settings.json")
 DEFAULTS = {
     "theme": "dark",      # dark | light | system
     "language": "fa",     # fa | en
+    # (2.0.15-beta به دستور کاربر) ذخیره‌ی امن رمزهای دوربین/NVR بین اجراها
+    # با DPAPI ویندوز (credential_vault.py)؛ با False رفتار قبلی برمی‌گردد
+    # (رمز هرگز روی دیسک نمی‌ماند و هر بار پرسیده می‌شود).
+    "save_passwords": True,
 }
 
 

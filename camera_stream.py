@@ -552,6 +552,13 @@ class CameraStreamThread(QThread):
     # وضعیت در دسترس بودن مدل پلاک (فقط یک‌بار بعد از اولین تلاش واقعی) تا
     # در نبود مدل، روی تایل پیام روشن نمایش داده شود نه سکوت.
     plate_detector_status_signal = pyqtSignal(bool, str)  # (available, error_message)
+    # (2.0.15-beta - پایداری/بیت‌ریت تطبیقی) وضعیت اتصال استریم برای نمایش
+    # روی تایل: {"state": "connected"|"reconnecting"|"weak"|"down", ...}
+    stream_status_signal = pyqtSignal(object)
+    # آمار دوره‌ای پهنای باند/فریم‌ریت (هر ~۵ ثانیه): {"kbps", "fps",
+    # "state", "reconnects"} - مبنای «پایدار نگه‌داشتن تصویر بر اساس پهنای
+    # باند» است.
+    stream_stats_signal = pyqtSignal(object)
 
     # حداقل فاصله (ثانیه) بین دو رویداد پیاپی از یک نوع (آتش یا دود) برای
     # همان دوربین - جلوگیری از سیل رویداد/بنر/بیپ در هر دور تشخیص وقتی آتش/
@@ -654,6 +661,32 @@ class CameraStreamThread(QThread):
         self.person_tracking_enabled = False
         self._person_local_tracker = None
         self._person_draw_list = []  # [(box, label, shirt_color)] برای رسم روی تصویر
+
+        # --- (2.0.15-beta) ناظر پایداری اتصال + بیت‌ریت تطبیقی ---
+        # ریشه‌ی «Not Responding»: وقتی استریم می‌مرد، cap.read() می‌توانست
+        # مدت طولانی بلاک بماند و stop() با wait() روی ترد GUI کل برنامه را
+        # قفل می‌کرد. حالا: (۱) گزینه‌های FFmpeg (reconnect/rw_timeout در
+        # rtsp_utils) خواندنِ گیرکرده را fail-fast می‌کنند؛ (۲) اگر چند ثانیه
+        # فریم سالمی نرسد، _pump_frames تمام می‌شود و run() خودش با backoff
+        # نمایی reconnect می‌کند؛ (۳) آمار kbps/fps دوره‌ای محاسبه و بر اساس
+        # آن، فاصله‌ی پردازش تشخیص (process_every_n) تطبیقی کم/زیاد می‌شود تا
+        # تصویر روی شبکه‌ی ضعیف هم پایدار بماند.
+        self._base_process_every_n = max(1, process_every_n)
+        self._reconnects = 0
+        self._stream_state = "connecting"  # connecting|connected|reconnecting|weak|down
+        self._last_stats_emit_ts = 0.0
+        self._stats_window_start = 0.0
+        self._stats_frames = 0
+        self._stats_bytes = 0
+        self._last_stats = {"kbps": 0.0, "fps": 0.0, "state": "connecting",
+                            "reconnects": 0}
+
+    # آستانه‌های ناظر اتصال (ثانیه/تعداد)
+    _RECONNECT_AFTER_SEC = 8.0    # بدون فریم سالم -> تلاش مجدد اتصال
+    _MAX_FAIL_STREAK = 400        # خطای read پیاپی -> تلاش مجدد اتصال
+    _STATS_WINDOW_SEC = 5.0       # پنجره‌ی محاسبه‌ی kbps/fps
+    _WEAK_FPS = 6.0               # کمتر از این -> شبکه‌ی ضعیف
+    _OK_FPS = 10.0                # بیشتر از این -> برگشت به حالت عادی
 
     def set_fire_detection(self, enabled: bool):
         """روشن/خاموش کردن تشخیص تصویری آتش/دود برای این دوربین (از صفحه‌ی
@@ -1232,28 +1265,125 @@ class CameraStreamThread(QThread):
                 pass
 
     def run(self):
-        cap = open_capture(self.rtsp_url, FFMPEG_LOW_LATENCY_OPTS)
+        """حلقه‌ی ناظر اتصال (2.0.15-beta): هر نشست استریم در _pump_frames
+        اجرا می‌شود؛ اگر استریم بمیرد (چند ثانیه بدون فریم سالم)، نشست بسته
+        و با backoff نمایی دوباره وصل می‌شود. توقف درخواستی (stop) همیشه
+        سریع است چون cap.read() با rw_timeout fail-fast شده."""
+        backoff = 2.0
+        first_open = True
+        while self._run_flag:
+            cap = open_capture(self.rtsp_url, FFMPEG_LOW_LATENCY_OPTS)
+            try:
+                # بافر داخلی OpenCV/FFmpeg را به حداقل می‌رسانیم تا همیشه جدیدترین فریم نمایش داده شود.
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            except Exception:
+                pass
+
+            if not cap.isOpened():
+                if first_open:
+                    self.error_signal.emit("خطا در برقراری ارتباط با استریم RTSP.")
+                    first_open = False
+                self._set_stream_state("reconnecting")
+                ended_clean = False
+            else:
+                first_open = False
+                self.connected_signal.emit()
+                self._set_stream_state("connected")
+                ended_clean = self._pump_frames(cap)
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+
+            if ended_clean or not self._run_flag:
+                break
+            # اتصال قطع شد و توقف درخواستی نبود -> reconnect با backoff
+            self._reconnects += 1
+            self._set_stream_state("reconnecting")
+            _slept = 0.0
+            while self._run_flag and _slept < backoff:
+                self.msleep(200)
+                _slept += 0.2
+            backoff = min(backoff * 1.5, 30.0)
+        self._executor.shutdown(wait=False)
+
+    def _set_stream_state(self, state, **extra):
+        self._stream_state = state
         try:
-            # بافر داخلی OpenCV/FFmpeg را به حداقل می‌رسانیم تا همیشه جدیدترین فریم نمایش داده شود.
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            payload = {"state": state, "reconnects": self._reconnects}
+            payload.update(extra)
+            self.stream_status_signal.emit(payload)
         except Exception:
             pass
 
-        if not cap.isOpened():
-            self.error_signal.emit("خطا در برقراری ارتباط با استریم RTSP.")
-            self._executor.shutdown(wait=False)
+    def _note_frame(self, frame):
+        """ثبت آمار هر فریم سالم + تنظیم تطبیقی فاصله‌ی پردازش تشخیص بر
+        اساس پهنای باند واقعی (2.0.15-beta - دستور کاربر: «بر اساس پهنای
+        باند، تصویرها پایدار بمانند»)."""
+        import time as _time
+        now = _time.monotonic()
+        if self._stats_window_start <= 0:
+            self._stats_window_start = now
+        self._stats_frames += 1
+        try:
+            self._stats_bytes += int(frame.nbytes)
+        except Exception:
+            pass
+        elapsed = now - self._stats_window_start
+        if elapsed < self._STATS_WINDOW_SEC:
             return
+        fps = self._stats_frames / elapsed if elapsed > 0 else 0.0
+        # kbps تقریبی بر اساس بایت فریم‌های دیکدشده (نه بایت شبکه) - برای
+        # مقایسه‌ی نسبی و تشخیص «ضعیف/عادی» کافی است.
+        kbps = (self._stats_bytes * 8 / 1000) / elapsed if elapsed > 0 else 0.0
+        if fps < self._WEAK_FPS:
+            state = "weak"
+            # شبکه‌ی ضعیف: پردازش تشخیص را کم‌تواتر کن تا CPU آزاد و تصویر
+            # روان‌تر بماند (تشخیص روی ترد جدا هم کمتر صف می‌شود).
+            self.process_every_n = min(self._base_process_every_n * 4, 40)
+        elif fps >= self._OK_FPS:
+            state = "connected"
+            self.process_every_n = self._base_process_every_n
+        else:
+            state = self._stream_state if self._stream_state in ("connected", "weak") else "connected"
+        self._last_stats = {"kbps": round(kbps, 1), "fps": round(fps, 1),
+                            "state": state, "reconnects": self._reconnects}
+        self._set_stream_state(state, kbps=round(kbps, 1), fps=round(fps, 1))
+        try:
+            self.stream_stats_signal.emit(dict(self._last_stats))
+        except Exception:
+            pass
+        self._stats_window_start = now
+        self._stats_frames = 0
+        self._stats_bytes = 0
 
-        self.connected_signal.emit()
+    def _pump_frames(self, cap):
+        """یک نشست پخش: تا وقتی فریم سالم می‌رسد حلقه می‌زند.
+        خروجی True یعنی توقف درخواستی (stop)؛ False یعنی استریم مرد و باید
+        reconnect شود."""
+        import time as _time
         frame_counter = 0
+        fail_streak = 0
+        last_ok_ts = _time.monotonic()
+        self._stats_window_start = last_ok_ts
+        self._stats_frames = 0
+        self._stats_bytes = 0
 
         while self._run_flag:
             ret, frame = cap.read()
             if not ret or frame is None:
+                fail_streak += 1
+                now = _time.monotonic()
+                if (now - last_ok_ts > self._RECONNECT_AFTER_SEC
+                        or fail_streak > self._MAX_FAIL_STREAK):
+                    return False  # استریم مرده -> reconnect
                 self.msleep(10)
                 continue
 
             frame_counter += 1
+            fail_streak = 0
+            last_ok_ts = _time.monotonic()
+            self._note_frame(frame)
 
             # تشخیص چهره به‌صورت ناهمزمان (پس‌زمینه) ارسال می‌شود و حلقه‌ی خواندن فریم
             # را هرگز مسدود (block) نمی‌کند؛ در نتیجه تصویر همیشه با کمترین تاخیر ممکن
@@ -1356,9 +1486,15 @@ class CameraStreamThread(QThread):
             # frame خام (بدون باکس) هم ارسال می‌شود تا برای «ثبت چهره از تصویر زنده» استفاده شود.
             self.frame_ready.emit(display_frame, frame)
 
-        cap.release()
-        self._executor.shutdown(wait=False)
+        return True  # حلقه با _run_flag تمام شد -> توقف درخواستی
 
     def stop(self):
+        # (2.0.15-beta) wait با مهلت: با rw_timeout، cap.read() گیرکرده
+        # حداکثر چند ثانیه طول می‌کشد؛ wait بی‌نهایت قبلاً روی ترد GUI باعث
+        # «Not Responding» می‌شد.
         self._run_flag = False
-        self.wait()
+        try:
+            if not self.wait(8000):
+                print("هشدار: ترد استریم در ۸ ثانیه متوقف نشد.")
+        except Exception:
+            pass

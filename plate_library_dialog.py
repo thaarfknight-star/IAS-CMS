@@ -789,6 +789,8 @@ class PlateLibraryPage(QWidget):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_define_tab(), "📝 تعریف پلاک‌ها")
         self.tabs.addTab(self._build_report_tab(), "📋 گزارش عبور")
+        self.tabs.addTab(self._build_direction_tab(), "🛣 مسیرها و قوانین")
+        self.tabs.addTab(self._build_violations_tab(), "🚨 تخلفات تردد")
         layout.addWidget(self.tabs, 1)
 
         self.status_label = QLabel("")
@@ -844,6 +846,14 @@ class PlateLibraryPage(QWidget):
         self._reload_report_camera_combo()
         self.run_report_search()
         self._update_stats()
+        try:
+            self._reload_direction_tab()
+        except Exception:
+            pass
+        try:
+            self.run_violations_search()
+        except Exception:
+            pass
 
     # ============================================================ تب تعریف -
 
@@ -1191,6 +1201,331 @@ class PlateLibraryPage(QWidget):
         self.rep_summary = QLabel("")
         layout.addWidget(self.rep_summary)
         return tab
+
+    # ============================================= تب مسیرها و قوانین (2.0.15-beta) =
+
+    def _role_label(self, role):
+        return {"entry": "⬅ ورود", "exit": "➡ خروج"}.get(role or "", "— غیرپلاکی")
+
+    def _build_direction_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        hint = QLabel(
+            "برای هر دوربین پلاک‌خوان نقش ورود/خروج و مسیر آن را مشخص کنید:\n"
+            "• خروجِ بدون ورودِ ثبت‌شده → تخلف\n"
+            "• ورودِ مجددِ بدون خروجِ قبلی → تخلف\n"
+            "• تردد در مسیری که جهت مجاز دیگری دارد → تخلف خلاف جهت\n"
+            "قرارداد: دوربین «ورود» یعنی رفت، دوربین «خروج» یعنی برگشت.")
+        hint.setStyleSheet("color: #9e9e9e; font-size: 11px;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        # --- جدول نقش دوربین‌ها
+        self.dir_table = QTableWidget(0, 3)
+        self.dir_table.setHorizontalHeaderLabels(["دوربین", "نقش", "مسیر"])
+        self.dir_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch)
+        self.dir_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.dir_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows)
+        layout.addWidget(self.dir_table, 2)
+
+        # --- مدیریت مسیرها
+        lane_group = QGroupBox("🛣 تعریف مسیرها (هر مسیر فقط یک جهت مجاز دارد)")
+        lane_layout = QVBoxLayout()
+        lane_row = QHBoxLayout()
+        self.lanes_list = QListWidget()
+        self.lanes_list.setMaximumHeight(100)
+        lane_row.addWidget(self.lanes_list, 1)
+        lane_btn_col = QVBoxLayout()
+        lane_add_btn = QPushButton("➕ مسیر جدید")
+        lane_add_btn.clicked.connect(self._add_lane)
+        lane_btn_col.addWidget(lane_add_btn)
+        lane_del_btn = QPushButton("🗑 حذف مسیر")
+        lane_del_btn.clicked.connect(self._delete_lane)
+        lane_btn_col.addWidget(lane_del_btn)
+        lane_btn_col.addStretch(1)
+        lane_row.addLayout(lane_btn_col)
+        lane_layout.addLayout(lane_row)
+        grace_row = QHBoxLayout()
+        grace_row.addWidget(QLabel("پنجره‌ی اغماض ورود تکراری (ثانیه):"))
+        self.grace_spin = QSpinBox()
+        self.grace_spin.setRange(0, 600)
+        self.grace_spin.setValue(plate_store.reentry_grace_seconds)
+        self.grace_spin.setToolTip(
+            "اگر همان پلاک در این مدت دوباره در همان جهت دیده شود، "
+            "خوانش تکراری حساب می‌شود نه تخلف «ورود مجدد».")
+        self.grace_spin.valueChanged.connect(
+            lambda v: setattr(plate_store, "reentry_grace_seconds", int(v)))
+        grace_row.addWidget(self.grace_spin)
+        grace_row.addStretch(1)
+        lane_layout.addLayout(grace_row)
+        lane_group.setLayout(lane_layout)
+        layout.addWidget(lane_group, 1)
+        return tab
+
+    def _reload_direction_tab(self):
+        """جدول نقش دوربین‌ها + لیست مسیرها را تازه می‌کند."""
+        lanes = plate_store.get_lanes()
+        lane_items = [("", "— بدون مسیر —")]
+        for lid, lane in lanes.items():
+            nm = (lane or {}).get("name") or lid
+            lane_items.append((lid, nm))
+
+        self.dir_table.blockSignals(True)
+        self.dir_table.setRowCount(0)
+        cam_by_id = {}
+        for cam in self.camera_store.standalone_cameras():
+            cam_by_id[cam.get("id")] = cam
+        for nvr in self.camera_store.nvrs:
+            for cam in self.camera_store.cameras_for_nvr(nvr.get("id")):
+                cam_by_id[cam.get("id")] = cam
+        for cam_id, label in self._all_cameras():
+            cam = cam_by_id.get(cam_id, {})
+            r = self.dir_table.rowCount()
+            self.dir_table.insertRow(r)
+            name_item = QTableWidgetItem(label)
+            name_item.setData(Qt.ItemDataRole.UserRole, cam_id)
+            self.dir_table.setItem(r, 0, name_item)
+            # نقش
+            role_combo = QComboBox()
+            role_combo.addItem("— غیرپلاکی", "")
+            role_combo.addItem("⬅ ورود", "entry")
+            role_combo.addItem("➡ خروج", "exit")
+            role = cam.get("plate_role") or ""
+            idx = role_combo.findData(role)
+            if idx >= 0:
+                role_combo.setCurrentIndex(idx)
+            role_combo.currentIndexChanged.connect(
+                lambda _i, cid=cam_id, cb=role_combo: self._on_role_changed(cid, cb))
+            self.dir_table.setCellWidget(r, 1, role_combo)
+            # مسیر
+            lane_combo = QComboBox()
+            for lid, lname in lane_items:
+                lane_combo.addItem(lname, lid)
+            cl = cam.get("lane_id") or ""
+            li = lane_combo.findData(cl)
+            if li >= 0:
+                lane_combo.setCurrentIndex(li)
+            lane_combo.currentIndexChanged.connect(
+                lambda _i, cid=cam_id, cb=lane_combo: self._on_lane_changed(cid, cb))
+            self.dir_table.setCellWidget(r, 2, lane_combo)
+        self.dir_table.blockSignals(False)
+
+        # لیست مسیرها
+        self.lanes_list.blockSignals(True)
+        self.lanes_list.clear()
+        for lid, lane in lanes.items():
+            lane = lane or {}
+            allowed = lane.get("allowed", "")
+            dir_txt = {"going": "فقط رفت", "return": "فقط برگشت"}.get(
+                allowed, "تعریف‌نشده")
+            item = QListWidgetItem(f"{lane.get('name') or lid} — {dir_txt}")
+            item.setData(Qt.ItemDataRole.UserRole, lid)
+            self.lanes_list.addItem(item)
+        self.lanes_list.blockSignals(False)
+
+    def _on_role_changed(self, cam_id, combo):
+        role = combo.currentData() or ""
+        try:
+            self.camera_store.update_camera(cam_id, plate_role=role)
+        except Exception as e:
+            QMessageBox.warning(self, "خطا", f"ذخیره‌ی نقش دوربین ناموفق بود:\n{e}")
+
+    def _on_lane_changed(self, cam_id, combo):
+        lane_id = combo.currentData() or ""
+        try:
+            self.camera_store.update_camera(cam_id, lane_id=lane_id)
+        except Exception as e:
+            QMessageBox.warning(self, "خطا", f"ذخیره‌ی مسیر دوربین ناموفق بود:\n{e}")
+
+    def _add_lane(self):
+        lanes = plate_store.get_lanes()
+        lid = f"lane{len(lanes) + 1}"
+        k = 1
+        while f"lane{k}" in lanes:
+            k += 1
+        lid = f"lane{k}"
+        from PyQt6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(
+            self, "مسیر جدید", "نام مسیر (مثلاً مسیر ۱):", text=f"مسیر {k}")
+        if not ok:
+            return
+        allowed, ok2 = QInputDialog.getItem(
+            self, "جهت مجاز", "جهت مجاز این مسیر:",
+            ["فقط رفت", "فقط برگشت"], 0, False)
+        if not ok2:
+            return
+        lanes[lid] = {
+            "name": name.strip() or f"مسیر {k}",
+            "allowed": "going" if allowed == "فقط رفت" else "return",
+        }
+        plate_store.set_lanes(lanes)
+        self._reload_direction_tab()
+
+    def _delete_lane(self):
+        item = self.lanes_list.currentItem()
+        if item is None:
+            QMessageBox.information(self, "حذف مسیر",
+                                    "اول یک مسیر را از لیست انتخاب کنید.")
+            return
+        lid = item.data(Qt.ItemDataRole.UserRole)
+        lanes = plate_store.get_lanes()
+        lanes.pop(lid, None)
+        plate_store.set_lanes(lanes)
+        # دوربین‌هایی که این مسیر را داشتند، بدون مسیر شوند
+        try:
+            for cam in list(self.camera_store.standalone_cameras()):
+                if cam.get("lane_id") == lid:
+                    self.camera_store.update_camera(cam.get("id"), lane_id="")
+            for nvr in self.camera_store.nvrs:
+                for cam in self.camera_store.cameras_for_nvr(nvr.get("id")):
+                    if cam.get("lane_id") == lid:
+                        self.camera_store.update_camera(cam.get("id"), lane_id="")
+        except Exception:
+            pass
+        self._reload_direction_tab()
+
+    # ============================================= تب تخلفات تردد (2.0.15-beta) =
+
+    VIOLATION_COLUMNS = ["تاریخ", "ساعت", "نوع تخلف", "پلاک", "مالک",
+                         "دوربین", "مسیر", "جزئیات", "وضعیت"]
+
+    def _build_violations_tab(self):
+        tab = QWidget()
+        self.violations_tab = tab  # برای تشخیص «دیده شدن» در به‌روزرسانی زنده
+        layout = QVBoxLayout(tab)
+
+        frow = QHBoxLayout()
+        frow.addWidget(QLabel("از تاریخ:"))
+        self.viol_from = QDateEdit(calendarPopup=True)
+        self.viol_from.setDate(QDate.currentDate().addDays(-7))
+        self.viol_from.setDisplayFormat("yyyy/MM/dd")
+        frow.addWidget(self.viol_from)
+        frow.addWidget(QLabel("تا تاریخ:"))
+        self.viol_to = QDateEdit(calendarPopup=True)
+        self.viol_to.setDate(QDate.currentDate())
+        self.viol_to.setDisplayFormat("yyyy/MM/dd")
+        frow.addWidget(self.viol_to)
+        frow.addWidget(QLabel("نوع تخلف:"))
+        self.viol_type_combo = QComboBox()
+        self.viol_type_combo.addItem("همه", None)
+        for vt, lbl in plate_store.VIOLATION_LABELS.items():
+            self.viol_type_combo.addItem(lbl, vt)
+        frow.addWidget(self.viol_type_combo)
+        self.viol_unacked = QCheckBox("فقط بررسی‌نشده‌ها")
+        self.viol_unacked.setChecked(True)
+        frow.addWidget(self.viol_unacked)
+        frow.addWidget(QLabel("جست‌وجو:"))
+        self.viol_search = QLineEdit()
+        self.viol_search.setPlaceholderText("پلاک یا نام مالک...")
+        self.viol_search.returnPressed.connect(self.run_violations_search)
+        frow.addWidget(self.viol_search)
+        search_btn = QPushButton("🔍 اعمال")
+        search_btn.clicked.connect(self.run_violations_search)
+        frow.addWidget(search_btn)
+        layout.addLayout(frow)
+
+        self.violations_table = QTableWidget(0, len(self.VIOLATION_COLUMNS))
+        self.violations_table.setHorizontalHeaderLabels(self.VIOLATION_COLUMNS)
+        self.violations_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch)
+        self.violations_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers)
+        self.violations_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows)
+        layout.addWidget(self.violations_table, 1)
+
+        brow = QHBoxLayout()
+        ack_btn = QPushButton("✓ تأیید بررسی")
+        ack_btn.setToolTip("تخلف انتخاب‌شده به‌عنوان بررسی‌شده علامت می‌خورد")
+        ack_btn.clicked.connect(self.acknowledge_selected_violation)
+        brow.addWidget(ack_btn)
+        unack_btn = QPushButton("↩ برگرداندن به بررسی‌نشده")
+        unack_btn.clicked.connect(
+            lambda: self.acknowledge_selected_violation(False))
+        brow.addWidget(unack_btn)
+        brow.addStretch()
+        refresh_btn = QPushButton("🔄 به‌روزرسانی")
+        refresh_btn.clicked.connect(self.run_violations_search)
+        brow.addWidget(refresh_btn)
+        export_btn = QPushButton("📤 خروجی CSV")
+        export_btn.clicked.connect(self.export_violations_csv)
+        brow.addWidget(export_btn)
+        layout.addLayout(brow)
+
+        self.viol_summary = QLabel("")
+        layout.addWidget(self.viol_summary)
+        return tab
+
+    def run_violations_search(self):
+        try:
+            df = self.viol_from.date().toString("yyyy-MM-dd")
+            dt = self.viol_to.date().toString("yyyy-MM-dd")
+            vtype = self.viol_type_combo.currentData()
+            acked = False if self.viol_unacked.isChecked() else None
+            search = self.viol_search.text().strip()
+            rows = plate_store.list_violations(
+                date_from=df, date_to=dt, violation_type=vtype,
+                search=search, acknowledged=acked)
+        except Exception as e:
+            self.viol_summary.setText(f"خطا در جست‌وجو: {e}")
+            return
+        self.violations_table.setRowCount(0)
+        for r in rows:
+            row = self.violations_table.rowCount()
+            self.violations_table.insertRow(row)
+            vtype_lbl = plate_store.VIOLATION_LABELS.get(
+                r.get("violation_type"), "")
+            acked_lbl = "✅ بررسی‌شده" if r.get("acknowledged") else "⚠️ بررسی‌نشده"
+            vals = [r.get("date_j", ""), r.get("time_g", ""), vtype_lbl,
+                    r.get("plate_display", ""), r.get("owner_name", ""),
+                    r.get("camera_name", ""), r.get("lane_id", ""),
+                    r.get("detail", ""), acked_lbl]
+            for c, v in enumerate(vals):
+                item = QTableWidgetItem(str(v))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if c == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, r.get("id"))
+                self.violations_table.setItem(row, c, item)
+        unacked = sum(1 for r in rows if not r.get("acknowledged"))
+        self.viol_summary.setText(
+            f"مجموع: {len(rows)} تخلف — بررسی‌نشده: {unacked}")
+
+    def acknowledge_selected_violation(self, acknowledged=True):
+        row = self.violations_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "تأیید بررسی",
+                                    "اول یک تخلف را از جدول انتخاب کنید.")
+            return
+        item = self.violations_table.item(row, 0)
+        vid = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if not vid:
+            return
+        try:
+            plate_store.acknowledge_violation(vid, acknowledged)
+        except Exception as e:
+            QMessageBox.warning(self, "خطا", f"ثبت وضعیت ناموفق بود:\n{e}")
+            return
+        self.run_violations_search()
+
+    def export_violations_csv(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "خروجی CSV تخلفات", "plate_violations.csv",
+            "CSV (*.csv)")
+        if not path:
+            return
+        try:
+            n = plate_store.export_violations_csv(
+                path,
+                date_from=self.viol_from.date().toString("yyyy-MM-dd"),
+                date_to=self.viol_to.date().toString("yyyy-MM-dd"),
+                violation_type=self.viol_type_combo.currentData(),
+                search=self.viol_search.text().strip())
+            self.viol_summary.setText(f"✅ {n} تخلف در فایل CSV ذخیره شد.")
+        except Exception as e:
+            QMessageBox.warning(self, "خطا", f"خروجی CSV ناموفق بود:\n{e}")
 
     def _reload_report_camera_combo(self):
         current = self.rep_camera_combo.currentData()

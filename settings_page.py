@@ -53,14 +53,27 @@ STRINGS = {
     "sound_fire": {"fa": "🔥 آژیر حریق", "en": "🔥 Fire siren"},
     "sound_zone": {"fa": "🚧 بوق ورود به محدوده", "en": "🚧 Zone-entry beep"},
     "sound_violation": {"fa": "🚨 بوق تخلف طبقاتی", "en": "🚨 Floor-violation beep"},
+    # (2.0.15-beta به دستور کاربر) ذخیره‌ی امن رمزها
+    "sec_group": {"fa": "🔐 امنیت رمزها", "en": "🔐 Password security"},
+    "sec_save_pw": {"fa": "ذخیره‌ی امن رمزهای دوربین‌ها و NVRها",
+                    "en": "Securely save camera & NVR passwords"},
+    "sec_save_pw_hint": {"fa": "رمزها با DPAPI ویندوز رمزنگاری و روی همین سیستم ذخیره می‌شوند "
+                               "(فقط همین کاربر ویندوز می‌تواند بخواند)؛ با هر اجرای برنامه دیگر "
+                               "لازم نیست دوباره وارد شوند. با خاموش کردن، رمزهای ذخیره‌شده "
+                               "کاملاً پاک می‌شوند.",
+                         "en": "Passwords are encrypted with Windows DPAPI and stored on this PC "
+                               "(readable only by this Windows user); no need to re-enter them on "
+                               "each launch. Turning off wipes all saved passwords."},
 }
 
 
 class SettingsPage(QWidget):
-    def __init__(self, on_apply_update=None, on_sound_changed=None, parent=None):
+    def __init__(self, on_apply_update=None, on_sound_changed=None,
+                 on_password_save_changed=None, parent=None):
         super().__init__(parent)
         self.on_apply_update = on_apply_update
         self.on_sound_changed = on_sound_changed
+        self.on_password_save_changed = on_password_save_changed
         self._lang = app_settings.get_language()
         self._build()
 
@@ -146,6 +159,27 @@ class SettingsPage(QWidget):
             self._sound_checks[key] = chk
         sound_group.setLayout(slay)
         layout.addWidget(sound_group)
+
+        # --- امنیت رمزها (2.0.15-beta به دستور کاربر) ---
+        sec_group = QGroupBox(self._t("sec_group"))
+        seclay = QVBoxLayout()
+        self.savepw_check = QCheckBox(self._t("sec_save_pw"))
+        self.savepw_check.setChecked(bool(app_settings.load_settings().get("save_passwords", True)))
+        try:
+            import credential_vault as _vault
+            _backend = _vault.backend_label()
+        except Exception:
+            _backend = ""
+        if _backend:
+            self.savepw_check.setToolTip("موتور رمزنگاری: " + _backend)
+        self.savepw_check.toggled.connect(self._on_savepw_toggled)
+        seclay.addWidget(self.savepw_check)
+        sechint = QLabel(self._t("sec_save_pw_hint"))
+        sechint.setStyleSheet("color: #888; font-size: 11px;")
+        sechint.setWordWrap(True)
+        seclay.addWidget(sechint)
+        sec_group.setLayout(seclay)
+        layout.addWidget(sec_group)
 
         # --- آپدیت ---
         upd_group = QGroupBox(self._t("update_group"))
@@ -234,6 +268,16 @@ class SettingsPage(QWidget):
         if callable(self.on_sound_changed):
             try:
                 self.on_sound_changed()
+            except Exception:
+                pass
+
+    def _on_savepw_toggled(self, checked):
+        cfg = app_settings.load_settings()
+        cfg["save_passwords"] = bool(checked)
+        app_settings.save_settings(cfg)
+        if callable(self.on_password_save_changed):
+            try:
+                self.on_password_save_changed(bool(checked))
             except Exception:
                 pass
 

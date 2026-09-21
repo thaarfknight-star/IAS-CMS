@@ -734,6 +734,12 @@ class CameraSlotWidget(QWidget):
         # دارد (رجوع کنید به set_people_counting/on_people_count).
         self.people_count_label = QLabel("")
         self.people_count_label.setStyleSheet("color:#f39c12; font-size:11px; font-weight:bold;")
+        # (2.0.15-beta) نشانگر زنده‌ی وضعیت شبکه/پهنای باند این دوربین؛ از
+        # stream_stats_signal/stream_status_signal ترد استریم به‌روزرسانی
+        # می‌شود (رجوع کنید به on_stream_stats/on_stream_status).
+        self.net_label = QLabel("")
+        self.net_label.setStyleSheet("color:#2ecc71; font-size:11px; font-weight:bold;")
+        self.net_label.setToolTip("وضعیت شبکه و پهنای باند این دوربین")
         self.close_btn = QPushButton("✕")
         self.close_btn.setFixedSize(18, 18)
         self.close_btn.setStyleSheet("QPushButton{color:#ccc; background:#333; border-radius:9px; padding:0px;}")
@@ -761,6 +767,7 @@ class CameraSlotWidget(QWidget):
         self.zoom_reset_btn.clicked.connect(lambda: self._reset_zoom())
         header.addWidget(self.name_label, 1)
         header.addWidget(self.people_count_label)
+        header.addWidget(self.net_label)
         header.addWidget(self.zoom_in_btn)
         header.addWidget(self.zoom_out_btn)
         header.addWidget(self.zoom_reset_btn)
@@ -1278,6 +1285,9 @@ class CameraSlotWidget(QWidget):
         _conn(self.stream_thread.error_signal, self.on_error)
         _conn(self.stream_thread.connected_signal, self.on_connected)
         _conn(self.stream_thread.people_count_signal, self.on_people_count)
+        # (2.0.15-beta) وضعیت زنده‌ی شبکه/پهنای باند روی تایل
+        _conn(self.stream_thread.stream_stats_signal, self.on_stream_stats)
+        _conn(self.stream_thread.stream_status_signal, self.on_stream_status)
         _conn(self.stream_thread.region_entered, self._on_region_entered)
         _conn(self.stream_thread.person_detector_status_signal, self._on_detector_status)
         # رفع درخواست «سیستم تشخیص دود و اعلام حریق»
@@ -1362,6 +1372,45 @@ class CameraSlotWidget(QWidget):
 
     def on_error(self, msg):
         self.status_label.setText(f"خطا: {msg}")
+
+    # (2.0.15-beta) نمایش زنده‌ی وضعیت شبکه/پهنای باند روی تایل.
+    def on_stream_stats(self, stats):
+        try:
+            state = (stats or {}).get("state", "")
+            fps = (stats or {}).get("fps", 0)
+            kbps = (stats or {}).get("kbps", 0)
+            if state == "weak":
+                self.net_label.setText(f"📶 ضعیف ({fps} فریم/ث)")
+                self.net_label.setStyleSheet(
+                    "color:#f39c12; font-size:11px; font-weight:bold;")
+                self.net_label.setToolTip(
+                    f"پهنای باند کم (~{kbps} کیلوبیت/ثانیه)؛ پردازش تشخیص "
+                    f"خودکار کم‌تواتر شد تا تصویر پایدار بماند.")
+            elif state == "down":
+                self.net_label.setText("📶 قطع")
+                self.net_label.setStyleSheet(
+                    "color:#e74c3c; font-size:11px; font-weight:bold;")
+            else:
+                self.net_label.setText("📶")
+                self.net_label.setStyleSheet(
+                    "color:#2ecc71; font-size:11px; font-weight:bold;")
+                self.net_label.setToolTip(
+                    f"شبکه پایدار (~{kbps} کیلوبیت/ثانیه، {fps} فریم/ثانیه)")
+        except Exception:
+            pass
+
+    def on_stream_status(self, payload):
+        try:
+            state = (payload or {}).get("state", "")
+            if state == "reconnecting":
+                n = (payload or {}).get("reconnects", 0)
+                self.net_label.setText(f"📶 اتصال مجدد ({n})")
+                self.net_label.setStyleSheet(
+                    "color:#f39c12; font-size:11px; font-weight:bold;")
+                self.net_label.setToolTip(
+                    "اتصال استریم قطع شد؛ تلاش خودکار برای وصل مجدد…")
+        except Exception:
+            pass
 
     def _on_plate_detector_status(self, cam, available, msg):
         """نمایش یک‌باره‌ی هشدار وضعیت پلاک‌خوان (مثلاً «موتور OCR نصب نیست»)."""
@@ -2132,6 +2181,15 @@ class MainWindow(QMainWindow):
 
         self.face_engine = FaceEngine()
         self.camera_store = CameraStore()
+        # (2.0.15-beta) موتور قوانین جهت تردد پلاک‌خوان: نقش ورود/خروج هر
+        # دوربین + جهت مجاز هر مسیر؛ هوک در on_plate_event.
+        try:
+            from plate_direction import PlateDirectionEngine
+            self.plate_direction = PlateDirectionEngine(
+                plate_store, self.camera_store)
+            self.plate_direction.set_violation_beep(_play_violation_beep)
+        except Exception:
+            self.plate_direction = None
         # رفع درخواست «ردیابی اشخاص بین دوربین‌ها»: تطبیق‌دهنده‌ی سراسری
         # ظاهری (یک نمونه برای کل برنامه، در ترد اصلی) + نگاشت ردهای فعال
         # هر دوربین: (cam_id, local_id) -> {person_id, sighting_id, slot}
@@ -2254,6 +2312,14 @@ class MainWindow(QMainWindow):
         self.add_nvr_btn.clicked.connect(lambda: self.open_add_nvr_dialog())
         add_btn_row.addWidget(self.add_camera_btn)
         add_btn_row.addWidget(self.add_nvr_btn)
+        # (2.0.15-beta به دستور کاربر) اسکن پهنای باند/پایداری شبکه‌ی
+        # دوربین‌ها؛ نتیجه (خوب/متوسط/ضعیف/قطع) کنار هر دوربین نشان داده
+        # می‌شود و استریم‌ها بر اساس آن تطبیقی پایدار می‌مانند.
+        self.net_probe_btn = QPushButton("📶 تست پایداری شبکه")
+        self.net_probe_btn.setToolTip(
+            "اسکن پهنای باند و تاخیر شبکه‌ی همه‌ی دوربین‌ها (چند ثانیه طول می‌کشد)")
+        self.net_probe_btn.clicked.connect(self._on_network_probe_clicked)
+        add_btn_row.addWidget(self.net_probe_btn)
 
         # دوربین‌های متصل به یک NVR به‌صورت زیرمجموعه‌ی همان NVR نمایش داده می‌شوند.
         self.camera_list = CameraTreeWidget()
@@ -2645,7 +2711,8 @@ class MainWindow(QMainWindow):
         # و «اعمال آپدیت» (از هدر به اینجا منتقل شد).
         self.settings_page = SettingsPage(
             on_apply_update=self._on_apply_update,
-            on_sound_changed=self._on_alarm_sound_changed)
+            on_sound_changed=self._on_alarm_sound_changed,
+            on_password_save_changed=self._on_password_save_changed)
         self.pages.addWidget(self.settings_page)
 
         main_layout.addWidget(self._build_header())
@@ -2657,6 +2724,21 @@ class MainWindow(QMainWindow):
         # پنل «هشدارهای حریق و دود» فقط وقتی دیده می‌شود که حداقل یک دوربین
         # تشخیص حریق فعال داشته باشد (وضعیت اولیه هنگام بالا آمدن برنامه).
         self._refresh_fire_panel_visibility()
+
+    def _on_password_save_changed(self, enabled: bool):
+        """(2.0.15-beta) وقتی کاربر ذخیره‌ی امن رمزها را در تنظیمات عوض می‌کند:
+        - خاموش -> رمزهای ذخیره‌شده (دیسک + حافظه) کاملاً پاک می‌شوند و از
+          این به بعد مثل قبل، رمز هرگز روی دیسک نمی‌ماند.
+        - روشن -> رمزهایی که الان در حافظه‌اند بلافاصله رمزنگاری و ذخیره
+          می‌شوند تا در اجرای بعدی پرسیده نشوند."""
+        try:
+            if not enabled:
+                self.camera_store.wipe_saved_passwords()
+            else:
+                self.camera_store.save()
+                self.camera_store.save_nvrs()
+        except Exception:
+            pass
 
     def _refresh_fire_panel_visibility(self):
         """رفع درخواست: پنل «هشدارهای حریق و دود» در صفحه‌ی اصلی فقط وقتی
@@ -3094,6 +3176,75 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------- camera list ---
 
+        # (2.0.15-beta) نشان پایداری شبکه روی هر دوربین (از آخرین اسکن)
+    def _net_badge(self, cam):
+        q = (cam or {}).get("net_quality", "")
+        kbps = (cam or {}).get("net_kbps")
+        rtt = (cam or {}).get("net_rtt_ms")
+        if not q:
+            return "", None
+        icon = {"خوب": "📶", "متوسط": "📶", "ضعیف": "⚠️", "قطع": "⛔",
+                "نامشخص": "❓"}.get(q, "📶")
+        color = {"خوب": "#2ecc71", "متوسط": "#f1c40f", "ضعیف": "#e67e22",
+                 "قطع": "#e74c3c", "نامشخص": "#95a5a6"}.get(q)
+        tip = "آخرین اسکن شبکه: %s" % q
+        if isinstance(kbps, (int, float)):
+            tip += f" (~{kbps:.0f} کیلوبیت/ثانیه)"
+        if isinstance(rtt, (int, float)):
+            tip += f" (تاخیر {rtt:.0f}ms)"
+        return f"  {icon}{q}", (color, tip)
+
+    # (2.0.15-beta) اسکن پهنای باند/پایداری شبکه‌ی دوربین‌ها
+    def _on_network_probe_clicked(self):
+        """شروع اسکن پایداری شبکه‌ی همه‌ی دوربین‌ها در ترد پس‌زمینه (رابط
+        قفل نمی‌شود)."""
+        if getattr(self, "_net_probe_thread", None) is not None:
+            return  # اسکن در حال اجراست
+        cams = list(self.camera_store.cameras)
+        if not cams:
+            QMessageBox.information(self, "تست پایداری شبکه",
+                                    "هنوز دوربینی ثبت نشده است.")
+            return
+        # نکته: اگر رمز دوربینی در حافظه نباشد (ذخیره‌ی امن خاموش و هنوز
+        # وارد نشده)، نمونه‌گیری استریمش «نامشخص» می‌شود ولی تاخیر TCP
+        # همچنان اندازه‌گیری می‌شود.
+        from network_probe import NetworkProbeThread
+        self._net_probe_thread = NetworkProbeThread(cams, self)
+        self._net_probe_thread.probe_done.connect(self._on_probe_done)
+        self._net_probe_thread.finished.connect(self._on_probe_finished)
+        self.net_probe_btn.setEnabled(False)
+        self.net_probe_btn.setText("📶 در حال اسکن...")
+        self._net_probe_thread.start()
+
+    def _on_probe_done(self, cam_id, res):
+        cam = self.camera_store.get_camera(cam_id)
+        if cam is None or not isinstance(res, dict):
+            return
+        cam["net_rtt_ms"] = res.get("rtt_ms")
+        kbps = res.get("kbps")
+        cam["net_kbps"] = round(kbps, 1) if isinstance(kbps, (int, float)) else None
+        cam["net_quality"] = res.get("quality") or "نامشخص"
+        cam["net_checked_at"] = res.get("checked_at")
+
+    def _on_probe_finished(self):
+        try:
+            self.camera_store.save()
+        except Exception:
+            pass
+        self._net_probe_thread = None
+        self.net_probe_btn.setEnabled(True)
+        self.net_probe_btn.setText("📶 تست پایداری شبکه")
+        self.reload_camera_list()
+        try:
+            quals = [c.get("net_quality", "?") for c in self.camera_store.cameras]
+            summary = ", ".join(f"{q}: {quals.count(q)}" for q in
+                                ("خوب", "متوسط", "ضعیف", "قطع", "نامشخص")
+                                if quals.count(q))
+            QMessageBox.information(self, "تست پایداری شبکه",
+                                    "اسکن تمام شد.\n" + (summary or "نتیجه‌ای ثبت نشد."))
+        except Exception:
+            pass
+
     def reload_camera_list(self):
         self.camera_list.clear()
         # پنل «هشدارهای حریق و دود» فقط وقتی دیده می‌شود که حداقل یک دوربین
@@ -3112,14 +3263,22 @@ class MainWindow(QMainWindow):
                 cam_label = cam["name"]
                 if cam.get("camera_ip"):
                     cam_label += f"  ({cam['camera_ip']})"
-                cam_item = QTreeWidgetItem([cam_label])
+                badge, style = self._net_badge(cam)
+                cam_item = QTreeWidgetItem([cam_label + badge])
+                if style:
+                    cam_item.setForeground(0, QColor(style[0]))
+                    cam_item.setToolTip(0, style[1])
                 cam_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "camera", "id": cam["id"]})
                 nvr_item.addChild(cam_item)
             nvr_item.setExpanded(True)
 
         # دوربین‌های مستقل (بدون NVR)
         for cam in self.camera_store.standalone_cameras():
-            cam_item = QTreeWidgetItem([cam["name"]])
+            badge, style = self._net_badge(cam)
+            cam_item = QTreeWidgetItem([cam["name"] + badge])
+            if style:
+                cam_item.setForeground(0, QColor(style[0]))
+                cam_item.setToolTip(0, style[1])
             cam_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "camera", "id": cam["id"]})
             self.camera_list.addTopLevelItem(cam_item)
 
@@ -3619,12 +3778,14 @@ class MainWindow(QMainWindow):
             )
 
     def _ensure_password(self, cam: dict) -> bool:
-        """رفع درخواست امنیتی: رمزهای عبور دیگر روی دیسک ذخیره نمی‌شوند
-        (camera_store.py)، پس با هر بار اجرای برنامه خالی بارگذاری می‌شوند.
-        قبل از شروع پخش زنده، اگر رمز دوربین (یا در صورت متصل بودن به یک NVR،
-        رمز خود آن NVR) در حافظه موجود نباشد، اینجا از کاربر پرسیده می‌شود.
-        رمز واردشده فقط در حافظه (تا زمان بستن برنامه) نگه‌داشته می‌شود تا
-        برای بقیه‌ی کانال‌های همان NVR در همین نشست دوباره پرسیده نشود."""
+        """(2.0.15-beta) رمز دوربین/NVR: اگر ذخیره‌ی امن فعال باشد، رمز از
+        دیسک (رمزنگاری‌شده با DPAPI) خوانده شده و این‌جا از قبل در حافظه
+        هست؛ در غیر این صورت (یا اگر رمزی ذخیره نشده باشد) از کاربر پرسیده
+        می‌شود. رمز تازه‌واردشده بلافاصله رمزنگاری و ذخیره می‌شود تا در
+        اجراهای بعدی پرسیده نشود (مگر این‌که کاربر ذخیره‌ی امن را خاموش
+        کرده باشد). رمز واردشده فقط در حافظه (تا زمان بستن برنامه)
+        نگه‌داشته می‌شود تا برای بقیه‌ی کانال‌های همان NVR در همین نشست
+        دوباره پرسیده نشود."""
         nvr = self.camera_store.get_nvr(cam.get("nvr_id")) if cam.get("nvr_id") else None
         source = nvr if nvr is not None else cam
 
@@ -3648,6 +3809,13 @@ class MainWindow(QMainWindow):
             # پرسیدن دوباره در همین نشست، روی همه‌ی آن‌ها هم اعمال می‌شود.
             for sibling in self.camera_store.cameras_for_nvr(nvr["id"]):
                 sibling["pass"] = pwd
+        # (2.0.15-beta) بلافاصله رمزنگاری و ذخیره شود تا در اجرای بعدی
+        # پرسیده نشود (اگر ذخیره‌ی امن خاموش باشد، save رمز را نمی‌نویسد).
+        try:
+            self.camera_store.save()
+            self.camera_store.save_nvrs()
+        except Exception:
+            pass
         return True
 
     def get_active_camera_frame(self):
@@ -3845,6 +4013,25 @@ class MainWindow(QMainWindow):
                 channel=cam.get("channel"),
                 plate_display=data.get("plate_display", ""),
             )
+            # (2.0.15-beta) موتور قوانین جهت تردد: نقش ورود/خروج دوربین،
+            # جهت مجاز مسیر، وضعیت داخل/خارج پلاک و ثبت تخلف در صورت نیاز.
+            try:
+                engine = getattr(self, "plate_direction", None)
+                if engine is not None:
+                    engine.process(cam, data, event)
+                # لینک دوربین/مسیر روی رویداد عبور (برای گزارش‌ها)
+                try:
+                    with plate_store._lock:
+                        plate_store._conn.execute(
+                            "UPDATE plate_events SET camera_id=?, lane_id=? WHERE id=?",
+                            (str(cam.get("id", "")),
+                             (cam.get("lane_id") or ""),
+                             event.get("id", "")))
+                        plate_store._conn.commit()
+                except Exception:
+                    pass
+            except Exception as e:
+                print(f"خطا در موتور جهت پلاک: {e}")
             # اگر کاربر همین حالا صفحه‌ی پلاک‌خوان (تب گزارش) را می‌بیند،
             # جدول را زنده تازه کن.
             try:
@@ -3852,6 +4039,12 @@ class MainWindow(QMainWindow):
                         and self.pages.currentWidget() is self.plate_page):
                     self.plate_page.run_report_search()
                     self.plate_page._update_stats()
+                    # اگر تب «تخلفات تردد» دیده می‌شود، آن هم زنده تازه شود
+                    pg = self.plate_page
+                    if (getattr(pg, "tabs", None) is not None
+                            and pg.tabs.currentWidget()
+                            is getattr(pg, "violations_tab", None)):
+                        pg.run_violations_search()
             except Exception:
                 pass
         except Exception as e:
@@ -4226,6 +4419,14 @@ class MainWindow(QMainWindow):
         if self.detect_thread is not None and self.detect_thread.isRunning():
             self.detect_thread.cancel()
             self.detect_thread.wait(3000)
+        # (2.0.15-beta) ترد اسکن پایداری شبکه هم باید صریحاً متوقف شود.
+        _probe = getattr(self, "_net_probe_thread", None)
+        if _probe is not None and _probe.isRunning():
+            try:
+                _probe.stop()
+            except Exception:
+                pass
+            _probe.wait(5000)
         # رفع درخواست «سیستم تشخیص دود و اعلام حریق»: همان دلیل بالا - همه‌ی
         # تردهای مانیتور پنل‌های فیزیکی اعلام حریق باید قبل از بسته‌شدن
         # برنامه صریحاً متوقف شوند.
@@ -4239,10 +4440,9 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        # رفع درخواست: هنگام خروج از برنامه، تمام رمزهای عبوری که فقط در
-        # حافظه نگه‌داشته شده بودند (هیچ‌وقت روی دیسک ذخیره نمی‌شوند - رجوع
-        # کنید به camera_store.py) پاک می‌شوند؛ در اجرای بعدی دوباره پرسیده
-        # خواهند شد.
+        # (2.0.15-beta) هنگام خروج از برنامه، رمزهای حافظه پاک می‌شوند؛
+        # رمزهای رمزنگاری‌شده‌ی روی دیسک (در صورت فعال بودن ذخیره‌ی امن)
+        # دست‌نخورده می‌مانند تا در اجرای بعدی بدون پرسیدن خوانده شوند.
         self.camera_store.clear_all_passwords()
         # همان نکته برای پنل‌های اعلام حریق فیزیکی (fire_alarm_store.py).
         self.fire_alarm_store.clear_all_passwords()
@@ -4269,7 +4469,54 @@ if __name__ == "__main__":
         migrate_legacy_data()
     except Exception:
         pass
-    app = QApplication(sys.argv)
+    # (2.0.15-beta - پایداری) تور امنیت سراسری: هر استثنای مهارنشده در
+    # ترد اصلی (اسلات‌ها/هندلرهای رویداد) یا تردهای پس‌زمینه، به‌جای بستن
+    # ناگهانی برنامه («Close Program») در فایل crash.log ثبت می‌شود و
+    # برنامه به کارش ادامه می‌دهد تا علت قابل ردیابی باشد.
+    try:
+        from app_paths import get_data_dir
+        _crash_log = os.path.join(get_data_dir(), "crash.log")
+    except Exception:
+        _crash_log = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "crash.log")
+
+    def _log_crash(where, exc_type, exc_value, exc_tb):
+        try:
+            import traceback, datetime
+            with open(_crash_log, "a", encoding="utf-8") as f:
+                f.write("\n==== %s | %s ====\n" % (
+                    datetime.datetime.now().isoformat(timespec="seconds"), where))
+                traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
+        except Exception:
+            pass
+
+    def _sys_excepthook(exc_type, exc_value, exc_tb):
+        _log_crash("main-thread", exc_type, exc_value, exc_tb)
+
+    def _thread_excepthook(args):
+        _log_crash("thread:" + str(getattr(args, "thread", "?")),
+                   args.exc_type, args.exc_value, args.exc_traceback)
+
+    sys.excepthook = _sys_excepthook
+    try:
+        threading.excepthook = _thread_excepthook
+    except Exception:
+        pass
+
+    from PyQt6.QtWidgets import QApplication as _QApplication
+
+    class _SafeApplication(_QApplication):
+        """QApplication با notify محافظت‌شده: استثنا در هر اسلات/رویداد
+        (شایع‌ترین علت «Close Program» در PyQt) مهار و لاگ می‌شود و حلقه‌ی
+        رویداد ادامه می‌یابد."""
+        def notify(self, receiver, event):
+            try:
+                return super().notify(receiver, event)
+            except Exception:
+                _log_crash("qt-notify:%r" % (receiver,), *sys.exc_info())
+                return False
+
+    app = _SafeApplication(sys.argv)
     apply_theme(app)  # تم تیره‌ی سازگار با لوگوی ایمن آرا سورنا
     window = MainWindow()
     # برنامه از ابتدا ماکسیمایز باز می‌شود (درخواست قبلی کاربر).
