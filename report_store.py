@@ -27,7 +27,9 @@ NVRهای رایج (Hikvision/Dahua) API عمومی برای نوشتن/آپلو
 
 import csv
 import os
+import queue
 import sqlite3
+import threading
 import time
 from contextlib import closing
 
@@ -64,6 +66,52 @@ class ReportStore:
         except Exception as e:
             print(f"خطا در ساخت پوشه‌ی تصاویر گزارش‌ها: {e}")
         self._init_db()
+        # (2.0.16-beta - پایداری) همه‌ی نوشتن‌ها (INSERT + ذخیره‌ی تصویر)
+        # در یک ترد writer اختصاصی انجام می‌شود؛ ترد GUI (و تردهای استریم)
+        # فقط در صف می‌گذارند و هرگز روی قفل دیتابیس بلاک نمی‌شوند —
+        # ریشه‌ی «Not Responding»های مقطعیِ ثبت گزارش.
+        self._write_queue = queue.Queue()
+        self._writer_thread = threading.Thread(
+            target=self._writer_loop, daemon=True, name="report-writer")
+        self._writer_thread.start()
+
+    def _writer_loop(self):
+        while True:
+            try:
+                job = self._write_queue.get()
+            except Exception:
+                continue
+            try:
+                if job is None:  # سیگنال پایان (close)
+                    return
+                self._do_insert(job)
+            except Exception as e:
+                print(f"خطا در ترد نویسنده‌ی گزارش‌ها: {e}")
+            finally:
+                try:
+                    self._write_queue.task_done()
+                except Exception:
+                    pass
+
+    def flush(self, timeout=10):
+        """منتظر می‌ماند تا همه‌ی رویدادهای صف‌شده واقعاً نوشته شوند
+        (برای تست‌ها و خروج تمیز از برنامه)."""
+        deadline = time.monotonic() + max(0, timeout)
+        try:
+            while (self._write_queue.unfinished_tasks > 0
+                   and time.monotonic() < deadline):
+                time.sleep(0.02)
+        except Exception:
+            pass
+
+    def close(self):
+        """تخلیه‌ی صف و پایان تمیز ترد نویسنده (هنگام خروج از برنامه)."""
+        try:
+            self.flush(5)
+            self._write_queue.put_nowait(None)
+            self._writer_thread.join(3)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------- setup -
 
@@ -136,15 +184,20 @@ class ReportStore:
 
     # ------------------------------------------------------------- ذخیره -
 
-    def _save_image(self, crop_frame, prefix):
+    def _save_image(self, crop_frame, prefix, ts=None):
         if crop_frame is None:
             return None
         try:
             import cv2  # وارد کردن دیرهنگام: این ماژول را بدون opencv هم می‌توان تست کرد
 
-            day_dir = os.path.join(self.images_dir, time.strftime("%Y-%m-%d"))
+            # (2.0.16-beta) پوشه‌ی روز از روی ساعت خودِ رویداد ساخته می‌شود،
+            # چون ذخیره‌ی تصویر ممکن است کمی بعد از ثبت در ترد writer انجام شود.
+            day = (ts or "")[:10] or time.strftime("%Y-%m-%d")
+            clock = "".join(ch for ch in (ts or "")[11:19] if ch.isdigit()) or \
+                time.strftime("%H%M%S")
+            day_dir = os.path.join(self.images_dir, day)
             os.makedirs(day_dir, exist_ok=True)
-            fname = f"{prefix}_{time.strftime('%H%M%S')}_{int(time.time() * 1000) % 1000}.jpg"
+            fname = f"{prefix}_{clock}_{int(time.time() * 1000) % 1000}.jpg"
             path = os.path.join(day_dir, fname)
             cv2.imwrite(path, crop_frame)
             return path
@@ -154,7 +207,33 @@ class ReportStore:
 
     def _insert(self, ts, event_type, camera_name=None, person_name=None, phone=None,
                 employee_id=None, region_number=None, region_name=None,
-                person_count=None, image_path=None, nvr_id=None, channel=None, detail=None):
+                person_count=None, image_path=None, nvr_id=None, channel=None, detail=None,
+                crop_frame=None, crop_prefix=None):
+        # (2.0.16-beta) فقط صف می‌کند و بلافاصله برمی‌گردد؛ نوشتن واقعی
+        # (دیسک + SQLite) در ترد writer انجام می‌شود تا ترد صداکننده
+        # (GUI یا استریم) هرگز بلاک نشود.
+        job = {
+            "ts": ts, "event_type": event_type, "camera_name": camera_name,
+            "person_name": person_name, "phone": phone, "employee_id": employee_id,
+            "region_number": region_number, "region_name": region_name,
+            "person_count": person_count, "image_path": image_path,
+            "nvr_id": str(nvr_id) if nvr_id else None,
+            "channel": str(channel) if channel not in (None, "") else None,
+            "detail": detail,
+            "crop_frame": crop_frame, "crop_prefix": crop_prefix,
+        }
+        try:
+            self._write_queue.put_nowait(job)
+        except Exception as e:
+            print(f"خطا در صف‌کردن رویداد گزارش: {e}")
+
+    def _do_insert(self, job):
+        """نوشتن واقعی یک رویداد — فقط از ترد writer صدا زده می‌شود."""
+        image_path = job.get("image_path")
+        if image_path is None and job.get("crop_frame") is not None:
+            image_path = self._save_image(
+                job["crop_frame"], job.get("crop_prefix") or "event",
+                ts=job.get("ts"))
         try:
             with closing(self._connect()) as conn:
                 conn.execute(
@@ -164,10 +243,11 @@ class ReportStore:
                          region_number, region_name, person_count, image_path, nvr_id, channel, detail)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (ts, event_type, camera_name, person_name, phone, employee_id,
-                     region_number, region_name, person_count, image_path,
-                     str(nvr_id) if nvr_id else None, str(channel) if channel not in (None, "") else None,
-                     detail),
+                    (job.get("ts"), job.get("event_type"), job.get("camera_name"),
+                     job.get("person_name"), job.get("phone"), job.get("employee_id"),
+                     job.get("region_number"), job.get("region_name"),
+                     job.get("person_count"), image_path,
+                     job.get("nvr_id"), job.get("channel"), job.get("detail")),
                 )
                 conn.commit()
         except Exception as e:
@@ -187,9 +267,10 @@ class ReportStore:
         else:
             event_type = "face_unknown"
             person_name = phone = employee_id = None
-        image_path = self._save_image(crop_frame, event_type)
+        # (2.0.16-beta) ذخیره‌ی تصویر هم در ترد writer انجام می‌شود
         self._insert(now, event_type, camera_name=camera_name, person_name=person_name,
-                     phone=phone, employee_id=employee_id, image_path=image_path,
+                     phone=phone, employee_id=employee_id,
+                     crop_frame=crop_frame, crop_prefix=event_type,
                      nvr_id=nvr_id, channel=channel)
 
     def log_region_alert(self, camera_name, number, name, nvr_id=None, channel=None):
@@ -213,9 +294,10 @@ class ReportStore:
         یا دود (kind: 'fire'/'smoke') را با ساعت/تاریخ کامل و تصویر
         برش‌خورده‌ی همان ناحیه ثبت می‌کند."""
         now = time.strftime("%Y-%m-%d %H:%M:%S")
-        image_path = self._save_image(crop_frame, f"fire_{kind}")
         detail = kind if confidence is None else f"{kind} ({confidence * 100:.0f}%)"
-        self._insert(now, "fire_smoke_visual", camera_name=camera_name, image_path=image_path,
+        # (2.0.16-beta) ذخیره‌ی تصویر هم در ترد writer انجام می‌شود
+        self._insert(now, "fire_smoke_visual", camera_name=camera_name,
+                     crop_frame=crop_frame, crop_prefix=f"fire_{kind}",
                      nvr_id=nvr_id, channel=channel, detail=detail)
 
     def log_fire_alarm_panel(self, panel_name, active=True):

@@ -4451,6 +4451,12 @@ class MainWindow(QMainWindow):
         # برنامه صراحتاً پاک می‌شود.
         self.scan_user_input.clear()
         self.scan_pass_input.clear()
+        # (2.0.16-beta) تخلیه‌ی صف رویدادهای گزارش و پایان تمیز ترد نویسنده
+        # تا هیچ رویدادی هنگام خروج گم نشود.
+        try:
+            report_store.close()
+        except Exception:
+            pass
         event.accept()
 
 

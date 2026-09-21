@@ -449,10 +449,37 @@ class ImageSettingsDialog(QDialog):
                           + (f" با شدت {level}٪" if level is not None else ""))
 
     # ----------------------------------------------------- ذخیره / انصراف --
+    def _stop_hw_worker(self):
+        """(2.0.16-beta - پایداری) توقف امن ترد ONVIF هنگام بسته شدن دیالوگ.
+
+        اگر دیالوگ در حالی تخریب شود که _OnvifWorker هنوز اجراست، Qt با
+        qFatal("QThread: Destroyed while thread is still running") کل برنامه
+        را می‌کشد («Close Program»). پس قبل از accept/reject/close، ترد را
+        متوقف می‌کنیم: اول صبر کوتاه (حالت عادی: کار چندثانیه‌ای ONVIF دارد
+        تمام می‌شود)، و در بدترین حالت terminate به‌عنوان آخرین راه‌حل —
+        که همیشه از کرش qFatal امن‌تر است.
+        """
+        w = self._hw_worker
+        self._hw_worker = None
+        if w is None:
+            return
+        try:
+            if w.isRunning():
+                if not w.wait(3000):
+                    w.terminate()
+                    w.wait(3000)
+        except Exception:
+            pass
+
+    def closeEvent(self, event):
+        self._stop_hw_worker()
+        super().closeEvent(event)
+
     def accept(self):
+        self._stop_hw_worker()
         profile = dict(self._profile)
         profile["preset"] = ip.detect_preset(profile)
-        if self._cam_id is not None:
+        if self._cam_id is not None and self.camera_store is not None:
             self.camera_store.update_camera(self._cam_id, image_profile=profile)
         if self.slot.cam is not None:
             # هم‌گام نگه داشتن کپیِ داخل حافظه‌ی همان خانه (اگر شیء جدا باشد)
@@ -462,5 +489,6 @@ class ImageSettingsDialog(QDialog):
 
     def reject(self):
         # برگرداندن تصویر به وضعیت قبل از باز شدن دیالوگ
+        self._stop_hw_worker()
         self.slot.apply_image_profile(dict(self._original))
         super().reject()

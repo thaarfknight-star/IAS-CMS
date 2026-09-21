@@ -17,7 +17,8 @@
 """
 
 import os
-import concurrent.futures as _fut
+import threading
+import time
 
 try:
     from nvr_scanner import COMMON_ONVIF_PORTS as _COMMON_PORTS, ONVIF_TIMEOUT_SEC as _TIMEOUT
@@ -208,6 +209,14 @@ def _pick_video_source(media, channel_hint):
 def _try_ports(target, timeout=_PER_PORT_TIMEOUT):
     """اتصال به پورت‌های ONVIF؛ اولین پورتی که جواب داد برمی‌گردد.
 
+    (2.0.16-beta - پایداری) بازنویسی با تردهای daemon به‌جای
+    ThreadPoolExecutor: نسخه‌ی قبلی با as_completed(timeout) + خروج از
+    بلوک with در shutdown(wait=True) گیر می‌کرد و ترد صداکننده را برای
+    همیشه بلاک نگه می‌داشت (دیالوگ روی «در حال ارتباط…» قفل می‌شد). اینجا
+    هر تلاش در یک ترد daemon جداست؛ بعد از مهلت کلی، تردهای بی‌پاسخ رها
+    می‌شوند (daemonاند و با بسته شدن برنامه می‌میرند) و تابع حتماً
+    برمی‌گردد.
+
     خروجی: (camera, imaging, media, port, error)
     """
     ports = []
@@ -218,24 +227,38 @@ def _try_ports(target, timeout=_PER_PORT_TIMEOUT):
             pass
     ports += [p for p in PROBE_PORTS if p not in ports]
 
-    def attempt(port):
-        cam = _new_camera(target["host"], port, target["user"], target["pwd"])
-        imaging = cam.create_imaging_service()
-        media = cam.create_media_service()
-        return cam, imaging, media, port
+    box = {}
 
-    errors = []
-    with _fut.ThreadPoolExecutor(max_workers=min(len(ports), 5)) as ex:
-        future_map = {ex.submit(attempt, p): p for p in ports}
+    def attempt(port):
         try:
-            for fut in _fut.as_completed(future_map, timeout=_OVERALL_TIMEOUT):
-                port = future_map[fut]
-                try:
-                    return (*fut.result(), None)
-                except Exception as e:
-                    errors.append((port, _friendly_error(e)))
-        except _fut.TimeoutError:
-            pass
+            cam = _new_camera(target["host"], port, target["user"], target["pwd"])
+            imaging = cam.create_imaging_service()
+            media = cam.create_media_service()
+            box[port] = ("ok", (cam, imaging, media, port))
+        except Exception as e:
+            box[port] = ("err", e)
+
+    threads = []
+    for p in ports:
+        t = threading.Thread(target=attempt, args=(p,), daemon=True,
+                             name="onvif-port-%s" % p)
+        t.start()
+        threads.append(t)
+
+    deadline = time.monotonic() + _OVERALL_TIMEOUT
+    errors = []
+    for t, p in zip(threads, ports):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        t.join(remaining)
+        status = box.get(p)
+        if status is None:
+            continue  # در مهلت کلی جواب نداد؛ ترد daemon رها می‌شود
+        kind, payload = status
+        if kind == "ok":
+            return (*payload, None)
+        errors.append((p, _friendly_error(payload)))
     # اگر همه شکست خوردند، پرتکرارترین/اولین خطا را گزارش بده
     if errors:
         errors.sort(key=lambda x: x[0])
@@ -321,16 +344,37 @@ def _normalize_level_0_100(level, lo, hi):
 
 
 def _run_guarded(work, timeout):
-    """اجرای یک کار شبکه‌ای با مهلت؛ خطاها به پیام فارسی ساخت‌یافته تبدیل
-    می‌شوند."""
-    with _fut.ThreadPoolExecutor(max_workers=1) as ex:
-        fut = ex.submit(work)
+    """اجرای یک کار شبکه‌ای با مهلت *واقعی*؛ خطاها به پیام فارسی
+    ساخت‌یافته تبدیل می‌شوند.
+
+    (2.0.16-beta - پایداری) نسخه‌ی قبلی (ThreadPoolExecutor +
+    fut.result(timeout) داخل بلوک with) هنگام تایم‌اوت در
+    shutdown(wait=True) گیر می‌کرد؛ یعنی دقیقاً همان کاری که قرار بود
+    قطع شود، ترد صداکننده را برای همیشه بلاک نگه می‌داشت و دیالوگ برای
+    همیشه روی «در حال ارتباط با دوربین…» قفل می‌ماند. اینجا کار در یک
+    ترد daemon جدا اجرا می‌شود: بعد از مهلت، تابع حتماً با خطای
+    «پاسخ نداد» برمی‌گردد و تردِ گیرکرده رها می‌شود (daemon است و با
+    بسته شدن برنامه می‌میرد).
+    """
+    box = {}
+
+    def _target():
         try:
-            return fut.result(timeout=timeout)
-        except _fut.TimeoutError:
-            return {"ok": False, "error": "دستگاه در مهلت تعیین‌شده پاسخ نداد."}
+            box["result"] = work()
         except Exception as e:
-            return {"ok": False, "error": _friendly_error(e)}
+            box["error"] = e
+
+    t = threading.Thread(target=_target, daemon=True, name="onvif-guarded")
+    t.start()
+    t.join(timeout)
+    if t.is_alive():
+        return {"ok": False, "error": "دستگاه در مهلت تعیین‌شده پاسخ نداد."}
+    if "error" in box:
+        return {"ok": False, "error": _friendly_error(box["error"])}
+    res = box.get("result")
+    if isinstance(res, dict):
+        return res
+    return {"ok": False, "error": "خطای ناشناخته."}
 
 
 def _read_param(cam, camera_store, key, timeout):

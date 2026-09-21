@@ -23,9 +23,13 @@ from nvr_playback import build_playback_urls
 # بازبینی هم مناسب است؛ فقط stimeout کمی بیشتر است چون خیلی از NVRها برای
 # شروع پخش یک بازه‌ی بایگانی‌شده (به‌خصوص از هارد پر/کند) کندتر از پخش زنده
 # پاسخ می‌دهند.
+# (2.0.16-beta - پایداری) rw_timeout اضافه شد: بدون آن، cap.read() وسط
+# استریم می‌توانست برای همیشه بلاک بماند و بستن دیالوگ در آن حالت، ترد را
+# زنده رها می‌کرد و به کرش qFatal («Close Program») می‌رسید.
 PLAYBACK_FFMPEG_OPTS = (
     "rtsp_transport;tcp|stimeout;8000000|max_delay;300000|"
-    "buffer_size;102400|fflags;nobuffer|flags;low_delay"
+    "buffer_size;102400|fflags;nobuffer|flags;low_delay|"
+    "rw_timeout;5000000"
 )
 
 
@@ -151,12 +155,27 @@ class NVRPlaybackDialog(QDialog):
         self.video_label.setText(msg)
         self.status_label.setText("")
 
+    def _stop_thread(self):
+        """(2.0.16-beta - پایداری) توقف امن ترد پخش هنگام بسته شدن دیالوگ.
+
+        نسخه‌ی قبلی فقط wait(2000) می‌کرد؛ اگر run() در cap.read() گیر
+        کرده بود، دیالوگ تخریب می‌شد در حالی که ترد هنوز زنده بود و Qt با
+        qFatal کل برنامه را می‌کشت. با rw_timeoutِ بالا، read حداکثر ~۵
+        ثانیه بلاک می‌ماند؛ ۶ ثانیه صبر می‌کنیم و در بدترین حالت terminate
+        (همیشه امن‌تر از کرش qFatal).
+        """
+        try:
+            self._thread.stop()
+            if self._thread.isRunning() and not self._thread.wait(6000):
+                self._thread.terminate()
+                self._thread.wait(3000)
+        except Exception:
+            pass
+
     def reject(self):
-        self._thread.stop()
-        self._thread.wait(2000)
+        self._stop_thread()
         super().reject()
 
     def closeEvent(self, event):
-        self._thread.stop()
-        self._thread.wait(2000)
+        self._stop_thread()
         super().closeEvent(event)
