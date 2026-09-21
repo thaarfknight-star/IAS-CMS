@@ -501,6 +501,7 @@ class BuildingMapPage(QWidget):
         self._lane_pick = {}      # device_id -> DeviceItem (دوربین‌های انتخاب‌شده)
         self._lane_pick_rings = {}  # device_id -> QGraphicsEllipseItem
         self._lane_selected_id = None  # مسیر انتخاب‌شده در لیست (نمایش روی نقشه)
+        self._heatmap_on = False  # وضعیت نمایش هیت‌مپ تردد (2.0.18-beta)
         self._pending_fit = False
         self._play_timer = QTimer(self)
         self._play_timer.timeout.connect(self._play_tick)
@@ -602,6 +603,24 @@ class BuildingMapPage(QWidget):
         lanerow.addWidget(self.lane_del_btn)
         lanerow.addWidget(self.lane_rules_btn)
         ll.addLayout(lanerow)
+        # ابزارهای مسیر (2.0.18-beta): شبیه‌سازی، پوشش، هیت‌مپ
+        ltoolrow = QHBoxLayout()
+        self.lane_sim_btn = QPushButton("▶️ شبیه‌سازی")
+        self.lane_sim_btn.setToolTip("شبیه‌سازی حرکت خودرو روی مسیر انتخاب‌شده")
+        self.lane_sim_btn.clicked.connect(self._start_lane_sim)
+        self.coverage_btn = QPushButton("📡 پوشش")
+        self.coverage_btn.setToolTip(
+            "تحلیل پوشش دوربین: درهای بدون دوربین در شعاع ۵ متر")
+        self.coverage_btn.clicked.connect(self._analyze_coverage)
+        self.heatmap_btn = QPushButton("🔥 هیت‌مپ")
+        self.heatmap_btn.setToolTip(
+            "نمایش پرترددترین مسیرها با رنگ روی نقشه")
+        self.heatmap_btn.setCheckable(True)
+        self.heatmap_btn.clicked.connect(self._toggle_heatmap)
+        ltoolrow.addWidget(self.lane_sim_btn)
+        ltoolrow.addWidget(self.coverage_btn)
+        ltoolrow.addWidget(self.heatmap_btn)
+        ll.addLayout(ltoolrow)
 
         ll.addStretch()
         left_scroll = QScrollArea()
@@ -2236,6 +2255,199 @@ class BuildingMapPage(QWidget):
             self._lane_selected_id = None
         self._clear_lane_geo()
         self._reload_lane_list()
+
+    # ================= شبیه‌سازی / پوشش / هیت‌مپ (2.0.18-beta) ==============
+
+    def _lane_camera_positions(self, lane, fid):
+        """موقعیت صحنه‌ی دوربین‌های یک مسیر: ({id: (x,y)}, {id: name})."""
+        xy, names = {}, {}
+        for c in (lane.get("cameras") or []):
+            cid = str(c.get("camera_id"))
+            try:
+                for _fl, dev in self.store.devices_by_camera(cid):
+                    if _fl.get("id") == fid:
+                        xy[cid] = (float(dev.get("x", 0)),
+                                   float(dev.get("y", 0)))
+                        names[cid] = dev.get("name") or cid
+                        break
+            except Exception:
+                continue
+        return xy, names
+
+    def _start_lane_sim(self):
+        """شبیه‌سازی حرکت خودرو روی مسیر انتخاب‌شده."""
+        item = self.lane_list.currentItem()
+        if item is None:
+            QMessageBox.information(self, "شبیه‌سازی",
+                                    "اول یک مسیر را از لیست انتخاب کنید.")
+            return
+        lid = item.data(Qt.ItemDataRole.UserRole)
+        try:
+            lane = plate_store.get_lanes().get(lid) or {}
+        except Exception:
+            lane = {}
+        pts = lane.get("points") or []
+        if len(pts) < 2:
+            QMessageBox.information(self, "شبیه‌سازی",
+                                    "این مسیر نقطه‌ی کافی برای شبیه‌سازی ندارد.")
+            return
+        fid = (lane.get("floor_id") or "").strip()
+        xy, names = self._lane_camera_positions(lane, fid)
+        try:
+            from lane_simulator import LaneSimDialog
+        except Exception as e:
+            QMessageBox.warning(self, "خطا",
+                                f"باز کردن شبیه‌ساز ناموفق بود:\n{e}")
+            return
+        dlg = LaneSimDialog(lane, xy, names, self)
+        dlg.exec()
+
+    def _clear_geo_tag(self, tag):
+        for entry in self.scenes.values():
+            for it in list(entry["scene"].items()):
+                try:
+                    if it.data(0) == tag:
+                        entry["scene"].removeItem(it)
+                except Exception:
+                    pass
+
+    def _analyze_coverage(self):
+        """تحلیل پوشش دوربین: درهای بدون دوربین در شعاع ۵ متر."""
+        fid = self.current_floor
+        if not fid:
+            QMessageBox.information(self, "تحلیل پوشش",
+                                    "اول یک طبقه را انتخاب کنید.")
+            return
+        fl = self.store.get_floor(fid)
+        map_path, map_kind = self.store.floor_map_abs(fl)
+        if map_kind != "dxf" or not map_path:
+            QMessageBox.information(
+                self, "تحلیل پوشش",
+                "تحلیل موقعیت درها فقط برای نقشه‌ی DXF انجام می‌شود.\n"
+                "برای این طبقه نقشه‌ی DXF وارد کنید.")
+            return
+        try:
+            from map_coverage import (DEFAULT_COVERAGE_RADIUS_M,
+                                      analyze_coverage,
+                                      extract_doors_from_dxf)
+        except Exception as e:
+            QMessageBox.warning(self, "خطا",
+                                f"بارگذاری ماژول تحلیل ناموفق بود:\n{e}")
+            return
+        doors, to_meter = extract_doors_from_dxf(map_path)
+        if not doors:
+            QMessageBox.information(
+                self, "تحلیل پوشش",
+                "دری در فایل DXF شناسایی نشد.\n"
+                "(درها از روی قوس‌های لنگه‌ی در تشخیص داده می‌شوند.)")
+            return
+        cameras = [d for d in (fl.get("devices") or [])
+                   if d.get("kind") == "camera"]
+        results = analyze_coverage(doors, cameras,
+                                   radius_m=DEFAULT_COVERAGE_RADIUS_M,
+                                   to_meter=to_meter)
+        self._draw_coverage(results)
+        uncovered = [r for r in results if not r["covered"]]
+        lines = [f"مجموع درهای شناسایی‌شده: {len(results)}",
+                 f"✅ دارای پوشش: {len(results) - len(uncovered)}",
+                 f"⛔ بدون دوربین در {DEFAULT_COVERAGE_RADIUS_M:.0f} متر: "
+                 f"{len(uncovered)}"]
+        for i, r in enumerate(uncovered[:20], 1):
+            nm = (f"{r['nearest_m']:.1f} متر"
+                  if r["nearest_m"] is not None else "بدون دوربین")
+            lines.append(f"{i}. در در موقعیت ({r['x']:.1f}، {r['y']:.1f}) — "
+                         f"نزدیک‌ترین دوربین: {nm}")
+        if len(uncovered) > 20:
+            lines.append(f"… و {len(uncovered) - 20} مورد دیگر")
+        QMessageBox.information(self, "📡 نتیجه‌ی تحلیل پوشش",
+                                "\n".join(lines))
+
+    def _draw_coverage(self, results):
+        self._clear_geo_tag("coverage-geo")
+        entry = self._build_scene(self.current_floor)
+        if not entry:
+            return
+        sc = entry["scene"]
+        for r in results:
+            x, y = r["x"], r["y"]
+            if r["covered"]:
+                dot = QGraphicsEllipseItem(-5, -5, 10, 10)
+                dot.setPos(x, y)
+                dot.setPen(QPen(QColor("#16a34a"), 2))
+                dot.setBrush(QBrush(QColor("#16a34a")))
+            else:
+                dot = QGraphicsEllipseItem(-12, -12, 24, 24)
+                dot.setPos(x, y)
+                dot.setPen(QPen(QColor("#ef4444"), 3))
+                dot.setBrush(QBrush(QColor(239, 68, 68, 90)))
+            dot.setFlag(
+                QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
+            dot.setZValue(26)
+            dot.setData(0, "coverage-geo")
+            sc.addItem(dot)
+
+    def _toggle_heatmap(self):
+        """نمایش/پنهان‌سازی هیت‌مپ تردد روی نقشه."""
+        self._heatmap_on = self.heatmap_btn.isChecked()
+        self._clear_geo_tag("heatmap-geo")
+        if not self._heatmap_on:
+            return
+        try:
+            counts = plate_store.lane_traffic_counts()
+        except Exception:
+            counts = {}
+        if not counts:
+            QMessageBox.information(
+                self, "🔥 هیت‌مپ تردد",
+                "هنوز عبوری در دیتابیس ثبت نشده است؛ هیت‌مپ خالی است.")
+            self.heatmap_btn.setChecked(False)
+            self._heatmap_on = False
+            return
+        try:
+            lanes = plate_store.get_lanes() or {}
+        except Exception:
+            lanes = {}
+        vmax = max(counts.values()) if counts else 1
+        shown = 0
+        for lid, n in counts.items():
+            lane = lanes.get(lid) or {}
+            pts = lane.get("points") or []
+            fid = (lane.get("floor_id") or "").strip()
+            if len(pts) < 2 or not fid or fid != self.current_floor:
+                continue
+            entry = self._build_scene(fid)
+            if not entry:
+                continue
+            sc = entry["scene"]
+            t = n / vmax if vmax else 0
+            color = self._heat_color(t)
+            path = QPainterPath()
+            path.moveTo(pts[0][0], pts[0][1])
+            for x, y in pts[1:]:
+                path.lineTo(x, y)
+            line = QGraphicsPathItem(path)
+            pen = QPen(QColor(*color), 0)
+            pen.setCosmetic(True)
+            pen.setWidth(max(3, int(3 + 7 * t)))
+            line.setPen(pen)
+            line.setZValue(22)
+            line.setData(0, "heatmap-geo")
+            sc.addItem(line)
+            shown += 1
+        if shown == 0:
+            QMessageBox.information(
+                self, "🔥 هیت‌مپ تردد",
+                "هیچ مسیرِ دارای ترددی روی این طبقه نیست.")
+
+    @staticmethod
+    def _heat_color(t):
+        """رنگ هیت‌مپ: سبز -> زرد -> قرمز بر اساس t در [۰،۱]."""
+        t = max(0.0, min(1.0, t))
+        if t < 0.5:
+            k = t / 0.5
+            return (int(34 + (250 - 34) * k), int(197 + (204 - 197) * k), 94)
+        k = (t - 0.5) / 0.5
+        return (250, int(204 - (204 - 68) * k), int(94 - (94 - 68) * k))
 
     # ============================ تازه‌سازی ============================
     def refresh(self):

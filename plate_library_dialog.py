@@ -791,6 +791,7 @@ class PlateLibraryPage(QWidget):
         self.tabs.addTab(self._build_report_tab(), "📋 گزارش عبور")
         self.tabs.addTab(self._build_direction_tab(), "🛣 مسیرها و قوانین")
         self.tabs.addTab(self._build_violations_tab(), "🚨 تخلفات تردد")
+        self.tabs.addTab(self._build_watchlist_tab(), "⭐ لیست تحت‌نظر")
         layout.addWidget(self.tabs, 1)
 
         self.status_label = QLabel("")
@@ -1196,6 +1197,10 @@ class PlateLibraryPage(QWidget):
         export_btn = QPushButton("📤 خروجی CSV")
         export_btn.clicked.connect(self.export_report_csv)
         brow.addWidget(export_btn)
+        stats_btn = QPushButton("📊 آمار تردد")
+        stats_btn.setToolTip("نمودار ساعتی/روزانه‌ی عبورها به تفکیک مسیر")
+        stats_btn.clicked.connect(self.open_plate_stats)
+        brow.addWidget(stats_btn)
         layout.addLayout(brow)
 
         self.rep_summary = QLabel("")
@@ -1515,6 +1520,135 @@ class PlateLibraryPage(QWidget):
             self.viol_summary.setText(f"✅ {n} تخلف در فایل CSV ذخیره شد.")
         except Exception as e:
             QMessageBox.warning(self, "خطا", f"خروجی CSV ناموفق بود:\n{e}")
+
+    # ================================== تب لیست تحت‌نظر پلاک (2.0.18-beta) =
+
+    WATCHLIST_COLUMNS = ["پلاک", "نوع لیست", "یادداشت", "تاریخ ثبت"]
+
+    def _build_watchlist_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        hint = QLabel(
+            "پلاک‌های لیست سیاه/سفید: به‌محض دیده‌شدن توسط هر دوربین پلاک‌خوان، "
+            "تخلف ثبت و آلارم پخش می‌شود (در تب «🚨 تخلفات تردد» هم دیده می‌شود).")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color:#8fa3b8; font-size:11px;")
+        layout.addWidget(hint)
+
+        frow = QHBoxLayout()
+        frow.addWidget(QLabel("پلاک:"))
+        self.watch_plate = QLineEdit()
+        self.watch_plate.setPlaceholderText("مثلاً ۱۲ب۳۴۵ ایران ۱۱")
+        frow.addWidget(self.watch_plate)
+        frow.addWidget(QLabel("لیست:"))
+        self.watch_kind = QComboBox()
+        self.watch_kind.addItem("⛔ سیاه", "black")
+        self.watch_kind.addItem("⭐ سفید", "white")
+        frow.addWidget(self.watch_kind)
+        frow.addWidget(QLabel("یادداشت:"))
+        self.watch_note = QLineEdit()
+        self.watch_note.setPlaceholderText("اختیاری")
+        frow.addWidget(self.watch_note, 1)
+        add_btn = QPushButton("➕ افزودن")
+        add_btn.clicked.connect(self._add_watchlist_entry)
+        frow.addWidget(add_btn)
+        layout.addLayout(frow)
+
+        self.watchlist_table = QTableWidget(0, len(self.WATCHLIST_COLUMNS))
+        self.watchlist_table.setHorizontalHeaderLabels(self.WATCHLIST_COLUMNS)
+        self.watchlist_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch)
+        self.watchlist_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers)
+        self.watchlist_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows)
+        layout.addWidget(self.watchlist_table, 1)
+
+        brow = QHBoxLayout()
+        del_btn = QPushButton("🗑 حذف انتخاب‌شده")
+        del_btn.clicked.connect(self._remove_watchlist_entry)
+        brow.addWidget(del_btn)
+        brow.addStretch()
+        ref_btn = QPushButton("🔄 به‌روزرسانی")
+        ref_btn.clicked.connect(self._refresh_watchlist)
+        brow.addWidget(ref_btn)
+        layout.addLayout(brow)
+
+        self.watch_summary = QLabel("")
+        layout.addWidget(self.watch_summary)
+        self._refresh_watchlist()
+        return tab
+
+    def _refresh_watchlist(self):
+        try:
+            rows = plate_store.list_watchlist()
+        except Exception as e:
+            self.watch_summary.setText(f"خطا: {e}")
+            return
+        self.watchlist_table.setRowCount(0)
+        for r in rows:
+            row = self.watchlist_table.rowCount()
+            self.watchlist_table.insertRow(row)
+            kind_lbl = plate_store.WATCHLIST_LABELS.get(r.get("kind"), "")
+            vals = [r.get("plate_display", ""), kind_lbl,
+                    r.get("note", ""), r.get("created_date_j", "")]
+            for c, v in enumerate(vals):
+                item = QTableWidgetItem(str(v))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                if c == 0:
+                    item.setData(Qt.ItemDataRole.UserRole,
+                                 (r.get("plate_text"), r.get("kind")))
+                self.watchlist_table.setItem(row, c, item)
+        nb = sum(1 for r in rows if r.get("kind") == "black")
+        nw = sum(1 for r in rows if r.get("kind") == "white")
+        self.watch_summary.setText(
+            f"مجموع: {len(rows)} پلاک — سیاه: {nb}، سفید: {nw}")
+
+    def _add_watchlist_entry(self):
+        text = self.watch_plate.text().strip()
+        kind = self.watch_kind.currentData()
+        note = self.watch_note.text().strip()
+        if not text:
+            QMessageBox.information(self, "لیست تحت‌نظر",
+                                    "اول متن پلاک را وارد کنید.")
+            return
+        try:
+            plate_store.add_watchlist_entry(text, kind, note)
+        except Exception as e:
+            QMessageBox.warning(self, "خطا", f"افزودن ناموفق بود:\n{e}")
+            return
+        self.watch_plate.clear()
+        self.watch_note.clear()
+        self._refresh_watchlist()
+
+    def _remove_watchlist_entry(self):
+        row = self.watchlist_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "لیست تحت‌نظر",
+                                    "اول یک ردیف را انتخاب کنید.")
+            return
+        item = self.watchlist_table.item(row, 0)
+        data = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if not data:
+            return
+        plate_text, kind = data
+        if QMessageBox.question(
+                self, "حذف",
+                f"پلاک «{item.text()}» از لیست حذف شود؟"
+                ) != QMessageBox.StandardButton.Yes:
+            return
+        plate_store.remove_watchlist_entry(plate_text, kind)
+        self._refresh_watchlist()
+
+    def open_plate_stats(self):
+        """باز کردن داشبورد آماری تردد (2.0.18-beta)."""
+        try:
+            from plate_stats_dialog import PlateStatsDialog
+        except Exception as e:
+            QMessageBox.warning(self, "خطا", f"باز کردن آمار ناموفق بود:\n{e}")
+            return
+        dlg = PlateStatsDialog(plate_store, self)
+        dlg.exec()
 
     def _reload_report_camera_combo(self):
         current = self.rep_camera_combo.currentData()

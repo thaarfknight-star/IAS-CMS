@@ -376,6 +376,19 @@ class PlateStore:
             """)
             c.execute("CREATE INDEX IF NOT EXISTS idx_pviol_plate ON plate_violations(plate_text, ts)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_pviol_ts ON plate_violations(ts)")
+            # جدول لیست تحت‌نظر پلاک‌ها (2.0.18-beta): لیست سیاه/سفید
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS plate_watchlist (
+                    id TEXT PRIMARY KEY,
+                    plate_text TEXT NOT NULL,
+                    plate_display TEXT DEFAULT '',
+                    kind TEXT NOT NULL,
+                    note TEXT DEFAULT '',
+                    created_ts REAL NOT NULL,
+                    created_date_j TEXT DEFAULT ''
+                )
+            """)
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_watch_unique ON plate_watchlist(plate_text, kind)")
             # مهاجرت: لینک دوربین/مسیر روی رویدادهای عبور قدیمی
             ev_cols = [r["name"] for r in
                        c.execute("PRAGMA table_info(plate_events)").fetchall()]
@@ -797,7 +810,11 @@ class PlateStore:
         "exit_without_entry": "خروج بدون ورود ثبت‌شده",
         "reentry_without_exit": "ورود مجدد بدون خروج قبلی",
         "wrong_way": "تردد خلاف جهت مجاز مسیر",
+        "watchlist_black": "⛔ پلاک در لیست سیاه",
+        "watchlist_white": "⭐ پلاک در لیست سفید",
     }
+
+    WATCHLIST_LABELS = {"black": "⛔ لیست سیاه", "white": "⭐ لیست سفید"}
 
     CROSSING_LABELS = {"entry": "ورود", "exit": "خروج"}
     TRAVEL_LABELS = {"going": "رفت", "return": "برگشت"}
@@ -866,6 +883,120 @@ class PlateStore:
                 "SELECT * FROM plate_states WHERE plate_text=?",
                 (canonical,)).fetchone()
             return dict(row) if row else None
+
+    # --------------------------------- لیست تحت‌نظر پلاک‌ها (2.0.18-beta) --
+
+    def add_watchlist_entry(self, plate_text, kind, note=""):
+        """افزودن پلاک به لیست سیاه/سفید. kind: \"black\" | \"white\"."""
+        kind = (kind or "").strip().lower()
+        if kind not in ("black", "white"):
+            raise ValueError("kind باید black یا white باشد")
+        canonical = normalize_plate_text(plate_text)
+        if not canonical:
+            raise ValueError("متن پلاک خالی است")
+        wid = uuid.uuid4().hex
+        now = time.time()
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO plate_watchlist(id, plate_text, plate_display,
+                       kind, note, created_ts, created_date_j)
+                   VALUES(?,?,?,?,?,?,?)
+                   ON CONFLICT(plate_text, kind) DO UPDATE SET
+                     plate_display=excluded.plate_display,
+                     note=excluded.note""",
+                (wid, canonical, prettify_plate(canonical), kind,
+                 note or "", now, jalali_date_str(now)))
+            self._conn.commit()
+        return wid
+
+    def remove_watchlist_entry(self, plate_text, kind):
+        canonical = normalize_plate_text(plate_text)
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM plate_watchlist WHERE plate_text=? AND kind=?",
+                (canonical, (kind or "").strip().lower()))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def list_watchlist(self, kind=None, search=""):
+        with self._lock:
+            conds, vals = [], []
+            if kind:
+                conds.append("kind=?")
+                vals.append(kind)
+            if search:
+                s = f"%{normalize_plate_text(search)}%"
+                conds.append("(plate_text LIKE ? OR note LIKE ?)")
+                vals += [s, s]
+            q = "SELECT * FROM plate_watchlist"
+            if conds:
+                q += " WHERE " + " AND ".join(conds)
+            q += " ORDER BY created_ts DESC"
+            return [dict(r) for r in
+                    self._conn.execute(q, vals).fetchall()]
+
+    def find_watchlist(self, plate_text):
+        """لیست رکوردهای تحت‌نظرِ یک پلاک (ممکن است هم سیاه هم سفید باشد)."""
+        canonical = normalize_plate_text(plate_text)
+        if not canonical:
+            return []
+        with self._lock:
+            return [dict(r) for r in self._conn.execute(
+                "SELECT * FROM plate_watchlist WHERE plate_text=?",
+                (canonical,)).fetchall()]
+
+    def count_watchlist(self, kind=None):
+        with self._lock:
+            if kind:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) c FROM plate_watchlist WHERE kind=?",
+                    (kind,)).fetchone()
+            else:
+                row = self._conn.execute(
+                    "SELECT COUNT(*) c FROM plate_watchlist").fetchone()
+            return int(row["c"]) if row else 0
+
+    # ------------------------------------- آمار تردد (2.0.18-beta) --
+
+    def lane_traffic_counts(self, date_from=None, date_to=None):
+        """تعداد عبور ثبت‌شده‌ی هر مسیر در بازه: {lane_id: count}."""
+        with self._lock:
+            conds, vals = ["lane_id<>''"], []
+            if date_from:
+                conds.append("date_g>=?")
+                vals.append(date_from)
+            if date_to:
+                conds.append("date_g<=?")
+                vals.append(date_to)
+            q = ("SELECT lane_id, COUNT(*) c FROM plate_crossings WHERE "
+                 + " AND ".join(conds) + " GROUP BY lane_id")
+            return {r["lane_id"]: int(r["c"])
+                    for r in self._conn.execute(q, vals).fetchall()}
+
+    def crossing_stats(self, date_from=None, date_to=None, lane_id="",
+                       crossing_type=""):
+        """آمار عبورها: لیست (date_g, hour, count) برای نمودار ساعتی/روزانه."""
+        with self._lock:
+            conds, vals = [], []
+            if date_from:
+                conds.append("date_g>=?")
+                vals.append(date_from)
+            if date_to:
+                conds.append("date_g<=?")
+                vals.append(date_to)
+            if lane_id:
+                conds.append("lane_id=?")
+                vals.append(lane_id)
+            if crossing_type:
+                conds.append("crossing_type=?")
+                vals.append(crossing_type)
+            q = ("SELECT date_g, SUBSTR(time_g, 1, 2) AS hour, COUNT(*) AS c "
+                 "FROM plate_crossings")
+            if conds:
+                q += " WHERE " + " AND ".join(conds)
+            q += " GROUP BY date_g, hour ORDER BY date_g, hour"
+            return [(r["date_g"], r["hour"], int(r["c"]))
+                    for r in self._conn.execute(q, vals).fetchall()]
 
     def set_plate_state(self, plate_text, state, last_event_id="",
                         last_camera_id="", last_ts=None):

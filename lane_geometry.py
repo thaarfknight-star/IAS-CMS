@@ -121,3 +121,46 @@ def validate_lane_points(points):
     if not points or len(points) < 2:
         return False, "برای رسم مسیر حداقل ۲ نقطه لازم است."
     return True, ""
+
+
+def polyline_length(points):
+    """طول کل چندخطی (به همان واحد ورودی)."""
+    if not points or len(points) < 2:
+        return 0.0
+    total = 0.0
+    for (ax, ay), (bx, by) in zip(points, points[1:]):
+        total += math.hypot(bx - ax, by - ay)
+    return total
+
+
+def point_at_distance(points, dist):
+    """موقعیت نقطه‌ای که در فاصله‌ی طولی dist از ابتدای مسیر قرار دارد.
+
+    points: لیست [(x, y), ...]؛ dist بریده می‌شود به [۰، طول کل].
+    خروجی: (x, y). اگر مسیر نامعتبر باشد (۰.۰، ۰.۰).
+    """
+    if not points:
+        return 0.0, 0.0
+    if len(points) == 1:
+        return float(points[0][0]), float(points[0][1])
+    total = polyline_length(points)
+    d = max(0.0, min(float(dist), total))
+    acc = 0.0
+    for (ax, ay), (bx, by) in zip(points, points[1:]):
+        seg_len = math.hypot(bx - ax, by - ay)
+        if seg_len <= 1e-12:
+            continue
+        if acc + seg_len >= d:
+            t = (d - acc) / seg_len
+            return ax + t * (bx - ax), ay + t * (by - ay)
+        acc += seg_len
+    return float(points[-1][0]), float(points[-1][1])
+
+
+def camera_s_at_order(lane_points, cam_x, cam_y):
+    """فاصله‌ی طولی پروجکشن یک دوربین روی مسیر (برای شبیه‌ساز).
+
+    خروجی: s (واحد صحنه) یا None اگر مسیر نامعتبر باشد.
+    """
+    _dist, s = project_point_on_polyline(cam_x, cam_y, lane_points)
+    return s

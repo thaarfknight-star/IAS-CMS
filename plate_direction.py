@@ -135,6 +135,29 @@ class PlateDirectionEngine:
         now = time.time()
         violations = []
 
+        # لیست تحت‌نظر پلاک‌ها (2.0.18-beta): پلاک سیاه/سفید دیده شد ->
+        # ثبت تخلف از نوع watchlist_* (با ضدتکرار ۶۰ثانیه‌ای log_violation)
+        # و بوق، مثل بقیه‌ی تخلفات.
+        try:
+            for w in self.store.find_watchlist(text):
+                wkind = (w.get("kind") or "").strip()
+                if wkind not in ("black", "white"):
+                    continue
+                vtype = ("watchlist_black" if wkind == "black"
+                         else "watchlist_white")
+                note = (w.get("note") or "").strip()
+                detail = (f"پلاک «{w.get('plate_display') or text}» در "
+                          f"{self.store.WATCHLIST_LABELS.get(wkind, wkind)} "
+                          f"توسط «{cam_name}» دیده شد"
+                          + (f" — یادداشت: {note}" if note else ""))
+                violations.append(self.store.log_violation(
+                    vtype, text, camera_id=cam_id, camera_name=cam_name,
+                    lane_id=lane_id, detail=detail, snapshot_path=snapshot,
+                    plate_display=plate_display, plate_id=plate_id,
+                    owner_name=owner_name))
+        except Exception:
+            pass
+
         # قانون ج) خلاف جهت مسیر - مستقل از وضعیت داخل/خارج
         lane = self.get_lane(lane_id)
         if lane:
