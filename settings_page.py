@@ -81,6 +81,9 @@ class SettingsPage(QWidget):
         return STRINGS[key].get(self._lang, STRINGS[key]["fa"])
 
     def _build(self):
+        # جهت راست‌به‌چپ برای کل صفحه: بدون این، ترتیب ایموجی و متن فارسی
+        # در چک‌باکس‌ها و عنوان گروه‌ها به‌هم می‌ریزد (مشاهده‌شده روی ویندوز).
+        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(16)
@@ -138,8 +141,11 @@ class SettingsPage(QWidget):
         layout.addWidget(lang_group)
 
         # --- صداهای هشدار (هر کدام مستقل) ---
+        # هر ردیف: چک‌باکسِ بدون متن + لیبل جداگانه‌ی wrapشونده؛ تا ترتیب
+        # ایموجی/متن فارسی با هیچ فونتی به‌هم نریزد و متن هرگز بریده نشود.
         sound_group = QGroupBox(self._t("sound_group"))
         slay = QVBoxLayout()
+        slay.setSpacing(6)
         hint = QLabel(self._t("sound_hint"))
         hint.setStyleSheet("color: #888; font-size: 11px;")
         hint.setWordWrap(True)
@@ -150,12 +156,21 @@ class SettingsPage(QWidget):
         for key, label in (("fire", self._t("sound_fire")),
                            ("zone", self._t("sound_zone")),
                            ("violation", self._t("sound_violation"))):
-            chk = QCheckBox(label)
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            row.setContentsMargins(2, 4, 2, 4)
+            chk = QCheckBox()
             chk.setChecked(bool(_scfg.get(
                 {"fire": "fire_enabled", "zone": "zone_enabled",
                  "violation": "violation_enabled"}[key], False)))
             chk.toggled.connect(lambda c, k=key: self._on_sound_toggled(k, c))
-            slay.addWidget(chk)
+            lbl = QLabel(label)
+            lbl.setWordWrap(True)
+            lbl.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+            lbl.mousePressEvent = lambda _e, _c=chk: _c.toggle()
+            row.addWidget(chk)
+            row.addWidget(lbl, 1)
+            slay.addLayout(row)
             self._sound_checks[key] = chk
         sound_group.setLayout(slay)
         layout.addWidget(sound_group)
@@ -163,7 +178,10 @@ class SettingsPage(QWidget):
         # --- امنیت رمزها (2.0.15-beta به دستور کاربر) ---
         sec_group = QGroupBox(self._t("sec_group"))
         seclay = QVBoxLayout()
-        self.savepw_check = QCheckBox(self._t("sec_save_pw"))
+        secrow = QHBoxLayout()
+        secrow.setSpacing(8)
+        secrow.setContentsMargins(2, 4, 2, 4)
+        self.savepw_check = QCheckBox()
         self.savepw_check.setChecked(bool(app_settings.load_settings().get("save_passwords", True)))
         try:
             import credential_vault as _vault
@@ -173,7 +191,13 @@ class SettingsPage(QWidget):
         if _backend:
             self.savepw_check.setToolTip("موتور رمزنگاری: " + _backend)
         self.savepw_check.toggled.connect(self._on_savepw_toggled)
-        seclay.addWidget(self.savepw_check)
+        secrow.addWidget(self.savepw_check)
+        secpw_lbl = QLabel(self._t("sec_save_pw"))
+        secpw_lbl.setWordWrap(True)
+        secpw_lbl.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        secpw_lbl.mousePressEvent = lambda _e: self.savepw_check.toggle()
+        secrow.addWidget(secpw_lbl, 1)
+        seclay.addLayout(secrow)
         sechint = QLabel(self._t("sec_save_pw_hint"))
         sechint.setStyleSheet("color: #888; font-size: 11px;")
         sechint.setWordWrap(True)

@@ -523,6 +523,9 @@ class BuildingMapPage(QWidget):
         # --- پنل چپ (اسکرول‌شونده: با افزودن بخش «مسیرهای پلاک‌خوان»
         # ارتفاع محتوا از قد صفحه بیشتر می‌شود؛ عرض ثابت می‌ماند) ---
         left = QWidget()
+        # جهت راست‌به‌چپ: ترتیب ایموجی/متن عنوان‌ها درست می‌شود و با فونت‌های
+        # پهن، بریده‌شدن عنوان‌ها از سمت چپ رخ نمی‌دهد.
+        left.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         ll = QVBoxLayout(left)
         ll.setContentsMargins(2, 2, 2, 2)
 
@@ -604,7 +607,10 @@ class BuildingMapPage(QWidget):
         lanerow.addWidget(self.lane_rules_btn)
         ll.addLayout(lanerow)
         # ابزارهای مسیر (2.0.18-beta): شبیه‌سازی، پوشش، هیت‌مپ
-        ltoolrow = QHBoxLayout()
+        # عمودی (نه افقی ۳تایی): ردیف افقی با فونت‌های پهن از عرض ۲۷۲ پیکسل
+        # پنل بیشتر می‌شد و عنوان‌های بخش‌ها از چپ بریده می‌شدند.
+        ltoolbox = QVBoxLayout()
+        ltoolbox.setSpacing(4)
         self.lane_sim_btn = QPushButton("▶️ شبیه‌سازی")
         self.lane_sim_btn.setToolTip("شبیه‌سازی حرکت خودرو روی مسیر انتخاب‌شده")
         self.lane_sim_btn.clicked.connect(self._start_lane_sim)
@@ -617,10 +623,10 @@ class BuildingMapPage(QWidget):
             "نمایش پرترددترین مسیرها با رنگ روی نقشه")
         self.heatmap_btn.setCheckable(True)
         self.heatmap_btn.clicked.connect(self._toggle_heatmap)
-        ltoolrow.addWidget(self.lane_sim_btn)
-        ltoolrow.addWidget(self.coverage_btn)
-        ltoolrow.addWidget(self.heatmap_btn)
-        ll.addLayout(ltoolrow)
+        ltoolbox.addWidget(self.lane_sim_btn)
+        ltoolbox.addWidget(self.coverage_btn)
+        ltoolbox.addWidget(self.heatmap_btn)
+        ll.addLayout(ltoolbox)
 
         ll.addStretch()
         left_scroll = QScrollArea()

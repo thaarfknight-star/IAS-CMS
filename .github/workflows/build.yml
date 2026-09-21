@@ -9,6 +9,10 @@ on:
         description: 'true = بیلد سریع PyInstaller (چند دقیقه) | false = بیلد نهایی Nuitka onefile (چند ساعت، فقط دستی)'
         type: boolean
         default: true
+      update_only:
+        description: 'true = فقط «فایل آپدیت» (بدون Setup.exe) — برای آپدیت‌های کوچک | false = بیلد کامل'
+        type: boolean
+        default: false
 
 concurrency:
   group: build-exe-${{ github.ref }}
@@ -485,6 +489,11 @@ jobs:
     # روی هر push و هر اجرای دستی: از روی dist/CCTV_CMS یک Setup.exe
     # با صفحه‌ی اختصاصی + یک «فایل آپدیت» تفاضلی (فقط فایل‌های عوض‌شده
     # نسبت به آخرین بیلد موفق) ساخته می‌شود.
+    #
+    # حالت «فقط آپدیت» (update_only=true در اجرای دستی): بیلد exe طبق معمول
+    # انجام می‌شود (برای diff لازم است) ولی مرحله‌های مخصوص نصب‌کننده
+    # (گرافیک، filelist، NSIS) رد می‌شوند و فقط «فایل آپدیت» تحویل داده
+    # می‌شود — مناسب آپدیت‌های کوچک.
 
     - name: Prepare installer payload (version/updater/manifest)
       if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
@@ -503,7 +512,8 @@ jobs:
         Write-Host "APP_VERSION=$ver"
 
     - name: Build installer graphics (Persian branded pages)
-      if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+      # در حالت فقط-آپدیت، گرافیک نصب‌کننده لازم نیست.
+      if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event.inputs.update_only != 'true' }}
       shell: pwsh
       run: |
         $ErrorActionPreference = "Stop"
@@ -516,19 +526,27 @@ jobs:
         python installer/make_graphics.py --version $env:APP_VERSION --outdir $gfx --font "$gfx/Vazirmatn-Bold.ttf" --font-regular "$gfx/Vazirmatn-Regular.ttf"
         if ($LASTEXITCODE -ne 0) { throw "make_graphics.py failed" }
 
-    - name: Generate installer file list + manifest
+    - name: Generate update manifest
       if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = "Stop"
+        python installer/make_update.py manifest --dist dist/CCTV_CMS --version $env:APP_VERSION --out dist/CCTV_CMS/manifest.json
+        if ($LASTEXITCODE -ne 0) { throw "make_update.py manifest failed" }
+        Copy-Item "dist/CCTV_CMS/manifest.json" "dist/manifest.json" -Force
+
+    - name: Generate installer file list
+      # در حالت فقط-آپدیت، filelist نصب‌کننده لازم نیست.
+      if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event.inputs.update_only != 'true' }}
       shell: pwsh
       run: |
         $ErrorActionPreference = "Stop"
         python installer/gen_filelist.py --dist dist/CCTV_CMS --out installer/files.nsi --chunks 16
         if ($LASTEXITCODE -ne 0) { throw "gen_filelist.py failed" }
-        python installer/make_update.py manifest --dist dist/CCTV_CMS --version $env:APP_VERSION --out dist/CCTV_CMS/manifest.json
-        if ($LASTEXITCODE -ne 0) { throw "make_update.py manifest failed" }
-        Copy-Item "dist/CCTV_CMS/manifest.json" "dist/manifest.json" -Force
 
     - name: Build Setup EXE (NSIS)
-      if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+      # در حالت فقط-آپدیت، Setup.exe ساخته نمی‌شود.
+      if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event.inputs.update_only != 'true' }}
       shell: pwsh
       run: |
         $ErrorActionPreference = "Stop"
@@ -633,7 +651,10 @@ jobs:
     # تحویل نهایی: سه آرتیفکت جدا — نصب‌کننده (Setup.exe) + «فایل آپدیت»
     # تفاضلی هر نسخه + مانیفست (برای diff بیلد بعدی). خروجی portable
     # دیگر تولید نمی‌شود.
+    # در حالت فقط-آپدیت (update_only=true) فقط «فایل آپدیت» + مانیفست
+    # آپلود می‌شود و Setup.exe ساخته/تحویل داده نمی‌شود.
     - name: Upload installer artifact
+      if: ${{ github.event.inputs.update_only != 'true' }}
       uses: actions/upload-artifact@v4
       with:
         name: IAS-CMS-Setup-Windows
