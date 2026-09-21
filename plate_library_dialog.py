@@ -1248,19 +1248,8 @@ class PlateLibraryPage(QWidget):
         lane_btn_col.addStretch(1)
         lane_row.addLayout(lane_btn_col)
         lane_layout.addLayout(lane_row)
-        grace_row = QHBoxLayout()
-        grace_row.addWidget(QLabel("پنجره‌ی اغماض ورود تکراری (ثانیه):"))
-        self.grace_spin = QSpinBox()
-        self.grace_spin.setRange(0, 600)
-        self.grace_spin.setValue(plate_store.reentry_grace_seconds)
-        self.grace_spin.setToolTip(
-            "اگر همان پلاک در این مدت دوباره در همان جهت دیده شود، "
-            "خوانش تکراری حساب می‌شود نه تخلف «ورود مجدد».")
-        self.grace_spin.valueChanged.connect(
-            lambda v: setattr(plate_store, "reentry_grace_seconds", int(v)))
-        grace_row.addWidget(self.grace_spin)
-        grace_row.addStretch(1)
-        lane_layout.addLayout(grace_row)
+        # (2.0.17-beta) پنجره‌ی اغماض ورود تکراری حذف شد؛ کول‌داون
+        # ۱۵ثانیه‌ای دتکتور برای خوانش تکراری کافی است.
         lane_group.setLayout(lane_layout)
         layout.addWidget(lane_group, 1)
         return tab

@@ -1,12 +1,28 @@
 # -*- coding: utf-8 -*-
-"""plate_direction.py — موتور قوانین جهت تردد پلاک‌خوان (2.0.15-beta).
+"""plate_direction.py — موتور قوانین جهت تردد پلاک‌خوان (2.0.17-beta).
 
-به دستور کاربر، برای دوربین‌های پلاک‌خوان تعریف می‌شود هر دوربین برای کدام
-مسیر است (ورود/خروج) و هر مسیر فقط یک جهت مجاز دارد (رفت/برگشت):
+قوانین تردد (تحقیق و تدوین نهایی):
 
   قانون الف) خروجِ بدون ورودِ ثبت‌شده -> تخلف «خروج بدون ورود ثبت‌شده»
+             (استثنا: ادامه‌ی حرکت رو به جلو/درجا در همان مسیرِ خروج، ادامه‌ی
+             همان رویداد خروج است و تخلف نیست — مثلاً دوربین دوم مسیر خروج)
   قانون ب) ورودِ مجددِ بدون خروجِ قبلی -> تخلف «ورود مجدد بدون خروج قبلی»
+             (بدون هیچ اغماضی؛ کول‌داون ۱۵ثانیه‌ای دتکتور برای خوانش تکراری
+             کافی است و اغماض ۱۲۰ثانیه‌ای حذف شده است)
   قانون ج) تردد در مسیر خلاف جهت مجاز آن -> تخلف «تردد خلاف جهت مجاز مسیر»
+             (نقش دوربین: ورود=رفت، خروج=برگشت؛ مقایسه با lane.allowed)
+  قانون د) حرکت معکوس در مسیر رسم‌شده -> تخلف «تردد خلاف جهت مجاز مسیر»
+             (فقط وقتی پلاک «داخل» است و عبور قبلی‌اش در همان مسیر بوده:
+             در مسیر فقط-رفت باید ترتیب دوربین‌ها صعودی باشد، در مسیر
+             فقط-برگشت نزولی؛ حرکت رو به جلو، تخلف «ورود مجدد» قانون ب را
+             هم خنثی می‌کند چون تردد سالم در امتداد مسیر است)
+
+قوانین رسم و اتصال مسیر روی نقشه (رجوع به lane_geometry.py):
+  ۱) حداقل ۲ نقطه؛ جهت رسم (اول -> آخر) = جهت «رفت» مسیر.
+  ۲) فقط دوربینِ دارای نقش پلاکی (ورود/خروج) و با فاصله‌ی حداکثر ۵ متر از
+     خط مسیر قابل اتصال است.
+  ۳) هر دوربین فقط عضو یک مسیر است.
+  ۴) ترتیب دوربین‌ها = فاصله‌ی طولی پروجکشن از ابتدای مسیر.
 
 نکته‌ی استخراج جهت از یک دوربین ثابت: دوربین پلاک را یک‌بار می‌بیند، پس
 «ورود/خروج» از نقش دوربین (plate_role) و «رفت/برگشت» از نگاشت قراردادی
@@ -34,6 +50,22 @@ TRAVEL_GOING = "going"    # رفت
 TRAVEL_RETURN = "return"  # برگشت
 
 ROLE_LABELS = {"entry": "دوربین ورود", "exit": "دوربین خروج", "": "غیرپلاکی"}
+
+
+def lane_direction(allowed, prev_order, cur_order):
+    """جهت حرکت میان دو ترتیب دوربین در یک مسیر.
+
+    خروجی: "forward" | "backward" | "same" | None (نامشخص)
+    """
+    if prev_order is None or cur_order is None:
+        return None
+    if allowed not in ("going", "return"):
+        return None
+    if cur_order == prev_order:
+        return "same"
+    if allowed == "going":
+        return "forward" if cur_order > prev_order else "backward"
+    return "forward" if cur_order < prev_order else "backward"
 
 
 class PlateDirectionEngine:
@@ -120,27 +152,63 @@ class PlateDirectionEngine:
                     plate_display=plate_display, plate_id=plate_id,
                     owner_name=owner_name))
 
-        # قوانین الف/ب بر اساس وضعیت داخل/خارج
+        # قوانین الف/ب/د بر اساس وضعیت داخل/خارج و ترتیب مسیر
         st = self.store.get_plate_state(text)
         prev_state = (st or {}).get("state") or "outside"
-        last_ts = (st or {}).get("last_ts") or 0
+        prev_lane = (st or {}).get("last_lane_id") or ""
+        try:
+            prev_order = (int((st or {}).get("last_lane_order"))
+                          if (st or {}).get("last_lane_order") is not None else None)
+        except (TypeError, ValueError):
+            prev_order = None
+        cam_order = self.store.lane_camera_order(lane, cam_id)
+        allowed = ((lane or {}).get("allowed") or "").strip()
+
+        direction = None  # forward/backward/same/None — فقط در همان مسیر
+        if lane and lane_id and lane_id == prev_lane:
+            direction = lane_direction(allowed, prev_order, cam_order)
+            if (direction is None and prev_order is not None
+                    and cam_order is not None and not allowed):
+                direction = "forward"  # جهت مسیر تعریف‌نشده: سخت‌گیری نکن
+        forward_progress = direction in ("forward", "same")
+        reverse_move = (direction == "backward" and prev_state == "inside"
+                        and crossing == "entry")
 
         if crossing == "exit" and prev_state != "inside":
-            # قانون الف) خروج بدون ورود ثبت‌شده
-            detail = "خروج ثبت شد در حالی که ورود قبلی برای این پلاک ثبت نشده است"
-            violations.append(self.store.log_violation(
-                "exit_without_entry", text, camera_id=cam_id,
-                camera_name=cam_name, lane_id=lane_id, detail=detail,
-                snapshot_path=snapshot, plate_display=plate_display,
-                plate_id=plate_id, owner_name=owner_name))
-            # وضعیت عوض نمی‌شود (هنوز خارج است)
-        elif crossing == "entry" and prev_state == "inside":
-            # قانون ب) ورود مجدد بدون خروج - با پنجره‌ی اغماض برای خوانش
-            # تکراری هم‌جهت در یک گیت (مثلاً دو دوربین روی یک ورودی)
-            grace = self.store.reentry_grace_seconds
-            if now - last_ts < grace:
-                pass  # خوانش تکراری همان ورود؛ فقط لاگ عبور
+            if forward_progress:
+                # استثنای قانون الف: ادامه‌ی حرکت رو به جلو/درجا در همان
+                # مسیرِ خروج (مثلاً دوربین دوم مسیر خروج) = ادامه‌ی همان
+                # رویداد خروج است، نه تخلف.
+                pass
             else:
+                # قانون الف) خروج بدون ورود ثبت‌شده
+                detail = ("خروج ثبت شد در حالی که ورود قبلی برای این پلاک "
+                          "ثبت نشده است")
+                violations.append(self.store.log_violation(
+                    "exit_without_entry", text, camera_id=cam_id,
+                    camera_name=cam_name, lane_id=lane_id, detail=detail,
+                    snapshot_path=snapshot, plate_display=plate_display,
+                    plate_id=plate_id, owner_name=owner_name))
+            # وضعیت عوض نمی‌شود (هنوز خارج است)
+        elif reverse_move:
+            # قانون د) حرکت معکوس در مسیر رسم‌شده — تخلفِ خاص‌تر، پس قانون
+            # ب اجرا نمی‌شود تا تخلف تکراری ثبت نشود.
+            lane_name = (lane or {}).get("name") or lane_id
+            detail = (
+                f"حرکت معکوس در مسیر «{lane_name}»: دوربین «{cam_name}» "
+                f"بعد از دوربینی با ترتیب بالاتر/پایین‌تر دیده شد")
+            violations.append(self.store.log_violation(
+                "wrong_way", text, camera_id=cam_id, camera_name=cam_name,
+                lane_id=lane_id, detail=detail, snapshot_path=snapshot,
+                plate_display=plate_display, plate_id=plate_id,
+                owner_name=owner_name))
+            # وضعیت همان داخل می‌ماند
+        elif crossing == "entry" and prev_state == "inside":
+            if forward_progress:
+                pass  # تردد سالم در امتداد مسیر؛ تخلف «ورود مجدد» نیست
+            else:
+                # قانون ب) ورود مجدد بدون خروج — بدون اغماض؛ کول‌داون
+                # ۱۵ثانیه‌ای دتکتور برای خوانش تکراری کافی است.
                 detail = "ورود مجدد ثبت شد در حالی که خروج قبلی ثبت نشده است"
                 violations.append(self.store.log_violation(
                     "reentry_without_exit", text, camera_id=cam_id,
@@ -154,6 +222,12 @@ class PlateDirectionEngine:
             self.store.set_plate_state(text, new_state,
                                        last_event_id=event_id,
                                        last_camera_id=cam_id, last_ts=now)
+
+        # به‌روزرسانی آخرین مسیر/ترتیب دوربین (برای قانون د در عبورهای بعدی)
+        try:
+            self.store.set_plate_lane(text, lane_id, cam_order)
+        except Exception:
+            pass
 
         # ثبت عبور (همیشه، حتی با تخلف) + لینک دوربین/مسیر روی رویداد اصلی
         crossing_id = self.store.log_crossing(

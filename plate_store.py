@@ -383,6 +383,13 @@ class PlateStore:
                 c.execute("ALTER TABLE plate_events ADD COLUMN camera_id TEXT DEFAULT ''")
             if "lane_id" not in ev_cols:
                 c.execute("ALTER TABLE plate_events ADD COLUMN lane_id TEXT DEFAULT ''")
+            # مهاجرت 2.0.17-beta: آخرین مسیر/ترتیب دوربین برای قانون د
+            st_cols = [r["name"] for r in
+                       c.execute("PRAGMA table_info(plate_states)").fetchall()]
+            if "last_lane_id" not in st_cols:
+                c.execute("ALTER TABLE plate_states ADD COLUMN last_lane_id TEXT DEFAULT ''")
+            if "last_lane_order" not in st_cols:
+                c.execute("ALTER TABLE plate_states ADD COLUMN last_lane_order INTEGER DEFAULT -1")
             self._conn.commit()
 
     # ------------------------------------------------------------- تنظیمات -
@@ -796,28 +803,61 @@ class PlateStore:
     TRAVEL_LABELS = {"going": "رفت", "return": "برگشت"}
 
     def get_lanes(self):
-        """تعریف مسیرها: {lane_id: {"name":..., "allowed": "going"|"return"}}."""
+        """تعریف مسیرها: {lane_id: {"name", "allowed", ...}}.
+
+        (2.0.17-beta) اگر دیتابیس خالی باشد، دو مسیر پیش‌فرض ساخته و ذخیره
+        می‌شود: «مسیر ۱» فقط رفت و «مسیر ۲» فقط برگشت.
+        رکورد مسیر رسم‌شده روی نقشه این کلیدها را هم دارد:
+        floor_id, points ([[x,y],...] به واحد صحنه), to_meter,
+        cameras ([{"camera_id", "order"}] مرتب‌شده از ابتدای مسیر).
+        """
         try:
             raw = self.get_setting("lanes", "")
             lanes = json.loads(raw) if raw else {}
-            return lanes if isinstance(lanes, dict) else {}
+            if not isinstance(lanes, dict):
+                lanes = {}
         except Exception:
-            return {}
+            lanes = {}
+        if not lanes:
+            lanes = {
+                "lane1": {"name": "مسیر ۱", "allowed": "going"},
+                "lane2": {"name": "مسیر ۲", "allowed": "return"},
+            }
+            try:
+                self.set_lanes(lanes)
+            except Exception:
+                pass
+        return lanes
 
     def set_lanes(self, lanes):
         self.set_setting("lanes", json.dumps(lanes or {}, ensure_ascii=False))
 
-    @property
-    def reentry_grace_seconds(self):
-        """پنجره‌ی اغماض برای خوانش تکراری هم‌جهت در یک گیت (پیش‌فرض ۱۲۰ ثانیه)."""
-        try:
-            return int(float(self.get_setting("reentry_grace_seconds", "120")))
-        except ValueError:
-            return 120
+    @staticmethod
+    def lane_camera_order(lane, camera_id):
+        """ترتیب دوربین در مسیر رسم‌شده؛ None اگر دوربین عضو مسیر نیست."""
+        cams = (lane or {}).get("cameras") or []
+        for c in cams:
+            if str(c.get("camera_id")) == str(camera_id):
+                try:
+                    return int(c.get("order", 0))
+                except (TypeError, ValueError):
+                    return 0
+        return None
 
-    @reentry_grace_seconds.setter
-    def reentry_grace_seconds(self, v):
-        self.set_setting("reentry_grace_seconds", str(int(v)))
+    def set_plate_lane(self, plate_text, lane_id="", lane_order=None):
+        """به‌روزرسانی آخرین مسیر/ترتیب دوربین پلاک (برای قانون د)."""
+        canonical = normalize_plate_text(plate_text)
+        order = -1 if lane_order is None else int(lane_order)
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO plate_states(plate_text, state, last_lane_id,
+                                            last_lane_order, last_ts, updated_at)
+                   VALUES(?, 'outside', ?, ?, ?, ?)
+                   ON CONFLICT(plate_text) DO UPDATE SET
+                     last_lane_id=excluded.last_lane_id,
+                     last_lane_order=excluded.last_lane_order""",
+                (canonical, lane_id or "", order, time.time(), time.time()))
+            self._conn.commit()
 
     def get_plate_state(self, plate_text):
         canonical = normalize_plate_text(plate_text)

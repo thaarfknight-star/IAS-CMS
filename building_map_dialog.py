@@ -11,14 +11,15 @@
 - شبکه‌ی مختصات متری + نمایش مختصات موس برای دقت جای‌گذاری
 """
 
+import math
 import os
 
 from PyQt6.QtCore import (
-    Qt, QRectF, QPointF, QTimer, pyqtSignal,
+    Qt, QRectF, QPointF, QTimer, pyqtSignal, QEvent,
 )
 from PyQt6.QtGui import (
     QColor, QPen, QBrush, QPainter, QPainterPath, QFont,
-    QCursor,
+    QCursor, QPolygonF,
 )
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QListWidget,
@@ -27,13 +28,19 @@ from PyQt6.QtWidgets import (
     QGraphicsLineItem, QSplitter, QComboBox, QLineEdit, QSpinBox, QSlider,
     QDoubleSpinBox,
     QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QFileDialog,
-    QInputDialog, QGroupBox, QAbstractItemView,
+    QInputDialog, QGroupBox, QAbstractItemView, QGraphicsPolygonItem,
+    QScrollArea,
 )
 
 from building_map import (
     MapStore, DxfMapLoader, DxfError, DEVICE_KINDS, ezdxf_available,
 )
 from person_store import person_store
+from plate_store import plate_store
+from lane_geometry import (
+    DEFAULT_ATTACH_TOLERANCE_M, build_lane_record, camera_on_lane,
+    validate_lane_points,
+)
 
 # ---------------------------------------------------------------------------
 # صحنه با شبکه‌ی مختصات
@@ -244,6 +251,7 @@ class DeviceItem(QGraphicsItemGroup):
 class MapView(QGraphicsView):
     place_clicked = pyqtSignal(QPointF)   # کلیک در حالت جای‌گذاری
     mouse_moved = pyqtSignal(QPointF)     # مختصات موس (واحد صحنه)
+    lane_click = pyqtSignal(QPointF)       # کلیک تمیز در حالت رسم/انتخاب مسیر
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -255,6 +263,7 @@ class MapView(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.placing = False
+        self.lane_drawing = False  # حالت رسم مسیر / انتخاب دوربین‌های مسیر
         self._pan = None
         self._press_pos = None
 
@@ -267,6 +276,10 @@ class MapView(QGraphicsView):
         if event.button() == Qt.MouseButton.MiddleButton:
             self._pan = event.pos()
             self.setCursor(QCursor(Qt.CursorShape.ClosedHandCursor))
+            return
+        if self.lane_drawing and event.button() == Qt.MouseButton.LeftButton:
+            # در حالت رسم مسیر: نه پن، نه درگ تجهیز؛ فقط ثبت نقطه/انتخاب
+            super().mousePressEvent(event)
             return
         if event.button() == Qt.MouseButton.LeftButton and not self.placing:
             # اگر روی آیتم متحرک نیستیم، پن کنیم
@@ -293,6 +306,24 @@ class MapView(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self.lane_drawing and event.button() == Qt.MouseButton.LeftButton:
+            self._pan = None
+            try:
+                self.unsetCursor()
+            except Exception:
+                pass
+            if (self._press_pos is not None
+                    and (event.pos() - self._press_pos).manhattanLength() < 5):
+                try:
+                    self.lane_click.emit(self.mapToScene(event.pos()))
+                except Exception:
+                    pass
+            super().mouseReleaseEvent(event)
+            try:
+                self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+            except Exception:
+                pass
+            return
         was_pan = self._pan is not None
         self._pan = None
         self.unsetCursor()
@@ -464,6 +495,12 @@ class BuildingMapPage(QWidget):
         self.current_floor = None
         self._placing_kind = None
         self._path = None         # اطلاعات مسیر شخص فعال
+        # --- حالت رسم مسیر پلاک‌خوان (2.0.17-beta) ---
+        self._lane_mode = None    # None | "draw" | "pick"
+        self._lane_points = []    # [(x, y)] به واحد صحنه
+        self._lane_pick = {}      # device_id -> DeviceItem (دوربین‌های انتخاب‌شده)
+        self._lane_pick_rings = {}  # device_id -> QGraphicsEllipseItem
+        self._lane_selected_id = None  # مسیر انتخاب‌شده در لیست (نمایش روی نقشه)
         self._pending_fit = False
         self._play_timer = QTimer(self)
         self._play_timer.timeout.connect(self._play_tick)
@@ -482,9 +519,9 @@ class BuildingMapPage(QWidget):
         root = QHBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
 
-        # --- پنل چپ ---
+        # --- پنل چپ (اسکرول‌شونده: با افزودن بخش «مسیرهای پلاک‌خوان»
+        # ارتفاع محتوا از قد صفحه بیشتر می‌شود؛ عرض ثابت می‌ماند) ---
         left = QWidget()
-        left.setFixedWidth(264)
         ll = QVBoxLayout(left)
         ll.setContentsMargins(2, 2, 2, 2)
 
@@ -546,8 +583,34 @@ class BuildingMapPage(QWidget):
         pr.addWidget(self.path_btn)
         pr.addWidget(self.path_close_btn)
         ll.addLayout(pr)
+
+        # --- مسیرهای پلاک‌خوان (2.0.17-beta): رسم روی نقشه + اتصال دوربین ---
+        ll.addWidget(self._title("🛣 مسیرهای پلاک‌خوان"))
+        self.lane_draw_btn = QPushButton("✏️ رسم مسیر جدید")
+        self.lane_draw_btn.setFixedHeight(30)
+        self.lane_draw_btn.clicked.connect(self._start_lane_draw)
+        ll.addWidget(self.lane_draw_btn)
+        self.lane_list = QListWidget()
+        self.lane_list.setMaximumHeight(90)
+        self.lane_list.itemClicked.connect(self._on_lane_selected)
+        ll.addWidget(self.lane_list)
+        lanerow = QHBoxLayout()
+        self.lane_del_btn = QPushButton("🗑 حذف")
+        self.lane_del_btn.clicked.connect(self._delete_lane)
+        self.lane_rules_btn = QPushButton("❓ قوانین")
+        self.lane_rules_btn.clicked.connect(self._show_lane_rules)
+        lanerow.addWidget(self.lane_del_btn)
+        lanerow.addWidget(self.lane_rules_btn)
+        ll.addLayout(lanerow)
+
         ll.addStretch()
-        root.addWidget(left)
+        left_scroll = QScrollArea()
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setWidget(left)
+        left_scroll.setFixedWidth(272)
+        left_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        root.addWidget(left_scroll)
 
         # --- وسط: نقشه ---
         center = QWidget()
@@ -557,6 +620,29 @@ class BuildingMapPage(QWidget):
         self.view.place_clicked.connect(self._on_place_clicked)
         self.view.mouse_moved.connect(self._on_mouse_moved)
         cl.addWidget(self.view, 1)
+        self._center_widget = center
+        # نوار شناور تأیید/لغو رسم مسیر (2.0.17-beta)
+        self._lane_bar = QWidget(center)
+        _bl = QHBoxLayout(self._lane_bar)
+        _bl.setContentsMargins(10, 6, 10, 6)
+        _bl.setSpacing(8)
+        self._lane_bar_label = QLabel("")
+        self._lane_bar_label.setStyleSheet("color:#fde68a; font-size:12px;")
+        self._lane_bar_confirm = QPushButton("✅ تأیید مسیر")
+        self._lane_bar_cancel = QPushButton("❌ لغو")
+        for _b in (self._lane_bar_confirm, self._lane_bar_cancel):
+            _b.setFixedHeight(30)
+        self._lane_bar_confirm.clicked.connect(self._on_lane_bar_confirm)
+        self._lane_bar_cancel.clicked.connect(lambda: self._cancel_lane_mode())
+        _bl.addWidget(self._lane_bar_label)
+        _bl.addWidget(self._lane_bar_confirm)
+        _bl.addWidget(self._lane_bar_cancel)
+        self._lane_bar.setStyleSheet(
+            "background-color:#0e1620; border:1px solid #22d3ee; "
+            "border-radius:8px;")
+        self._lane_bar.hide()
+        self.view.lane_click.connect(self._on_lane_click)
+        self.view.installEventFilter(self)
         coord_row = QHBoxLayout()
         self.coord_label = QLabel("X: — ، Y: —")
         self.coord_label.setStyleSheet("color:#8fa3b8; font-size:11px;")
@@ -653,6 +739,8 @@ class BuildingMapPage(QWidget):
 
         rl.addStretch()
         root.addWidget(right)
+        # لیست مسیرهای پلاک‌خوان (با ساخت پیش‌فرض‌ها اگر دیتابیس خالی باشد)
+        self._reload_lane_list()
 
     @staticmethod
     def _title(text):
@@ -867,6 +955,14 @@ class BuildingMapPage(QWidget):
         # مسیر شخص فعال را روی صحنه‌ی جدید هم بکش
         if self._path:
             self._draw_path()
+        # مسیر پلاک‌خوان انتخاب‌شده را هم روی صحنه‌ی جدید بکش
+        if self._lane_selected_id:
+            try:
+                _lane = plate_store.get_lanes().get(self._lane_selected_id) or {}
+                if (_lane.get("floor_id") or "") == floor_id:
+                    self._show_lane(self._lane_selected_id)
+            except Exception:
+                pass
 
     def _fit_current(self):
         sc = self.view.scene()
@@ -912,11 +1008,17 @@ class BuildingMapPage(QWidget):
         self.place_hint.setText("")
 
     def keyPressEvent(self, event):
-        if event.key() == Qt.Key.Key_Escape and self._placing_kind:
+        if event.key() == Qt.Key.Key_Escape and (self._placing_kind or self._lane_mode):
             self._stop_placing()
+            self._cancel_lane_mode()
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def eventFilter(self, obj, event):
+        if obj is self.view and event.type() == QEvent.Type.Resize:
+            self._position_lane_bar()
+        return super().eventFilter(obj, event)
 
     def _sync_camera_floor(self, cam_id, floor_id):
         """سینک طبقه‌ی دوربین با نقشه‌ی ساختمان (کنترل تردد طبقاتی).
@@ -1653,6 +1755,487 @@ class BuildingMapPage(QWidget):
             self.play_btn.setText("▶ پخش مسیر")
         except Exception:
             pass
+
+    # ============================ مسیرهای پلاک‌خوان روی نقشه (2.0.17-beta) ==
+    LANE_RULES_TEXT = (
+        "قوانین رسم و اتصال مسیر:\n"
+        "۱) حداقل ۲ نقطه روی نقشه کلیک کنید؛ جهت رسم (نقطه‌ی اول ← آخر) = جهت «رفت» مسیر.\n"
+        "۲) فقط دوربین‌هایی که حداکثر ۵ متر از خط مسیر فاصله دارند قابل اتصال‌اند.\n"
+        "۳) دوربین باید نقش پلاکی (ورود/خروج) داشته باشد.\n"
+        "۴) هر دوربین فقط عضو یک مسیر است؛ اتصال به مسیر جدید، اتصال قبلی را قطع می‌کند.\n"
+        "۵) ترتیب دوربین‌ها از ابتدای مسیر محاسبه و برای تشخیص «حرکت معکوس» استفاده می‌شود.\n"
+        "\nقوانین موتور تردد:\n"
+        "الف) خروج بدون ورود ثبت‌شده ← تخلف\n"
+        "ب) ورود مجدد بدون خروج قبلی ← تخلف (بدون اغماض)\n"
+        "ج) تردد خلاف جهت مجاز مسیر ← تخلف\n"
+        "د) حرکت معکوس در مسیر (برعکس ترتیب دوربین‌ها) ← تخلف"
+    )
+
+    def _show_lane_rules(self):
+        QMessageBox.information(self, "قوانین مسیر", self.LANE_RULES_TEXT)
+
+    # -- شروع/لغو حالت رسم --
+    def _start_lane_draw(self):
+        if not self.current_floor:
+            QMessageBox.information(self, "طبقه‌ای انتخاب نشده",
+                                    "اول یک طبقه انتخاب کنید.")
+            return
+        if self.current_floor not in self.scenes:
+            return
+        self._stop_placing()
+        self._cancel_lane_mode(silent=True)
+        self._lane_mode = "draw"
+        self._lane_points = []
+        self.view.lane_drawing = True
+        self.view.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+        self._update_lane_bar()
+
+    def _cancel_lane_mode(self, silent=False):
+        if not self._lane_mode and not self.view.lane_drawing:
+            return
+        self._lane_mode = None
+        self._lane_points = []
+        self.view.lane_drawing = False
+        self.view.unsetCursor()
+        for entry in self.scenes.values():
+            for it in list(entry["scene"].items()):
+                try:
+                    if it.data(0) in ("lane-draw", "lane-pick"):
+                        entry["scene"].removeItem(it)
+                except Exception:
+                    pass
+        self._lane_pick = {}
+        self._lane_pick_rings = {}
+        try:
+            self._lane_bar.hide()
+        except Exception:
+            pass
+
+    # -- نوار شناور تأیید/لغو --
+    def _position_lane_bar(self):
+        try:
+            if not self._lane_bar.isVisible():
+                return
+            self._lane_bar.adjustSize()
+            bw, bh = self._lane_bar.width(), self._lane_bar.height()
+            x = self.view.x() + max(0, (self.view.width() - bw) // 2)
+            y = self.view.y() + max(0, self.view.height() - bh - 14)
+            self._lane_bar.move(x, y)
+            self._lane_bar.raise_()
+        except Exception:
+            pass
+
+    def _update_lane_bar(self):
+        if self._lane_mode == "draw":
+            n = len(self._lane_points)
+            self._lane_bar_label.setText(
+                f"🖊 نقطه‌ی {n + 1} — روی نقشه کلیک کنید (حداقل ۲ نقطه)")
+            self._lane_bar_confirm.setText("✅ تأیید مسیر")
+            self._lane_bar_confirm.setEnabled(n >= 2)
+        elif self._lane_mode == "pick":
+            n = len(self._lane_pick)
+            self._lane_bar_label.setText(
+                f"🎥 {n} دوربین انتخاب شد — روی دوربین‌های روی خط مسیر کلیک کنید")
+            self._lane_bar_confirm.setText("💾 ذخیره مسیر")
+            self._lane_bar_confirm.setEnabled(n >= 1)
+        else:
+            return
+        self._lane_bar.show()
+        self._position_lane_bar()
+
+    def _on_lane_bar_confirm(self):
+        if self._lane_mode == "draw":
+            self._confirm_lane_points()
+        elif self._lane_mode == "pick":
+            self._save_lane()
+
+    # -- کلیک‌های رسم/انتخاب --
+    def _on_lane_click(self, scene_pos):
+        if self._lane_mode == "draw":
+            if (self.current_floor or "") not in self.scenes:
+                return
+            self._lane_points.append((scene_pos.x(), scene_pos.y()))
+            self._redraw_lane_preview()
+            self._update_lane_bar()
+        elif self._lane_mode == "pick":
+            self._toggle_pick_camera(scene_pos)
+
+    def _redraw_lane_preview(self):
+        entry = self.scenes.get(self.current_floor)
+        if not entry:
+            return
+        sc = entry["scene"]
+        for it in list(sc.items()):
+            try:
+                if it.data(0) == "lane-draw":
+                    sc.removeItem(it)
+            except Exception:
+                pass
+        pts = self._lane_points
+        if len(pts) >= 2:
+            path = QPainterPath()
+            path.moveTo(pts[0][0], pts[0][1])
+            for x, y in pts[1:]:
+                path.lineTo(x, y)
+            line = QGraphicsPathItem(path)
+            pen = QPen(QColor("#fbbf24"), 0)
+            pen.setCosmetic(True)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            line.setPen(pen)
+            line.setZValue(23)
+            line.setData(0, "lane-draw")
+            sc.addItem(line)
+        for i, (x, y) in enumerate(pts, 1):
+            badge = QGraphicsEllipseItem(-13, -13, 26, 26)
+            badge.setPos(x, y)
+            badge.setPen(QPen(QColor("#fbbf24"), 2))
+            badge.setBrush(QBrush(QColor("#451a03")))
+            badge.setFlag(
+                QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
+            badge.setZValue(24)
+            badge.setData(0, "lane-draw")
+            sc.addItem(badge)
+            num = QGraphicsSimpleTextItem(str(i))
+            f = QFont()
+            f.setBold(True)
+            f.setPointSize(10)
+            num.setFont(f)
+            num.setBrush(QBrush(QColor("#fde68a")))
+            num.setPos(x - 5, y - 10)
+            num.setFlag(
+                QGraphicsSimpleTextItem.GraphicsItemFlag.ItemIgnoresTransformations)
+            num.setZValue(25)
+            num.setData(0, "lane-draw")
+            sc.addItem(num)
+
+    def _confirm_lane_points(self):
+        ok, msg = validate_lane_points(self._lane_points)
+        if not ok:
+            QMessageBox.information(self, "مسیر ناقص", msg)
+            return
+        self._lane_mode = "pick"
+        self._update_lane_bar()
+
+    # -- انتخاب دوربین‌های روی مسیر --
+    def _device_at(self, scene_pos):
+        entry = self.scenes.get(self.current_floor)
+        if not entry:
+            return None
+        try:
+            scale = self.view.transform().m11()
+        except Exception:
+            scale = 1.0
+        tol = 30.0 / max(scale, 0.05)
+        best, best_d = None, None
+        for item in entry["items"].values():
+            try:
+                if not isinstance(item, DeviceItem):
+                    continue
+                if item.device.get("kind") != "camera":
+                    continue
+                p = item.pos()
+                d = math.hypot(p.x() - scene_pos.x(), p.y() - scene_pos.y())
+                if d <= tol and (best_d is None or d < best_d):
+                    best, best_d = item, d
+            except Exception:
+                continue
+        return best
+
+    def _toggle_pick_camera(self, scene_pos):
+        item = self._device_at(scene_pos)
+        if item is None:
+            return
+        dev = item.device
+        dev_id = dev.get("id")
+        ref_id = dev.get("ref_id") or ""
+        name = dev.get("name") or "دوربین"
+        if not ref_id:
+            QMessageBox.information(
+                self, "دوربین متصل نیست",
+                f"«{name}» به هیچ دوربینی وصل نیست؛ اول از پنل «مشخصات تجهیز» اتصال را بزنید.")
+            return
+        cam = self._find_camera(ref_id)
+        if cam is None:
+            QMessageBox.information(
+                self, "دوربین یافت نشد",
+                "این دوربین در لیست دوربین‌ها نیست (شاید حذف شده).")
+            return
+        role = (cam.get("plate_role") or "").strip()
+        if role not in ("entry", "exit"):
+            QMessageBox.information(
+                self, "نقش پلاکی ندارد",
+                f"دوربین «{cam.get('name') or name}» نقش ورود/خروج ندارد.\n"
+                "اول در کتابخانه‌ی پلاک ← تب «مسیرها و قوانین»، نقش آن را «ورود» یا «خروج» بگذارید.")
+            return
+        entry = self.scenes.get(self.current_floor)
+        tm = entry["to_meter"] if entry else 1.0
+        p = item.pos()
+        ok, dist_m, _s = camera_on_lane(
+            p.x(), p.y(), self._lane_points, tm, DEFAULT_ATTACH_TOLERANCE_M)
+        if not ok:
+            QMessageBox.information(
+                self, "دوربین روی مسیر نیست",
+                f"فاصله‌ی «{cam.get('name') or name}» از خط مسیر "
+                f"{dist_m:.1f} متر است (حد مجاز {DEFAULT_ATTACH_TOLERANCE_M:.0f} متر).")
+            return
+        if dev_id in self._lane_pick:
+            ring = self._lane_pick_rings.pop(dev_id, None)
+            if ring is not None:
+                try:
+                    entry["scene"].removeItem(ring)
+                except Exception:
+                    pass
+            self._lane_pick.pop(dev_id, None)
+        else:
+            ring = QGraphicsEllipseItem(-26, -26, 52, 52)
+            ring.setPos(p.x(), p.y())
+            ring.setPen(QPen(QColor("#22c55e"), 3))
+            ring.setBrush(QBrush(QColor(34, 197, 94, 30)))
+            ring.setFlag(
+                QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
+            ring.setZValue(24)
+            ring.setData(0, "lane-pick")
+            entry["scene"].addItem(ring)
+            self._lane_pick[dev_id] = item
+            self._lane_pick_rings[dev_id] = ring
+        self._update_lane_bar()
+
+    # -- ذخیره‌ی مسیر --
+    def _save_lane(self):
+        if not self._lane_pick:
+            QMessageBox.information(self, "دوربینی انتخاب نشده",
+                                    "حداقل یک دوربین روی مسیر انتخاب کنید.")
+            return
+        ok, msg = validate_lane_points(self._lane_points)
+        if not ok:
+            QMessageBox.information(self, "مسیر ناقص", msg)
+            return
+        lanes = plate_store.get_lanes()
+        k = len(lanes) + 1
+        while f"lane{k}" in lanes:
+            k += 1
+        dlg = QDialog(self)
+        dlg.setWindowTitle("ذخیره‌ی مسیر")
+        form = QFormLayout(dlg)
+        name_edit = QLineEdit(f"مسیر {k}")
+        form.addRow("نام مسیر:", name_edit)
+        dir_combo = QComboBox()
+        dir_combo.addItem("فقط رفت (جهت رسم شما)", "going")
+        dir_combo.addItem("فقط برگشت", "return")
+        form.addRow("جهت مجاز:", dir_combo)
+        form.addRow(QLabel("راهنما: جهت رسم شما (نقطه‌ی ۱ ← آخر) = جهت «رفت» است."))
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
+                                QDialogButtonBox.StandardButton.Cancel)
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("ذخیره")
+        btns.button(QDialogButtonBox.StandardButton.Cancel).setText("انصراف")
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        form.addRow(btns)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        name = name_edit.text().strip() or f"مسیر {k}"
+        allowed = dir_combo.currentData() or "going"
+        entry = self.scenes.get(self.current_floor)
+        tm = entry["to_meter"] if entry else 1.0
+        cams_xy = []
+        for _dev_id, item in self._lane_pick.items():
+            p = item.pos()
+            cams_xy.append({"camera_id": item.device.get("ref_id"),
+                            "x": p.x(), "y": p.y()})
+        lid = f"lane{k}"
+        rec = build_lane_record(name, allowed, self.current_floor,
+                                self._lane_points, tm, cams_xy)
+        lanes[lid] = rec
+        plate_store.set_lanes(lanes)
+        # اتصال دوربین‌ها به این مسیر (قانون: هر دوربین فقط یک مسیر)
+        for c in cams_xy:
+            self._detach_camera_from_lanes(c["camera_id"], except_lid=lid)
+            try:
+                self.camera_store.update_camera(c["camera_id"], lane_id=lid)
+            except Exception:
+                pass
+        self._cancel_lane_mode()
+        self._reload_lane_list(select_id=lid)
+        self._show_lane(lid)
+        QMessageBox.information(
+            self, "ذخیره شد",
+            f"مسیر «{name}» با {len(cams_xy)} دوربین ذخیره و به پلاک‌خوان اضافه شد.")
+
+    def _detach_camera_from_lanes(self, camera_id, except_lid=""):
+        try:
+            lanes = plate_store.get_lanes()
+            changed = False
+            for lid, lane in lanes.items():
+                if lid == except_lid:
+                    continue
+                cams = (lane or {}).get("cameras") or []
+                new_cams = [c for c in cams
+                            if str(c.get("camera_id")) != str(camera_id)]
+                if len(new_cams) != len(cams):
+                    lane["cameras"] = new_cams
+                    changed = True
+            if changed:
+                plate_store.set_lanes(lanes)
+        except Exception:
+            pass
+
+    # -- لیست مسیرها / نمایش / حذف --
+    def _reload_lane_list(self, select_id=None):
+        try:
+            lanes = plate_store.get_lanes()
+        except Exception:
+            lanes = {}
+        self.lane_list.blockSignals(True)
+        self.lane_list.clear()
+        for lid, lane in lanes.items():
+            lane = lane or {}
+            allowed = (lane.get("allowed") or "").strip()
+            dir_txt = {"going": "فقط رفت", "return": "فقط برگشت"}.get(allowed, "؟")
+            geo = " 🗺" if (lane.get("points") and len(lane.get("points")) >= 2) else ""
+            ncam = len(lane.get("cameras") or [])
+            item = QListWidgetItem(
+                f"{lane.get('name') or lid} — {dir_txt}{geo} ({ncam} دوربین)")
+            item.setData(Qt.ItemDataRole.UserRole, lid)
+            self.lane_list.addItem(item)
+            if select_id and lid == select_id:
+                self.lane_list.setCurrentItem(item)
+        self.lane_list.blockSignals(False)
+
+    def _on_lane_selected(self, item):
+        lid = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if lid:
+            self._show_lane(lid)
+
+    def _clear_lane_geo(self):
+        for entry in self.scenes.values():
+            for it in list(entry["scene"].items()):
+                try:
+                    if it.data(0) == "lane-geo":
+                        entry["scene"].removeItem(it)
+                except Exception:
+                    pass
+
+    def _show_lane(self, lane_id):
+        """نمایش هندسه‌ی یک مسیر روی نقشه (خط + جهت + ترتیب دوربین‌ها)."""
+        self._lane_selected_id = lane_id
+        self._clear_lane_geo()
+        try:
+            lane = plate_store.get_lanes().get(lane_id) or {}
+        except Exception:
+            return
+        pts = lane.get("points") or []
+        fid = (lane.get("floor_id") or "").strip()
+        if len(pts) < 2 or not fid:
+            return
+        if fid != self.current_floor:
+            self._select_floor(fid)
+            return  # _activate_floor دوباره _show_lane را صدا می‌زند
+        entry = self._build_scene(fid)
+        if not entry:
+            return
+        sc = entry["scene"]
+        # خط مسیر
+        path = QPainterPath()
+        path.moveTo(pts[0][0], pts[0][1])
+        for x, y in pts[1:]:
+            path.lineTo(x, y)
+        line = QGraphicsPathItem(path)
+        pen = QPen(QColor("#38bdf8"), 0)
+        pen.setCosmetic(True)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        line.setPen(pen)
+        line.setZValue(23)
+        line.setData(0, "lane-geo")
+        sc.addItem(line)
+        # پیکان جهت در انتهای مسیر
+        try:
+            (ax, ay), (bx, by) = pts[-2], pts[-1]
+            ang = math.degrees(math.atan2(-(by - ay), bx - ax))
+            tri = QPolygonF([QPointF(18, 0), QPointF(-8, 11), QPointF(-8, -11)])
+            arrow = QGraphicsPolygonItem(tri)
+            arrow.setPos(bx, by)
+            arrow.setRotation(-ang)
+            arrow.setPen(QPen(QColor("#38bdf8"), 2))
+            arrow.setBrush(QBrush(QColor("#38bdf8")))
+            arrow.setFlag(
+                QGraphicsPolygonItem.GraphicsItemFlag.ItemIgnoresTransformations)
+            arrow.setZValue(24)
+            arrow.setData(0, "lane-geo")
+            sc.addItem(arrow)
+        except Exception:
+            pass
+        # نشان ترتیب دوربین‌ها (موقعیت زنده‌ی روی نقشه)
+        for c in (lane.get("cameras") or []):
+            cam_id = c.get("camera_id")
+            order = c.get("order", 0)
+            x = y = None
+            try:
+                for _fl, dev in self.store.devices_by_camera(cam_id):
+                    if _fl.get("id") == fid:
+                        x, y = dev.get("x", 0), dev.get("y", 0)
+                        break
+            except Exception:
+                pass
+            if x is None:
+                continue
+            badge = QGraphicsEllipseItem(-14, -14, 28, 28)
+            badge.setPos(x, y - 34)
+            badge.setPen(QPen(QColor("#38bdf8"), 2))
+            badge.setBrush(QBrush(QColor("#0c4a6e")))
+            badge.setFlag(
+                QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
+            badge.setZValue(24)
+            badge.setData(0, "lane-geo")
+            sc.addItem(badge)
+            num = QGraphicsSimpleTextItem(str(order + 1))
+            f = QFont()
+            f.setBold(True)
+            f.setPointSize(10)
+            num.setFont(f)
+            num.setBrush(QBrush(QColor("#e0f2fe")))
+            num.setPos(x - 5, y - 44)
+            num.setFlag(
+                QGraphicsSimpleTextItem.GraphicsItemFlag.ItemIgnoresTransformations)
+            num.setZValue(25)
+            num.setData(0, "lane-geo")
+            sc.addItem(num)
+
+    def _delete_lane(self):
+        item = self.lane_list.currentItem()
+        if item is None:
+            QMessageBox.information(self, "حذف مسیر",
+                                    "اول یک مسیر را از لیست انتخاب کنید.")
+            return
+        lid = item.data(Qt.ItemDataRole.UserRole)
+        try:
+            lanes = plate_store.get_lanes()
+            lane = lanes.get(lid) or {}
+            name = lane.get("name") or lid
+        except Exception:
+            return
+        if QMessageBox.question(
+                self, "حذف مسیر",
+                f"مسیر «{name}» حذف شود؟\nدوربین‌هایش بدون مسیر می‌شوند."
+                ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            lanes = plate_store.get_lanes()
+            lanes.pop(lid, None)
+            plate_store.set_lanes(lanes)
+            # جدا کردن دوربین‌ها از این مسیر
+            for cam in list(self.camera_store.standalone_cameras()):
+                if cam.get("lane_id") == lid:
+                    self.camera_store.update_camera(cam.get("id"), lane_id="")
+            for nvr in self.camera_store.nvrs:
+                for cam in self.camera_store.cameras_for_nvr(nvr.get("id")):
+                    if cam.get("lane_id") == lid:
+                        self.camera_store.update_camera(cam.get("id"), lane_id="")
+        except Exception:
+            pass
+        if self._lane_selected_id == lid:
+            self._lane_selected_id = None
+        self._clear_lane_geo()
+        self._reload_lane_list()
 
     # ============================ تازه‌سازی ============================
     def refresh(self):

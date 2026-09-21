@@ -14,7 +14,7 @@
    - دوربین بدون نقش -> هیچ پردازشی
    - مسیر تعریف‌نشده -> فقط قوانین ورود/خروج
    - ضدتکرار تخلف در ۶۰ ثانیه
-   - اغماض خوانش تکراری هم‌جهت در پنجره‌ی grace
+   - ورود مجدد بدون خروج = تخلف، بدون هیچ اغماضی (2.0.17: اغماض ۱۲۰ثانیه‌ای حذف شد)
    - ثبت عبورها + خروجی CSV تخلفات
 """
 import os
@@ -213,14 +213,22 @@ n2 = len(store.list_violations(search=canon))
 check("violation dedup within 60s", n2 == n1,
       f"before={n_before} n1={n1} n2={n2}")
 
-# سناریوی ۹: اغماض خوانش تکراری هم‌جهت در پنجره‌ی grace
-store.reentry_grace_seconds = 120
-store.set_plate_state(canon, "inside", last_ts=time.time() - 10)
-n_before = len(store.list_violations(search=canon))
-res = fire(entry_cam)
-n_after = len(store.list_violations(search=canon))
-check("grace window suppresses reentry violation",
-      res and not res["violations"] and n_after == n_before)
+# سناریوی ۹ (2.0.17-beta): ورود مجدد بدون خروج = تخلف؛ اغماض ۱۲۰ثانیه‌ای
+# حذف شده است — کول‌داون ۱۵ثانیه‌ای دتکتور برای خوانش تکراری کافی است.
+# (پلاک تازه تا ضدتکرار ۶۰ثانیه‌ای سناریوی ۴ دخالت نکند)
+PLATE9 = "۷۷ز۹۸۷"
+canon9 = normalize_plate_text(PLATE9)
+store.set_plate_state(canon9, "inside", last_ts=time.time() - 3600)
+n_before = len(store.list_violations(search=canon9))
+res = fire(entry_cam, plate=PLATE9)
+n_after = len(store.list_violations(search=canon9))
+check("reentry without exit -> violation, no grace",
+      res and len(res["violations"]) >= 1 and n_after > n_before,
+      f"violations={res['violations'] if res else None}")
+types9 = [r["violation_type"] for r in store.list_violations(search=canon9)]
+check("reentry type logged, no grace", "reentry_without_exit" in types9)
+check("no reentry_grace_seconds on store",
+      not hasattr(store, "reentry_grace_seconds"))
 
 # سناریوی ۱۰: پلاک تعریف‌نشده هم state و تخلف می‌گیرد
 undef = normalize_plate_text("۹۹ب۱۲۳")

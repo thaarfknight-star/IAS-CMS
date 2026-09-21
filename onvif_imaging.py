@@ -245,21 +245,26 @@ def _try_ports(target, timeout=_PER_PORT_TIMEOUT):
         t.start()
         threads.append(t)
 
+    # (2.0.17-beta) انتظار هم‌زمان با نظرسنجی: نسخه‌ی قبلی تردها را به‌ترتیب
+    # پورت join می‌کرد؛ اگر ترد پورت اول تا پایان مهلت گیر می‌کرد، موفقیت
+    # آماده‌شده‌ی پورت‌های بعدی بررسی نمی‌شد. حالا هر ۵۰ms جعبه‌ی نتیجه
+    # بررسی می‌شود و اولین «موفقیت» آماده بلافاصله برمی‌گردد.
     deadline = time.monotonic() + _OVERALL_TIMEOUT
-    errors = []
-    for t, p in zip(threads, ports):
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
+    while True:
+        for p in ports:
+            status = box.get(p)
+            if status is not None and status[0] == "ok":
+                return (*status[1], None)
+        alive = any(t.is_alive() for t in threads)
+        if not alive or time.monotonic() >= deadline:
             break
-        t.join(remaining)
-        status = box.get(p)
-        if status is None:
-            continue  # در مهلت کلی جواب نداد؛ ترد daemon رها می‌شود
-        kind, payload = status
-        if kind == "ok":
-            return (*payload, None)
-        errors.append((p, _friendly_error(payload)))
+        time.sleep(0.05)
     # اگر همه شکست خوردند، پرتکرارترین/اولین خطا را گزارش بده
+    errors = []
+    for p in ports:
+        status = box.get(p)
+        if status is not None and status[0] == "err":
+            errors.append((p, _friendly_error(status[1])))
     if errors:
         errors.sort(key=lambda x: x[0])
         return None, None, None, None, errors[0][1]
