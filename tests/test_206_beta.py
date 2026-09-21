@@ -5,9 +5,8 @@ camera_stream.py / add_nvr_dialog.py اجرا می‌شود و موارد زیر
  ۱) پنل‌ها (2.0.12-beta: برگشت به action #207): رفتار پیش‌فرض Qt -
     پنل‌ها collapsible هستند و هیچ ذخیره/بازیابی اندازه‌ای در کار نیست؛
     toggle_sidebar رفت‌وبرگشت با setSizes (عرض صفر و برگشت).
- ۲) تمام‌صفحه: toggle_fullscreen کرش نمی‌کند (ماکسیمایز/پنجره‌ای - همان
-    حالت اسکرین‌شات، نه فول‌اسکرین بدون حاشیه) و دیگر اندازه‌ای را
-    ذخیره/بازیابی نمی‌کند.
+ ۲) تمام‌صفحه (2.0.14-beta: حذف کامل به دستور کاربر): دکمه‌ی «⛶ تمام‌صفحه»،
+    متد toggle_fullscreen و شرتکات F11 کاملاً حذف شده‌اند.
  ۲-ب) دکمه‌های رسم محدوده (2.0.12-beta): فقط «🖊 رسم محدوده هشدار» و
     «📋 مدیریت محدوده‌ها» همیشه روی نوار ابزار و نمایان‌اند؛ بقیه
     (نوع رسم/تایید/لغو) فقط در حالت رسم یا وقتی محدوده‌ی در انتظار/در حال
@@ -141,19 +140,17 @@ check("sidebar toggle back -> left width restored",
 check("sidebar toggle back -> right keeps width",
       abs(after[2] - before[2]) <= 2, f"before={before} after={after}")
 
-# ۲) تمام‌صفحه: کرش نکند و حالت عوض شود (ماکسیمایز/پنجره‌ای - همان حالت اسکرین‌شات)
-win.toggle_fullscreen()
-app.processEvents()
-check("fullscreen entered (maximized)", win.isMaximized())
-check("fullscreen button checked", win.fullscreen_btn.isChecked())
-win.toggle_fullscreen()
-app.processEvents()
-check("fullscreen exited (normal)", not win.isMaximized())
-check("fullscreen button unchecked", not win.fullscreen_btn.isChecked())
+# ۲) تمام‌صفحه (2.0.14-beta به دستور کاربر): دکمه‌ی «⛶ تمام‌صفحه»، متد
+# toggle_fullscreen و شرتکات F11 کاملاً حذف شده‌اند.
+check("no fullscreen_btn", not hasattr(win, "fullscreen_btn"))
+check("no toggle_fullscreen", not hasattr(win, "toggle_fullscreen"))
 
-# ۲-ب) دکمه‌های رسم محدوده (2.0.12-beta): فقط دکمه‌ی ورود به حالت رسم و
-# مدیریت محدوده‌ها همیشه نمایان‌اند؛ بقیه (نوع رسم/تایید/لغو) فقط در حالت
-# رسم یا وقتی محدوده‌ی در انتظار/در حال ویرایش هست دیده می‌شوند.
+# ۲-ب) دکمه‌های رسم محدوده (2.0.12-beta، اصلاح‌شده در 2.0.14-beta):
+# «🖊 رسم محدوده هشدار» و «📋 مدیریت محدوده‌ها» همیشه نمایان‌اند؛
+# دکمه‌های «نوع رسم» (خودکار/هوشمند) فقط در حالتِ خالصِ رسم، و «تایید»/«لغو»
+# فقط وقتی محدوده‌ای رسم شده (در انتظار/در حال ویرایش) دیده می‌شوند.
+# ردیف رسم، سطر دوم نوار ابزار است (_NoMinWidthRow) و ظاهر/مخفی شدنش نباید
+# اندازه‌ی پنجره یا کادرها را عوض کند.
 check("no region_menu_btn", not hasattr(win, "region_menu_btn"))
 check("no region_type_row", not hasattr(win, "region_type_row"))
 check("no region_action_row", not hasattr(win, "region_action_row"))
@@ -165,11 +162,17 @@ check("draw buttons live in region_draw_row",
       all(b.parentWidget() is win.region_draw_row
           for b in (win.auto_region_btn, win.ai_floor_btn,
                     win.confirm_line_btn, win.redraw_line_btn)))
-check("entry buttons on toolbar",
+check("entry buttons not in draw row",
       win.draw_line_btn.parentWidget() is not win.region_draw_row
       and win.manage_regions_btn.parentWidget() is not win.region_draw_row)
 check("draw btn portable label", win.draw_line_btn.text() == "🖊 رسم محدوده هشدار",
       win.draw_line_btn.text())
+check("draw row is _NoMinWidthRow",
+      type(win.region_draw_row).__name__ == "_NoMinWidthRow")
+check("draw row min-width hint is 0",
+      win.region_draw_row.minimumSizeHint().width() == 0)
+check("people button renamed", win.people_toggle_btn.text() == "👥 شمارش افراد",
+      win.people_toggle_btn.text())
 
 class _FakeSlot:
     """خانه‌ی ساختگی برای تست منطق نمایش/مخفی‌شدن ردیف رسم."""
@@ -181,6 +184,10 @@ class _FakeSlot:
     def is_editing_region(self): return self._editing
     def is_draw_mode(self): return self._draw
 
+def _row_btn_visible(btn):
+    # نمایان بودن دکمه نسبت به ردیف (صرف‌نظر از مخفی بودن خود ردیف)
+    return btn.isVisibleTo(win.region_draw_row)
+
 _orig_selected_slot = win._selected_slot
 try:
     # بدون خانه‌ی انتخاب‌شده: ردیف رسم مخفی، دکمه‌های ورود نمایان
@@ -190,22 +197,33 @@ try:
     check("draw row hidden with no selection", not win.region_draw_row.isVisible())
     check("entry buttons visible with no selection",
           win.draw_line_btn.isVisible() and win.manage_regions_btn.isVisible())
-    # حالت رسم: ردیف نمایان
+    # حالتِ خالصِ رسم: فقط دکمه‌های «نوع رسم» دیده می‌شوند، نه تایید/لغو
     win._selected_slot = lambda: _FakeSlot(draw=True)
     win._refresh_line_buttons()
     app.processEvents()
     check("draw row visible in draw mode", win.region_draw_row.isVisible())
-    # محدوده‌ی در انتظار (بدون حالت رسم): ردیف نمایان می‌ماند تا کاربر
-    # بتواند تایید/لغو کند
+    check("type buttons visible in draw mode",
+          _row_btn_visible(win.auto_region_btn) and _row_btn_visible(win.ai_floor_btn))
+    check("confirm/cancel hidden in pure draw mode",
+          not _row_btn_visible(win.confirm_line_btn)
+          and not _row_btn_visible(win.redraw_line_btn))
+    # محدوده‌ی در انتظار (رسم شده): فقط تایید/لغو دیده می‌شوند
     win._selected_slot = lambda: _FakeSlot(pending=True)
     win._refresh_line_buttons()
     app.processEvents()
     check("draw row visible with pending region", win.region_draw_row.isVisible())
-    # ویرایش شکل: ردیف نمایان
+    check("confirm/cancel visible with pending region",
+          _row_btn_visible(win.confirm_line_btn) and _row_btn_visible(win.redraw_line_btn))
+    check("type buttons hidden with pending region",
+          not _row_btn_visible(win.auto_region_btn)
+          and not _row_btn_visible(win.ai_floor_btn))
+    # ویرایش شکل: فقط تایید/لغو (با متن ویرایش)
     win._selected_slot = lambda: _FakeSlot(editing=True)
     win._refresh_line_buttons()
     app.processEvents()
     check("draw row visible when editing", win.region_draw_row.isVisible())
+    check("confirm/cancel visible when editing",
+          _row_btn_visible(win.confirm_line_btn) and _row_btn_visible(win.redraw_line_btn))
     # حالت عادی: ردیف مخفی
     win._selected_slot = lambda: _FakeSlot()
     win._refresh_line_buttons()
@@ -213,6 +231,37 @@ try:
     check("draw row hidden in normal state", not win.region_draw_row.isVisible())
 finally:
     win._selected_slot = _orig_selected_slot
+
+# ۲-ج) (2.0.14-beta) باگ «به‌هم‌ریختن اندازه‌ها با زدن دکمه‌ی رسم»: ظاهر و
+# مخفی شدن ردیف رسم نباید اندازه‌ی پنجره، حداقل‌اندازه‌ی پنجره یا اندازه‌ی
+# کادرها را عوض کند.
+win.resize(1600, 900)
+app.processEvents(); app.processEvents()
+_win_before = (win.width(), win.height())
+_min_before = (win.minimumWidth(), win.minimumHeight())
+_tiles_before = sorted(set((s.width(), s.height()) for s in win.camera_grid.slots))
+_slot0 = win.camera_grid.slots[0]
+_slot0.cam = {"id": "t-draw", "name": "t", "ip": "192.168.1.50"}
+win.camera_grid._on_slot_clicked(_slot0)
+app.processEvents()
+win.draw_line_btn.setChecked(True)  # ورود به حالت رسم -> ردیف نمایان
+app.processEvents(); app.processEvents()
+check("draw row really visible", win.region_draw_row.isVisible())
+check("window size unchanged by draw row",
+      (win.width(), win.height()) == _win_before, f"{(win.width(), win.height())}")
+check("window min-size unchanged by draw row",
+      (win.minimumWidth(), win.minimumHeight()) == _min_before,
+      f"{(win.minimumWidth(), win.minimumHeight())}")
+win.draw_line_btn.setChecked(False)  # خروج از حالت رسم -> ردیف مخفی
+app.processEvents(); app.processEvents()
+check("draw row hidden again", not win.region_draw_row.isVisible())
+_tiles_after = sorted(set((s.width(), s.height()) for s in win.camera_grid.slots))
+check("tiles restored after draw toggle", _tiles_after == _tiles_before,
+      f"before={_tiles_before} after={_tiles_after}")
+_slot0.cam = None
+win.camera_grid._select_index(-1) if hasattr(win.camera_grid, "_select_index") else None
+win._refresh_line_buttons()
+app.processEvents()
 
 # ۳) پنل حریق: در این محیط تست، دوربینی با fire_detection نیست -> باید مخفی باشد
 check("fire panel hidden with no fire cams", not win.fire_panel_group.isVisible())

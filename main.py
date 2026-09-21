@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QMenu, QTreeWidget, QTreeWidgetItem, QInputDialog, QDialog,
     QGridLayout, QComboBox, QScrollArea, QSizePolicy, QSplitter, QStackedWidget
 )
-from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon, QDrag, QFontMetrics, QPainter, QPen, QColor, QPolygonF, QShortcut, QKeySequence
+from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon, QDrag, QFontMetrics, QPainter, QPen, QColor, QPolygonF
 from PyQt6.QtCore import Qt, QSize, QMimeData, QPointF, QRectF, QTimer, QEvent, pyqtSignal
 
 from face_engine import FaceEngine
@@ -1805,6 +1805,23 @@ class CameraPreviewDialog(QDialog):
         super().closeEvent(event)
 
 
+class _NoMinWidthRow(QWidget):
+    """کانتینر ردیف دوم نوار ابزار (دکمه‌های رسم محدوده).
+
+    ریشه‌ی باگ 2.0.14-beta: وقتی این ردیف داخل همان نوار افقی بود، با نمایان
+    شدنش minimumSizeHint نوار ابزار (و از طریق QSplitter که از
+    minimumSizeHint استفاده می‌کند، minimumSize کل پنجره) از ~۱۲۴۰ به ~۱۷۹۰
+    می‌پرید؛ Qt هم پنجره را خودکار بزرگ می‌کرد و با مخفی شدن دوباره‌ی ردیف،
+    پنجره هرگز به اندازه‌ی قبلی برنمی‌گشت - کادرها و اندازه‌ها «به‌هم
+    می‌ریخت». با این اورراید، پهنای ردیف هیچ‌وقت در حداقل‌اندازه‌ی پنجره
+    حساب نمی‌شود؛ پس ظاهر/مخفی شدنش نه پنجره را بزرگ می‌کند نه کادرها را
+    تکان می‌دهد (فقط فضای stretch نوار ابزار را می‌گیرد)."""
+
+    def minimumSizeHint(self):  # noqa: N802 (نام استاندارد Qt)
+        hint = super().minimumSizeHint()
+        return QSize(0, hint.height())
+
+
 class CameraGridWidget(QWidget):
     """شبکه‌ی نمایش هم‌زمان دوربین‌ها با تعداد خانه‌ی قابل انتخاب
     (1، 4، 9، 16، 32 یا 64). با تغییر تعداد، دوربین‌های از قبل باز تا حد
@@ -2272,20 +2289,6 @@ class MainWindow(QMainWindow):
         self.sidebar_toggle_btn.clicked.connect(self.toggle_sidebar)
         grid_toolbar.addWidget(self.sidebar_toggle_btn)
 
-        # دکمه‌ی تمام‌صفحه (درخواست کاربر - «منظورم از تمام‌صفحه این حالت بود»):
-        # با F11 یا این دکمه، پنجره ماکسیمایز می‌شود (دقیقاً همان حالت
-        # اسکرین‌شات - با نوار عنوان ویندوز)؛ زدن دوباره به حالت پنجره‌ای
-        # عادی برمی‌گرداند. در هر حالتی، اندازه‌ی کادر دوربین‌ها فقط با
-        # تغییر اندازه‌ی پنل‌ها عوض می‌شود، نه با زدن دکمه‌ها.
-        self.fullscreen_btn = QPushButton("⛶ تمام‌صفحه")
-        self.fullscreen_btn.setCheckable(True)
-        self.fullscreen_btn.setToolTip("تمام‌صفحه (F11)")
-        self.fullscreen_btn.clicked.connect(self.toggle_fullscreen)
-        grid_toolbar.addWidget(self.fullscreen_btn)
-        _fs_shortcut = QShortcut(QKeySequence("F11"), self)
-        _fs_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
-        _fs_shortcut.activated.connect(self.toggle_fullscreen)
-
         grid_toolbar_label = QLabel("تعداد نمایش هم‌زمان دوربین‌ها:")
         grid_toolbar_label.setStyleSheet("font-size: 11px;")
         self.grid_size_combo = QComboBox()
@@ -2301,7 +2304,7 @@ class MainWindow(QMainWindow):
         # قرار دارد که شمارش را برای همه‌ی دوربین‌های باز هم‌زمان روشن/خاموش
         # می‌کند. تعداد نفرات هم‌چنان جداگانه بالای پنجره‌ی هر دوربین نوشته
         # می‌شود (رجوع کنید به CameraSlotWidget.people_count_label).
-        self.people_toggle_btn = QPushButton("👥 شمارش افراد (همه دوربین‌ها)")
+        self.people_toggle_btn = QPushButton("👥 شمارش افراد")
         self.people_toggle_btn.setCheckable(True)
         self.people_toggle_btn.setToolTip("روشن/خاموش کردن شمارش افراد Real Time برای تمام دوربین‌های باز")
         self.people_toggle_btn.setStyleSheet(
@@ -2311,12 +2314,12 @@ class MainWindow(QMainWindow):
         self.people_toggle_btn.toggled.connect(self._on_people_toggle_all)
         grid_toolbar.addWidget(self.people_toggle_btn)
 
-        # (2.0.12-beta به دستور کاربر): دکمه‌های مربوط به رسم - «نوع رسم»
-        # (تشخیص خودکار/AI)، «تایید و نام‌گذاری» و «لغو رسم» - فقط وقتی دیده
-        # می‌شوند که کاربر وارد «حالت رسم» شده باشد یا یک محدوده‌ی در انتظار/
-        # در حال ویرایش روی خانه‌ی انتخاب‌شده باشد؛ بقیه‌ی وقت‌ها مخفی‌اند تا
-        # نوار ابزار خلوت بماند. چون اندازه‌ی کادر دوربین‌ها از 2.0.10 قفل
-        # است، مخفی/نمایان شدن این دکمه‌ها اندازه‌ی کادرها را عوض نمی‌کند.
+        # (2.0.12-beta به دستور کاربر، اصلاح‌شده در 2.0.14-beta): دکمه‌های
+        # مربوط به رسم - «نوع رسم» (تشخیص خودکار/AI) فقط در حالت رسم، و
+        # «تایید»/«لغو» فقط وقتی محدوده‌ای رسم شده (در انتظار) یا در حال
+        # ویرایش است دیده می‌شوند؛ بقیه‌ی وقت‌ها مخفی‌اند تا نوار ابزار خلوت
+        # بماند. این دکمه‌ها در سطر دوم نوار ابزار (_NoMinWidthRow) هستند تا
+        # ظاهر/مخفی شدنشان اندازه‌ی پنجره و کادرها را تکان ندهد.
         # رفع درخواست: محدوده‌ی هشدار (Zone) - جایگزین خط فرضی عبور قبلی.
         # کاربر ابتدا یک دوربین را از شبکه انتخاب می‌کند (کلیک روی خانه‌اش)،
         # سپس این دکمه را می‌زند تا بتواند با کلیک‌های متوالی روی نقاط دلخواه
@@ -2346,13 +2349,16 @@ class MainWindow(QMainWindow):
         grid_toolbar.addWidget(self.draw_line_btn)
 
         # کانتینر دکمه‌های حالت رسم - فقط در حالت رسم نمایان می‌شود
-        # (رجوع کنید به _refresh_line_buttons).
-        self.region_draw_row = QWidget()
+        # (رجوع کنید به _refresh_line_buttons). این ردیف، «سطر دوم» نوار
+        # ابزار است (داخل grid_column، زیر نوار اصلی) نه عضوی از همان نوار
+        # افقی؛ تا ظاهر/مخفی شدنش ارتفاع نوار اصلی و اندازه‌ی کادرها را تکان
+        # ندهد. _NoMinWidthRow هم جلوی بزرگ شدن خودکار پنجره را می‌گیرد
+        # (ریشه‌ی باگ 2.0.14-beta).
+        self.region_draw_row = _NoMinWidthRow()
         region_draw_layout = QHBoxLayout()
         region_draw_layout.setContentsMargins(0, 0, 0, 0)
         self.region_draw_row.setLayout(region_draw_layout)
         self.region_draw_row.setVisible(False)
-        grid_toolbar.addWidget(self.region_draw_row)
 
         # رفع درخواست «یک حالت جدید که خودش سطح زمین رو تشخیص بده و کلش رو
         # محدوده محسوب کنه»: به‌جای کلیک‌های متوالی دستی، این دکمه بلافاصله
@@ -2480,6 +2486,9 @@ class MainWindow(QMainWindow):
         grid_scroll.setWidget(self.camera_grid)
 
         grid_column.addLayout(grid_toolbar)
+        # سطر دوم نوار ابزار: دکمه‌های رسم محدوده (مخفی پیش‌فرض) - رجوع کنید
+        # به کامنت _NoMinWidthRow برای چرایی جدا بودنش از نوار اصلی.
+        grid_column.addWidget(self.region_draw_row)
         grid_column.addWidget(grid_scroll, 1)
 
         # ------------------------------------------------ ستون راست: پنل
@@ -2648,20 +2657,6 @@ class MainWindow(QMainWindow):
         # پنل «هشدارهای حریق و دود» فقط وقتی دیده می‌شود که حداقل یک دوربین
         # تشخیص حریق فعال داشته باشد (وضعیت اولیه هنگام بالا آمدن برنامه).
         self._refresh_fire_panel_visibility()
-
-    def toggle_fullscreen(self):
-        """رفع درخواست «منظورم از تمام‌صفحه این حالت بود»: با دکمه‌ی «⛶
-        تمام‌صفحه» یا F11 پنجره ماکسیمایز می‌شود (دقیقاً همان حالتی که در
-        اسکرین‌شات دیده می‌شود - با نوار عنوان ویندوز، نه فول‌اسکرین بدون
-        حاشیه)؛ زدن دوباره به حالت پنجره‌ای عادی برمی‌گرداند.
-        (2.0.12-beta: رفتار اندازه‌ی پنل‌ها مثل action #207 است - این متد
-        دیگر اندازه‌ای را ذخیره/بازیابی نمی‌کند.)"""
-        if self.isMaximized():
-            self.showNormal()
-            self.fullscreen_btn.setChecked(False)
-        else:
-            self.showMaximized()
-            self.fullscreen_btn.setChecked(True)
 
     def _refresh_fire_panel_visibility(self):
         """رفع درخواست: پنل «هشدارهای حریق و دود» در صفحه‌ی اصلی فقط وقتی
@@ -3052,11 +3047,11 @@ class MainWindow(QMainWindow):
         self.manage_regions_btn.setEnabled(bool(has_confirmed))
         # دکمه‌ی تنظیمات تصویر فقط وقتی یک خانه‌ی دارای دوربین انتخاب شده.
         self.image_settings_btn.setEnabled(slot is not None and slot.cam is not None)
-        # (2.0.12-beta به دستور کاربر): دکمه‌های مربوط به رسم (نوع رسم/تایید/
-        # لغو) فقط وقتی دیده می‌شوند که کاربر وارد «حالت رسم» شده باشد یا
-        # یک محدوده‌ی در انتظار/در حال ویرایش روی خانه‌ی انتخاب‌شده باشد؛
-        # بقیه‌ی وقت‌ها مخفی‌اند. چون اندازه‌ی کادرها از 2.0.10 قفل است، این
-        # مخفی/نمایان شدن اندازه‌ی کادرها را عوض نمی‌کند.
+        # (2.0.12-beta به دستور کاربر): دکمه‌های مربوط به رسم فقط وقتی دیده
+        # می‌شوند که لازم باشند (رجوع کنید به انتهای همین تابع)؛ بقیه‌ی
+        # وقت‌ها مخفی‌اند تا نوار ابزار خلوت بماند. ردیف رسم سطر دوم نوار
+        # ابزار است و _NoMinWidthRow جلوی اثرش روی اندازه‌ی پنجره/کادرها را
+        # می‌گیرد (باگ 2.0.14-beta).
         # رفع درخواست «قابلیت ادیت‌کردن»: وقتی یک محدوده‌ی «در انتظار» (چه
         # تازه رسم‌شده، چه محدوده‌ی خودکارِ کل تصویر، چه در حال ویرایش شکلِ
         # یک محدوده‌ی قبلی) روی تصویر هست، رسم/تشخیص خودکارِ تازه غیرفعال
@@ -3081,10 +3076,21 @@ class MainWindow(QMainWindow):
         self.draw_line_btn.blockSignals(True)
         self.draw_line_btn.setChecked(bool(slot.is_draw_mode()) if slot is not None else False)
         self.draw_line_btn.blockSignals(False)
-        # نمایش کانتینر دکمه‌های رسم فقط در حالت رسم / محدوده‌ی در انتظار /
-        # ویرایش شکل - رجوع کنید به کامنت بالای این تابع.
+        # (2.0.14-beta به دستور کاربر): «تایید» و «لغو» فقط وقتی دیده می‌شوند
+        # که محدوده‌ای «رسم شده» باشد (در انتظار تایید/نام‌گذاری) یا در حال
+        # ویرایش شکل یک محدوده‌ی قبلی باشیم؛ در حالتِ خالصِ رسم (هنوز چیزی
+        # رسم نشده) فقط دکمه‌های «نوع رسم» (خودکار/هوشمند) دیده می‌شوند.
+        # خود ردیف هم فقط وقتی نمایان است که حداقل یکی از این دو گروه نمایان
+        # باشد. ردیف، سطر دوم نوار ابزار است (_NoMinWidthRow) و ظاهر/مخفی
+        # شدنش اندازه‌ی پنجره و کادرها را عوض نمی‌کند.
         in_draw_mode = bool(slot.is_draw_mode()) if slot is not None else False
-        self.region_draw_row.setVisible(bool(in_draw_mode or has_pending or is_editing))
+        show_types = bool(in_draw_mode and not has_pending and not is_editing)
+        show_confirm = bool(has_pending or is_editing)
+        self.auto_region_btn.setVisible(show_types)
+        self.ai_floor_btn.setVisible(show_types)
+        self.confirm_line_btn.setVisible(show_confirm)
+        self.redraw_line_btn.setVisible(show_confirm)
+        self.region_draw_row.setVisible(bool(show_types or show_confirm))
 
     # ------------------------------------------------------- camera list ---
 
@@ -4266,8 +4272,6 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     apply_theme(app)  # تم تیره‌ی سازگار با لوگوی ایمن آرا سورنا
     window = MainWindow()
-    # رفع درخواست «منظورم از تمام‌صفحه این حالت بود»: برنامه از ابتدا
-    # ماکسیمایز باز می‌شود (دقیقاً همان حالت اسکرین‌شات)؛ کاربر با دکمه‌ی
-    # «⛶ تمام‌صفحه» یا F11 بین حالت ماکسیمایز و پنجره‌ای عادی جابه‌جا می‌شود.
+    # برنامه از ابتدا ماکسیمایز باز می‌شود (درخواست قبلی کاربر).
     window.showMaximized()
     sys.exit(app.exec())

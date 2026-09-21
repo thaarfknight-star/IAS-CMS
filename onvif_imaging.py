@@ -244,14 +244,45 @@ def _try_ports(target, timeout=_PER_PORT_TIMEOUT):
 
 
 # ---------------------------------------------------------------------------
-# WDR get/set
+# WDR / ضد نور (BLC) - خواندن و نوشتن
 # ---------------------------------------------------------------------------
 
-def _extract_wdr(settings_dict):
-    """استخراج (mode, level) از دیکشنری ImagingSettings20."""
-    wdr = (settings_dict or {}).get("WideDynamicRange") or {}
-    mode = wdr.get("Mode")
-    level = wdr.get("Level")
+BLC_MODE_OFF = "OFF"
+BLC_MODE_ON = "ON"
+
+
+def _open_session(cam, camera_store):
+    """یک نشست ONVIF: اتصال + انتخاب video source + خواندن یکجای settings و
+    options. خروجی: (session | None, error | None) که session دیکشنری با
+    کلیدهای imaging/token/settings/options/target/port/label است."""
+    target = resolve_target(cam, camera_store)
+    if "error" in target:
+        return None, target["error"]
+    camera, imaging, media, port, err = _try_ports(target)
+    if err:
+        return None, err
+    token, pick_err = _pick_video_source(media, target.get("channel"))
+    if not token:
+        return None, pick_err
+    try:
+        settings = _as_dict(imaging.GetImagingSettings({"VideoSourceToken": token}))
+    except Exception as e:
+        return None, _friendly_error(e)
+    try:
+        options = _as_dict(imaging.GetOptions({"VideoSourceToken": token}))
+    except Exception:
+        options = {}
+    return {"imaging": imaging, "token": token, "settings": settings,
+            "options": options, "target": target, "port": port,
+            "label": target["label"]}, None
+
+
+def _extract_param(settings_dict, key):
+    """استخراج (mode, level) یک پارامتر از دیکشنری ImagingSettings20؛ key
+    مثل «WideDynamicRange» یا «BacklightCompensation»."""
+    node = (settings_dict or {}).get(key) or {}
+    mode = node.get("Mode")
+    level = node.get("Level")
     if isinstance(mode, dict):
         mode = mode.get("_value_") or mode.get("value")
     try:
@@ -263,20 +294,145 @@ def _extract_wdr(settings_dict):
     return mode or None, level
 
 
-def _extract_wdr_options(options_dict):
+def _extract_param_options(options_dict, key):
     """استخراج (modes, level_min, level_max) از ImagingOptions20."""
-    wdr = (options_dict or {}).get("WideDynamicRange") or {}
-    modes = wdr.get("Mode") or []
+    node = (options_dict or {}).get(key) or {}
+    modes = node.get("Mode") or []
     if isinstance(modes, str):
         modes = [modes]
     modes = [str(m).strip().upper() for m in modes if str(m).strip()]
-    lvl = wdr.get("Level") or {}
+    lvl = node.get("Level") or {}
     try:
         lo = float(lvl.get("Min")) if lvl.get("Min") is not None else None
         hi = float(lvl.get("Max")) if lvl.get("Max") is not None else None
     except Exception:
         lo = hi = None
     return modes, lo, hi
+
+
+def _normalize_level_0_100(level, lo, hi):
+    """نگاشت سطح دستگاه به بازه‌ی ۰..۱۰۰ برای اسلایدر رابط کاربری."""
+    if level is not None and lo is not None and hi is not None and hi > lo:
+        return round((level - lo) / (hi - lo) * 100), (lo, hi)
+    if level is not None:
+        # بدون اطلاعات بازه: فرض بازه‌ی استاندارد ۰..۱
+        return round(max(0.0, min(1.0, level)) * 100), (0.0, 1.0)
+    return None, None
+
+
+def _run_guarded(work, timeout):
+    """اجرای یک کار شبکه‌ای با مهلت؛ خطاها به پیام فارسی ساخت‌یافته تبدیل
+    می‌شوند."""
+    with _fut.ThreadPoolExecutor(max_workers=1) as ex:
+        fut = ex.submit(work)
+        try:
+            return fut.result(timeout=timeout)
+        except _fut.TimeoutError:
+            return {"ok": False, "error": "دستگاه در مهلت تعیین‌شده پاسخ نداد."}
+        except Exception as e:
+            return {"ok": False, "error": _friendly_error(e)}
+
+
+def _read_param(cam, camera_store, key, timeout):
+    """خواندن یک پارامتر (WDR یا BLC)؛ خروجی مثل get_wdr قبلی."""
+    ok, _ = is_available()
+    if not ok:
+        return {"ok": False, "error": availability_message()}
+
+    def work():
+        sess, err = _open_session(cam, camera_store)
+        if err:
+            return {"ok": False, "error": err}
+        mode, level = _extract_param(sess["settings"], key)
+        modes, lo, hi = _extract_param_options(sess["options"], key)
+        supported = bool(mode) or bool(modes)
+        lvl100, lvl_range = _normalize_level_0_100(level, lo, hi)
+        return {"ok": True, "supported": supported, "mode": mode,
+                "level": lvl100, "level_range": lvl_range,
+                "modes": modes or ([WDR_MODE_OFF, WDR_MODE_ON] if supported else []),
+                "host": sess["target"]["host"], "port": sess["port"],
+                "via": sess["target"]["via"], "label": sess["label"],
+                "video_source": sess["token"]}
+
+    return _run_guarded(work, timeout)
+
+
+def _write_param(cam, key, mode, level_0_100, camera_store, timeout,
+                 off_const, on_const):
+    """نوشتن یک پارامتر (WDR یا BLC) روی دوربین؛ رفتار مثل set_wdr قبلی."""
+    ok, _ = is_available()
+    if not ok:
+        return {"ok": False, "error": availability_message()}
+    mode = (mode or "").strip().upper()
+    if mode not in (off_const, on_const):
+        return {"ok": False, "error": "حالت نامعتبر: %s" % mode}
+
+    def work():
+        sess, err = _open_session(cam, camera_store)
+        if err:
+            return {"ok": False, "error": err}
+        _modes, lo, hi = _extract_param_options(sess["options"], key)
+        if not (lo is not None and hi is not None and hi > lo):
+            lo, hi = 0.0, 1.0
+        node = dict(sess["settings"].get(key) or {})
+        node["Mode"] = mode
+        if level_0_100 is not None and mode == on_const:
+            try:
+                pct = max(0.0, min(100.0, float(level_0_100)))
+            except Exception:
+                pct = 50.0
+            node["Level"] = lo + (hi - lo) * (pct / 100.0)
+        # هنگام خاموش‌کردن، سطح قبلی نگه داشته می‌شود تا با روشن‌کردن بعدی
+        # همان شدت برگردد (اگر دستگاه اجازه دهد).
+        new_settings = dict(sess["settings"])
+        new_settings[key] = node
+        try:
+            sess["imaging"].SetImagingSettings({
+                "VideoSourceToken": sess["token"],
+                "ImagingSettings": new_settings,
+                "ForcePersistence": True,
+            })
+        except Exception as e:
+            return {"ok": False, "error": _friendly_error(e)}
+        return {"ok": True, "mode": mode, "level": level_0_100,
+                "host": sess["target"]["host"], "port": sess["port"],
+                "via": sess["target"]["via"], "label": sess["label"]}
+
+    return _run_guarded(work, timeout)
+
+
+def get_imaging_basics(cam, camera_store=None, timeout=_OVERALL_TIMEOUT):
+    """خواندن یکجای WDR و ضد نور (BLC) با یک اتصال (برای دیالوگ تنظیمات
+    تصویر تا دو بار به دوربین وصل نشود).
+
+    خروجی موفق: {"ok": True, "wdr": {...}, "blc": {...}, "host"...} که هر
+    کدام از wdr/blc دیکشنری {"supported", "mode", "level" (۰..۱۰۰),
+    "level_range", "modes"} است. در صورت خطا: {"ok": False, "error": ...}.
+    """
+    ok, _ = is_available()
+    if not ok:
+        return {"ok": False, "error": availability_message()}
+
+    def work():
+        sess, err = _open_session(cam, camera_store)
+        if err:
+            return {"ok": False, "error": err}
+        out = {"ok": True, "host": sess["target"]["host"], "port": sess["port"],
+               "via": sess["target"]["via"], "label": sess["label"],
+               "video_source": sess["token"]}
+        for key, name in (("WideDynamicRange", "wdr"),
+                          ("BacklightCompensation", "blc")):
+            mode, level = _extract_param(sess["settings"], key)
+            modes, lo, hi = _extract_param_options(sess["options"], key)
+            supported = bool(mode) or bool(modes)
+            lvl100, lvl_range = _normalize_level_0_100(level, lo, hi)
+            out[name] = {"supported": supported, "mode": mode,
+                         "level": lvl100, "level_range": lvl_range,
+                         "modes": modes or ([WDR_MODE_OFF, WDR_MODE_ON]
+                                            if supported else [])}
+        return out
+
+    return _run_guarded(work, timeout)
 
 
 def get_wdr(cam, camera_store=None, timeout=_OVERALL_TIMEOUT):
@@ -288,58 +444,16 @@ def get_wdr(cam, camera_store=None, timeout=_OVERALL_TIMEOUT):
     اگر دستگاه WDR را پشتیبانی نکند: {"ok": True, "supported": False, ...}
     در صورت خطا: {"ok": False, "error": "پیام فارسی"}
     """
-    ok, reason = is_available()
-    if not ok:
-        return {"ok": False, "error": availability_message()}
+    return _read_param(cam, camera_store, "WideDynamicRange", timeout)
 
-    target = resolve_target(cam, camera_store)
-    if "error" in target:
-        return {"ok": False, "error": target["error"]}
 
-    def work():
-        camera, imaging, media, port, err = _try_ports(target)
-        if err:
-            return {"ok": False, "error": err}
-        token, pick_err = _pick_video_source(media, target.get("channel"))
-        if not token:
-            return {"ok": False, "error": pick_err}
-        try:
-            settings = _as_dict(imaging.GetImagingSettings({"VideoSourceToken": token}))
-        except Exception as e:
-            return {"ok": False, "error": _friendly_error(e)}
-        mode, level = _extract_wdr(settings)
-        modes, lo, hi = [], None, None
-        try:
-            options = _as_dict(imaging.GetOptions({"VideoSourceToken": token}))
-            modes, lo, hi = _extract_wdr_options(options)
-        except Exception:
-            pass
-        supported = bool(mode) or bool(modes)
-        result = {"ok": True, "supported": supported, "mode": mode,
-                  "modes": modes or ([WDR_MODE_OFF, WDR_MODE_ON] if supported else []),
-                  "host": target["host"], "port": port, "via": target["via"],
-                  "label": target["label"], "video_source": token}
-        # نرمال‌سازی level به بازه‌ی ۰..۱۰۰ برای اسلایدر رابط کاربری
-        if level is not None and lo is not None and hi is not None and hi > lo:
-            result["level"] = round((level - lo) / (hi - lo) * 100)
-            result["level_range"] = (lo, hi)
-        elif level is not None:
-            # بدون اطلاعات بازه: فرض بازه‌ی استاندارد ۰..۱
-            result["level"] = round(max(0.0, min(1.0, level)) * 100)
-            result["level_range"] = (0.0, 1.0)
-        else:
-            result["level"] = None
-            result["level_range"] = None
-        return result
+def get_backlight(cam, camera_store=None, timeout=_OVERALL_TIMEOUT):
+    """خواندن «ضد نور» (BacklightCompensation) سخت‌افزاری دوربین - همان
+    کنترلی که نور شدید پس‌زمینه (مثل نور پنجره) را جبران می‌کند.
 
-    with _fut.ThreadPoolExecutor(max_workers=1) as ex:
-        fut = ex.submit(work)
-        try:
-            return fut.result(timeout=timeout)
-        except _fut.TimeoutError:
-            return {"ok": False, "error": "دستگاه در مهلت تعیین‌شده پاسخ نداد."}
-        except Exception as e:
-            return {"ok": False, "error": _friendly_error(e)}
+    ساختار خروجی دقیقاً مثل get_wdr است.
+    """
+    return _read_param(cam, camera_store, "BacklightCompensation", timeout)
 
 
 def set_wdr(cam, mode, level_0_100=None, camera_store=None, timeout=_OVERALL_TIMEOUT):
@@ -349,70 +463,18 @@ def set_wdr(cam, mode, level_0_100=None, camera_store=None, timeout=_OVERALL_TIM
     اگر None باشد، سطح فعلی/پیش‌فرض دستگاه دست‌نخورده می‌ماند).
     خروجی: {"ok": True, ...} یا {"ok": False, "error": "پیام فارسی"}
     """
-    ok, _ = is_available()
-    if not ok:
-        return {"ok": False, "error": availability_message()}
-    mode = (mode or "").strip().upper()
-    if mode not in (WDR_MODE_OFF, WDR_MODE_ON):
-        return {"ok": False, "error": "حالت نامعتبر WDR: %s" % mode}
+    return _write_param(cam, "WideDynamicRange", mode, level_0_100,
+                        camera_store, timeout, WDR_MODE_OFF, WDR_MODE_ON)
 
-    target = resolve_target(cam, camera_store)
-    if "error" in target:
-        return {"ok": False, "error": target["error"]}
 
-    def work():
-        camera, imaging, media, port, err = _try_ports(target)
-        if err:
-            return {"ok": False, "error": err}
-        token, pick_err = _pick_video_source(media, target.get("channel"))
-        if not token:
-            return {"ok": False, "error": pick_err}
-        try:
-            current = _as_dict(imaging.GetImagingSettings({"VideoSourceToken": token}))
-        except Exception as e:
-            return {"ok": False, "error": _friendly_error(e)}
+def set_backlight(cam, mode, level_0_100=None, camera_store=None, timeout=_OVERALL_TIMEOUT):
+    """تنظیم «ضد نور» (BacklightCompensation) سخت‌افزاری دوربین - برای
+    صحنه‌هایی که نور شدید از پشت سوژه می‌تابد (مثل پنجره‌ی پرنور پشت افراد).
 
-        # بازه‌ی سطح دستگاه (برای نگاشت ۰..۱۰۰ رابط کاربری به مقیاس واقعی)
-        lo, hi = 0.0, 1.0
-        try:
-            options = _as_dict(imaging.GetOptions({"VideoSourceToken": token}))
-            _modes, olo, ohi = _extract_wdr_options(options)
-            if olo is not None and ohi is not None and ohi > olo:
-                lo, hi = olo, ohi
-        except Exception:
-            pass
-
-        wdr = dict(current.get("WideDynamicRange") or {})
-        wdr["Mode"] = mode
-        if level_0_100 is not None and mode == WDR_MODE_ON:
-            try:
-                pct = max(0.0, min(100.0, float(level_0_100)))
-            except Exception:
-                pct = 50.0
-            wdr["Level"] = lo + (hi - lo) * (pct / 100.0)
-        elif "Level" in wdr and mode == WDR_MODE_OFF:
-            # هنگام خاموش‌کردن، سطح قبلی را نگه می‌داریم تا با روشن‌کردن
-            # بعدی همان شدت برگردد (اگر دستگاه اجازه دهد).
-            pass
-        new_settings = dict(current)
-        new_settings["WideDynamicRange"] = wdr
-        try:
-            imaging.SetImagingSettings({
-                "VideoSourceToken": token,
-                "ImagingSettings": new_settings,
-                "ForcePersistence": True,
-            })
-        except Exception as e:
-            return {"ok": False, "error": _friendly_error(e)}
-        return {"ok": True, "mode": mode,
-                "level": level_0_100, "host": target["host"], "port": port,
-                "via": target["via"], "label": target["label"]}
-
-    with _fut.ThreadPoolExecutor(max_workers=1) as ex:
-        fut = ex.submit(work)
-        try:
-            return fut.result(timeout=timeout)
-        except _fut.TimeoutError:
-            return {"ok": False, "error": "دستگاه در مهلت تعیین‌شده پاسخ نداد."}
-        except Exception as e:
-            return {"ok": False, "error": _friendly_error(e)}
+    mode: "OFF" یا "ON". level_0_100: شدت ۰..۱۰۰ (اختیاری).
+    نکته: در بسیاری از دوربین‌ها WDR و BLC هم‌زمان فعال نمی‌مانند؛ فعال
+    کردن یکی ممکن است دیگری را خاموش کند.
+    خروجی: {"ok": True, ...} یا {"ok": False, "error": "پیام فارسی"}
+    """
+    return _write_param(cam, "BacklightCompensation", mode, level_0_100,
+                        camera_store, timeout, BLC_MODE_OFF, BLC_MODE_ON)

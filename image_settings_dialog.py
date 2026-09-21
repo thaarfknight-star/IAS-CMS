@@ -9,9 +9,10 @@
 نکته: این تنظیمات فقط روی «تصویر نمایشی» اثر می‌گذارد؛ ورودی موتورهای
 تشخیص (چهره/شخص/حریق) دست‌نخورده می‌ماند - رجوع کنید به image_profile.py.
 
-بخش «WDR سخت‌افزاری» جدا از این است: پارامتر واقعی خود دوربین را از طریق
-ONVIF Imaging می‌خواند/می‌نویسد (رجوع کنید به onvif_imaging.py) و روی همه‌ی
-بیننده‌ها اثر می‌گذارد.
+بخش «سخت‌افزاری» جدا از این است: پارامترهای واقعی خود دوربین - WDR و
+«ضد نور» (BacklightCompensation، برای جبران نور شدید پس‌زمینه مثل نور
+پنجره) - را از طریق ONVIF Imaging می‌خواند/می‌نویسد (رجوع کنید به
+onvif_imaging.py) و روی همه‌ی بیننده‌ها اثر می‌گذارد.
 """
 
 from PyQt6.QtWidgets import (
@@ -25,24 +26,33 @@ import onvif_imaging as oi
 
 
 class _OnvifWorker(QThread):
-    """کارگر ترد برای خواندن/نوشتن WDR سخت‌افزاری؛ فراخوانی شبکه‌ای ONVIF
-    هرگز نباید در ترد GUI انجام شود."""
+    """کارگر ترد برای خواندن/نوشتن پارامترهای سخت‌افزاری؛ فراخوانی شبکه‌ای
+    ONVIF هرگز نباید در ترد GUI انجام شود."""
     done = pyqtSignal(dict)
 
-    def __init__(self, op, cam, store, mode=None, level=None, parent=None):
+    def __init__(self, op, cam, store, target=None, mode=None, level=None,
+                 parent=None):
         super().__init__(parent)
         self._op = op            # "get" یا "set"
         self._cam = dict(cam or {})
         self._store = store
+        self._target = target     # برای set: "wdr" یا "blc"
         self._mode = mode
         self._level = level
 
     def run(self):
         try:
             if self._op == "get":
-                res = oi.get_wdr(self._cam, self._store)
+                # یک اتصال، هر دو پارامتر (WDR + ضد نور)
+                res = oi.get_imaging_basics(self._cam, self._store)
+            elif self._target == "blc":
+                res = oi.set_backlight(self._cam, self._mode, self._level,
+                                       self._store)
+                res["target"] = "blc"
             else:
-                res = oi.set_wdr(self._cam, self._mode, self._level, self._store)
+                res = oi.set_wdr(self._cam, self._mode, self._level,
+                                 self._store)
+                res["target"] = "wdr"
         except Exception as e:  # آخرین تور امنیت
             res = {"ok": False, "error": "خطای غیرمنتظره: %s" % e}
         self.done.emit(res)
@@ -68,7 +78,7 @@ class ImageSettingsDialog(QDialog):
         self._cam_id = cam.get("id")
         cam_name = cam.get("name") or cam.get("ip", "")
         self.setWindowTitle(f"تنظیمات تصویر — {cam_name}")
-        self.resize(420, 640)
+        self.resize(420, 700)
 
         # پروفایل فعلی دوربین؛ نسخه‌ی اصلی برای بازگردانی در صورت انصراف.
         self._original = ip.get_camera_profile(cam)
@@ -132,24 +142,34 @@ class ImageSettingsDialog(QDialog):
 
         layout.addStretch(1)
 
-        # ---- WDR سخت‌افزاری دوربین (ONVIF) ----
+        # ---- تنظیمات سخت‌افزاری دوربین (ONVIF) ----
         # برخلاف اسلایدرهای بالا که فقط «نمایش» را تغییر می‌دهند، این بخش
-        # پارامتر واقعی خود دوربین را ست می‌کند و روی همه‌ی بیننده‌ها اثر
+        # پارامترهای واقعی خود دوربین را ست می‌کند و روی همه‌ی بیننده‌ها اثر
         # می‌گذارد. ارتباط شبکه‌ای در ترد جدا انجام می‌شود تا رابط کاربری
         # قفل نشود.
         hw_sep = QFrame()
         hw_sep.setFrameShape(QFrame.Shape.HLine)
         layout.addWidget(hw_sep)
 
-        hw_title = QLabel("🔧 WDR سخت‌افزاری دوربین (از طریق ONVIF)")
+        hw_title = QLabel("🔧 تنظیمات سخت‌افزاری دوربین (از طریق ONVIF)")
         hw_title.setStyleSheet("font-weight:bold;")
         layout.addWidget(hw_title)
+
+        hw_note = QLabel(
+            "WDR برای صحنه‌های با کنتراست شدید و «ضد نور (BLC)» برای جبران "
+            "نور شدید پس‌زمینه (مثل نور پنجره پشت افراد) است. در بسیاری از "
+            "دوربین‌ها این دو هم‌زمان فعال نمی‌مانند."
+        )
+        hw_note.setWordWrap(True)
+        hw_note.setStyleSheet("color:#888888; font-size:10px;")
+        layout.addWidget(hw_note)
 
         self.hw_status = QLabel("…")
         self.hw_status.setWordWrap(True)
         self.hw_status.setStyleSheet("color:#888888; font-size:10px;")
         layout.addWidget(self.hw_status)
 
+        # سطر WDR
         hw_row = QHBoxLayout()
         hw_row.addWidget(QLabel("حالت WDR:"))
         self.hw_mode_combo = QComboBox()
@@ -170,20 +190,50 @@ class ImageSettingsDialog(QDialog):
         hw_row.addWidget(self.hw_level_value)
         layout.addLayout(hw_row)
 
+        # سطر ضد نور (BLC) - جبران نور پنجره/پس‌زمینه
+        blc_row = QHBoxLayout()
+        blc_row.addWidget(QLabel("ضد نور (BLC):"))
+        self.blc_mode_combo = QComboBox()
+        self.blc_mode_combo.addItem("خاموش", oi.BLC_MODE_OFF)
+        self.blc_mode_combo.addItem("روشن", oi.BLC_MODE_ON)
+        self.blc_mode_combo.setEnabled(False)
+        self.blc_mode_combo.setToolTip(
+            "جبران نور شدید پس‌زمینه (مثلاً پنجره‌ی پرنور پشت سوژه)")
+        blc_row.addWidget(self.blc_mode_combo)
+        blc_row.addWidget(QLabel("شدت:"))
+        self.blc_level_slider = QSlider(Qt.Orientation.Horizontal)
+        self.blc_level_slider.setRange(0, 100)
+        self.blc_level_slider.setValue(50)
+        self.blc_level_slider.setEnabled(False)
+        self.blc_level_value = QLabel("۵۰٪")
+        self.blc_level_value.setMinimumWidth(44)
+        self.blc_level_slider.valueChanged.connect(
+            lambda v: self.blc_level_value.setText(f"{v}٪"))
+        blc_row.addWidget(self.blc_level_slider, 1)
+        blc_row.addWidget(self.blc_level_value)
+        layout.addLayout(blc_row)
+
         hw_btn_row = QHBoxLayout()
         self.hw_read_btn = QPushButton("🔄 خواندن از دوربین")
         self.hw_read_btn.clicked.connect(lambda: self._start_hw_worker("get"))
-        self.hw_apply_btn = QPushButton("📡 اعمال روی دوربین")
+        self.hw_apply_btn = QPushButton("📡 اعمال WDR")
         self.hw_apply_btn.setToolTip(
             "تنظیم WDR واقعی خود دوربین (ماندگار روی دستگاه)")
         self.hw_apply_btn.setEnabled(False)
-        self.hw_apply_btn.clicked.connect(self._on_hw_apply)
+        self.hw_apply_btn.clicked.connect(lambda: self._on_hw_apply("wdr"))
+        self.blc_apply_btn = QPushButton("📡 اعمال ضد نور")
+        self.blc_apply_btn.setToolTip(
+            "تنظیم ضد نور (BLC) واقعی خود دوربین (ماندگار روی دستگاه)")
+        self.blc_apply_btn.setEnabled(False)
+        self.blc_apply_btn.clicked.connect(lambda: self._on_hw_apply("blc"))
         hw_btn_row.addWidget(self.hw_read_btn)
         hw_btn_row.addWidget(self.hw_apply_btn)
+        hw_btn_row.addWidget(self.blc_apply_btn)
         hw_btn_row.addStretch(1)
         layout.addLayout(hw_btn_row)
         self._hw_worker = None
-        self._hw_supported = False
+        self._wdr_supported = False
+        self._blc_supported = False
         self._start_hw_worker("get")  # خواندن خودکار هنگام باز شدن
 
         # ---- دکمه‌ها ----
@@ -271,18 +321,23 @@ class ImageSettingsDialog(QDialog):
         self._sync_sliders_from_profile()
         self._apply_live()
 
-    # ------------------------------------------- WDR سخت‌افزاری (ONVIF) --
+    # ------------------------------------ سخت‌افزاری (ONVIF): WDR + ضد نور --
     def _hw_set_busy(self, busy, msg=""):
         self.hw_read_btn.setEnabled(not busy)
-        self.hw_apply_btn.setEnabled(not busy and self._hw_supported)
-        self.hw_mode_combo.setEnabled(not busy and self._hw_supported)
+        self.hw_apply_btn.setEnabled(not busy and self._wdr_supported)
+        self.blc_apply_btn.setEnabled(not busy and self._blc_supported)
+        self.hw_mode_combo.setEnabled(not busy and self._wdr_supported)
         self.hw_level_slider.setEnabled(
-            not busy and self._hw_supported
+            not busy and self._wdr_supported
             and self.hw_mode_combo.currentData() == oi.WDR_MODE_ON)
+        self.blc_mode_combo.setEnabled(not busy and self._blc_supported)
+        self.blc_level_slider.setEnabled(
+            not busy and self._blc_supported
+            and self.blc_mode_combo.currentData() == oi.BLC_MODE_ON)
         if msg:
             self.hw_status.setText(msg)
 
-    def _start_hw_worker(self, op, mode=None, level=None):
+    def _start_hw_worker(self, op, target=None, mode=None, level=None):
         if self._hw_worker is not None and self._hw_worker.isRunning():
             return
         ok, _ = oi.is_available()
@@ -292,10 +347,12 @@ class ImageSettingsDialog(QDialog):
             return
         cam = self.slot.cam or {}
         if not (cam.get("ip") or "").strip():
-            self.hw_status.setText("IP دوربین مشخص نیست؛ WDR سخت‌افزاری ممکن نیست.")
+            self.hw_status.setText(
+                "IP دوربین مشخص نیست؛ تنظیمات سخت‌افزاری ممکن نیست.")
             return
         self._hw_worker = _OnvifWorker(op, cam, self.camera_store,
-                                       mode=mode, level=level, parent=self)
+                                       target=target, mode=mode, level=level,
+                                       parent=self)
         self._hw_worker.done.connect(
             self._on_hw_read_done if op == "get" else self._on_hw_set_done)
         self._hw_set_busy(True, "در حال ارتباط با دوربین…")
@@ -304,67 +361,91 @@ class ImageSettingsDialog(QDialog):
     def _on_hw_read_done(self, res):
         self._hw_worker = None
         if not res.get("ok"):
-            self._hw_supported = False
+            self._wdr_supported = False
+            self._blc_supported = False
             self._hw_set_busy(False, "❌ " + str(res.get("error", "خطا")))
             return
-        if not res.get("supported"):
-            self._hw_supported = False
-            self._hw_set_busy(False,
-                              "این دستگاه WDR سخت‌افزاری (ONVIF Imaging) را "
-                              "پشتیبانی نمی‌کند. از WDR نرم‌افزاری بالا استفاده کنید.")
-            return
-        self._hw_supported = True
-        mode = (res.get("mode") or oi.WDR_MODE_OFF).upper()
-        idx = 1 if mode == oi.WDR_MODE_ON else 0
-        self.hw_mode_combo.blockSignals(True)
-        self.hw_mode_combo.setCurrentIndex(idx)
-        self.hw_mode_combo.blockSignals(False)
-        if res.get("level") is not None:
-            self.hw_level_slider.blockSignals(True)
-            self.hw_level_slider.setValue(int(res["level"]))
-            self.hw_level_slider.blockSignals(False)
-            self.hw_level_value.setText(f"{int(res['level'])}٪")
         via = res.get("label") or ""
-        self._hw_set_busy(False,
-                          f"✅ خوانده شد ({via}) — حالت فعلی: "
-                          f"{'روشن' if mode == oi.WDR_MODE_ON else 'خاموش'}")
-        # با تغییر حالت، اسلایدر شدت فعال/غیرفعال شود
-        try:
-            self.hw_mode_combo.currentIndexChanged.disconnect()
-        except Exception:
-            pass
-        self.hw_mode_combo.currentIndexChanged.connect(
-            lambda _i: self.hw_level_slider.setEnabled(
-                self._hw_supported
-                and self.hw_mode_combo.currentData() == oi.WDR_MODE_ON))
+        parts = []
+        for name, sub, combo, slider, value_lbl, off_const in (
+                ("WDR", res.get("wdr") or {}, self.hw_mode_combo,
+                 self.hw_level_slider, self.hw_level_value, oi.WDR_MODE_OFF),
+                ("ضد نور", res.get("blc") or {}, self.blc_mode_combo,
+                 self.blc_level_slider, self.blc_level_value, oi.BLC_MODE_OFF)):
+            supported = bool(sub.get("supported"))
+            if name == "WDR":
+                self._wdr_supported = supported
+            else:
+                self._blc_supported = supported
+            if not supported:
+                parts.append(f"{name}: پشتیبانی نمی‌شود")
+                continue
+            mode = (sub.get("mode") or off_const).upper()
+            combo.blockSignals(True)
+            combo.setCurrentIndex(0 if mode == off_const else 1)
+            combo.blockSignals(False)
+            if sub.get("level") is not None:
+                slider.blockSignals(True)
+                slider.setValue(int(sub["level"]))
+                slider.blockSignals(False)
+                value_lbl.setText(f"{int(sub['level'])}٪")
+            parts.append(
+                f"{name}: {'روشن' if mode != off_const else 'خاموش'}")
+        self._hw_set_busy(
+            False, f"✅ خوانده شد ({via}) — " + "، ".join(parts))
+        # با تغییر حالت، اسلایدر شدت همان سطر فعال/غیرفعال شود
+        for combo, slider, sup_attr, on_const in (
+                (self.hw_mode_combo, self.hw_level_slider,
+                 "_wdr_supported", oi.WDR_MODE_ON),
+                (self.blc_mode_combo, self.blc_level_slider,
+                 "_blc_supported", oi.BLC_MODE_ON)):
+            try:
+                combo.currentIndexChanged.disconnect()
+            except Exception:
+                pass
+            combo.currentIndexChanged.connect(
+                lambda _i, _s=slider, _a=sup_attr, _c=combo, _o=on_const:
+                _s.setEnabled(getattr(self, _a)
+                              and _c.currentData() == _o))
 
-    def _on_hw_apply(self):
-        mode = self.hw_mode_combo.currentData() or oi.WDR_MODE_OFF
-        level = (self.hw_level_slider.value()
-                 if mode == oi.WDR_MODE_ON else None)
-        self._start_hw_worker("set", mode=mode, level=level)
+    def _on_hw_apply(self, target):
+        if target == "blc":
+            mode = self.blc_mode_combo.currentData() or oi.BLC_MODE_OFF
+            level = (self.blc_level_slider.value()
+                     if mode == oi.BLC_MODE_ON else None)
+        else:
+            mode = self.hw_mode_combo.currentData() or oi.WDR_MODE_OFF
+            level = (self.hw_level_slider.value()
+                     if mode == oi.WDR_MODE_ON else None)
+        self._start_hw_worker("set", target=target, mode=mode, level=level)
 
     def _on_hw_set_done(self, res):
         self._hw_worker = None
         if not res.get("ok"):
             self._hw_set_busy(False, "❌ " + str(res.get("error", "خطا")))
             return
+        target = res.get("target") or "wdr"
         mode = res.get("mode")
         level = res.get("level")
+        label = "ضد نور (BLC)" if target == "blc" else "WDR"
+        off_const = oi.BLC_MODE_OFF if target == "blc" else oi.WDR_MODE_OFF
         # ثبت آخرین وضعیت سخت‌افزاری در رکورد دوربین (فقط برای نمایش/ارجاع)
         if self._cam_id is not None and self.camera_store is not None:
             try:
-                self.camera_store.update_camera(
-                    self._cam_id,
-                    onvif_imaging={"wdr_mode": mode, "wdr_level": level})
+                prev = {}
                 if self.slot.cam is not None:
-                    self.slot.cam["onvif_imaging"] = {
-                        "wdr_mode": mode, "wdr_level": level}
+                    prev = dict(self.slot.cam.get("onvif_imaging") or {})
+                prev.update({("blc_mode" if target == "blc" else "wdr_mode"): mode,
+                             ("blc_level" if target == "blc" else "wdr_level"): level})
+                self.camera_store.update_camera(self._cam_id,
+                                                onvif_imaging=prev)
+                if self.slot.cam is not None:
+                    self.slot.cam["onvif_imaging"] = dict(prev)
             except Exception:
                 pass
         self._hw_set_busy(False,
-                          f"✅ روی دوربین اعمال شد ({res.get('label') or ''}) — "
-                          f"WDR {'روشن' if mode == oi.WDR_MODE_ON else 'خاموش'}"
+                          f"✅ {label} روی دوربین اعمال شد ({res.get('label') or ''}) — "
+                          f"{'روشن' if mode != off_const else 'خاموش'}"
                           + (f" با شدت {level}٪" if level is not None else ""))
 
     # ----------------------------------------------------- ذخیره / انصراف --
