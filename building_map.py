@@ -74,6 +74,20 @@ def _base_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def device_scene_xy(dev, to_meter):
+    """موقعیت صحنه‌ای یک تجهیز از روی مختصات ذخیره‌شده.
+
+    قرارداد ذخیره‌سازی (از 2.0.23-beta): x/y تجهیزات همیشه به «متر»
+    است و مستقل از واحد نقشه؛ رندر با تقسیم بر to_meter به واحد صحنه
+    برمی‌گردد تا تعویض نقشه با واحد متفاوت، جای تجهیزات را به‌هم نریزد.
+    """
+    tm = to_meter or 1.0
+    try:
+        return float(dev.get("x", 0.0)) / tm, float(dev.get("y", 0.0)) / tm
+    except (TypeError, ValueError, AttributeError):
+        return 0.0, 0.0
+
+
 def maps_data_dir():
     d = os.path.join(_base_dir(), "maps_data")
     os.makedirs(d, exist_ok=True)
@@ -185,6 +199,8 @@ class MapStore:
     # -- تجهیزات --
     def add_device(self, floor_id, kind, name, x, y, ref_id="",
                    angle=0.0, fov=90.0, view_distance=8.0):
+        """افزودن تجهیز؛ x و y به «متر» (مستقل از واحد نقشه) ذخیره می‌شوند
+        تا با تعویض نقشه (واحد متفاوت) جای تجهیزات به‌هم نریزد."""
         fl = self.get_floor(floor_id)
         if not fl:
             return None
@@ -194,6 +210,7 @@ class MapStore:
             "name": name,
             "ref_id": ref_id,   # id دوربین یا NVR در camera_store (اختیاری)
             "x": float(x), "y": float(y),
+            "pos_unit": "m",    # قرارداد 2.0.23-beta: مختصات همیشه متری
             "angle": float(angle),  # درجه؛ ۰ = سمت راست (شرق)، خلاف عقربه ساعت
             "fov": float(fov),      # زاویه‌ی دید دوربین (فقط برای camera)
             "view_distance": float(view_distance),  # فاصله دید دوربین به متر
@@ -201,6 +218,29 @@ class MapStore:
         fl["devices"].append(dev)
         self.save()
         return dev
+
+    def ensure_device_meters(self, floor_id, to_meter):
+        """مهاجرت یک‌باره‌ی تجهیزات قدیمی: مختصات ذخیره‌شده با واحد صحنه‌ی
+        نقشه‌ی فعلی، به متر تبدیل می‌شود. برای نقشه‌های فعلی کاربران،
+        to_meter همان نقشه‌ای است که تجهیز رویش گذاشته شده، پس مهاجرت
+        دقیق است."""
+        fl = self.get_floor(floor_id)
+        if not fl:
+            return
+        tm = to_meter or 1.0
+        changed = False
+        for dev in fl.get("devices", []):
+            if not isinstance(dev, dict) or dev.get("pos_unit") == "m":
+                continue
+            try:
+                dev["x"] = float(dev.get("x", 0.0)) * tm
+                dev["y"] = float(dev.get("y", 0.0)) * tm
+            except (TypeError, ValueError):
+                dev["x"], dev["y"] = 0.0, 0.0
+            dev["pos_unit"] = "m"
+            changed = True
+        if changed:
+            self.save()
 
     def update_device(self, floor_id, device_id, **fields):
         fl = self.get_floor(floor_id)

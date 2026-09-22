@@ -34,6 +34,7 @@ from PyQt6.QtWidgets import (
 
 from building_map import (
     MapStore, DxfMapLoader, DxfError, DEVICE_KINDS, ezdxf_available,
+    device_scene_xy,
 )
 from person_store import person_store
 from plate_store import plate_store
@@ -46,16 +47,39 @@ from lane_geometry import (
 # صحنه با شبکه‌ی مختصات
 # ---------------------------------------------------------------------------
 class MapScene(QGraphicsScene):
-    """صحنه‌ی نقشه با پس‌زمینه‌ی تیره و شبکه‌ی نقطه‌ای هر ۱ متر."""
+    """صحنه‌ی نقشه با پس‌زمینه‌ی تیره و شبکه‌ی نقطه‌ای تطبیقی.
+
+    گام گرید از روی اندازه‌ی واقعی نقشه (به متر) انتخاب می‌شود (~۱۵ خانه
+    در بزرگ‌ترین بعد، رُند به ۱/۲/۵) تا با هر مقیاسی — از سانتی‌متر تا
+    کیلومتر — گرید معنادار دیده شود (2.0.23-beta).
+    """
 
     def __init__(self, to_meter=1.0):
         super().__init__()
         self.to_meter = to_meter or 1.0
         self.setBackgroundBrush(QBrush(QColor("#0b0f14")))
 
+    def grid_step_scene(self):
+        """گام پایه‌ی گرید به واحد صحنه (تطبیقی با اندازه‌ی نقشه)."""
+        tm = self.to_meter or 1.0
+        try:
+            w_m = max(1e-9, self.sceneRect().width() * tm)
+            h_m = max(1e-9, self.sceneRect().height() * tm)
+        except Exception:
+            w_m = h_m = 1.0
+        raw = max(w_m, h_m) / 15.0  # ~۱۵ خانه در بزرگ‌ترین بعد
+        exp = math.floor(math.log10(raw)) if raw > 0 else 0
+        base = 10.0 ** exp
+        nice_m = base * 10
+        for m in (1, 2, 5, 10):
+            if base * m >= raw:
+                nice_m = base * m
+                break
+        return max(nice_m / tm, 1e-9)
+
     def drawBackground(self, painter, rect):
         super().drawBackground(painter, rect)
-        step = 1.0 / self.to_meter  # یک متر به واحد صحنه
+        step = self.grid_step_scene()
         if step <= 0:
             return
         # اگر خیلی زوم‌اوت است، شبکه را درشت‌تر کن
@@ -112,10 +136,11 @@ class DeviceItem(QGraphicsItemGroup):
         self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsMovable)
         self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable)
         self._press_scene = None
-        self._sector = None
-        self._tick = None
         self._build()
-        self.setPos(device.get("x", 0), device.get("y", 0))
+        # مختصات ذخیره‌شده به متر است؛ رندر به واحد صحنه برمی‌گردد
+        # (2.0.23-beta: مستقل از واحد نقشه).
+        sx, sy = device_scene_xy(device, to_meter)
+        self.setPos(sx, sy)
         self.setZValue(10)
 
     # -- ساخت ظاهر --
@@ -129,35 +154,13 @@ class DeviceItem(QGraphicsItemGroup):
         accent = QColor("#22d3ee")
 
         if kind == "camera":
-            angle = float(dev.get("angle", 0))
-            fov = float(dev.get("fov", 90))
-            # برد نمایشی قطاع دید = «فاصله دید» دوربین (متر)؛ پیش‌فرض ۸ متر
-            # تا نقشه‌های قدیمی دقیقاً مثل قبل دیده شوند.
-            rng = float(dev.get("view_distance", 8.0)) / (self.to_meter or 1.0)
-            sector = QGraphicsPathItem(_sector_path(0, 0, rng, angle, fov))
-            sector.setPen(QPen(QColor(34, 211, 238, 110), 0))
-            sector.setBrush(QBrush(QColor(34, 211, 238, 38)))
-            self.addToGroup(sector)
-            self._sector = sector
-            # بدنه‌ی دوربین (اندازه ثابت روی صفحه)
-            body = QGraphicsEllipseItem(-11, -11, 22, 22)
-            body.setPen(QPen(accent, 2))
-            body.setBrush(QBrush(QColor("#0e1620")))
-            body.setFlag(
-                QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
-            self.addToGroup(body)
-            # جهت لنز
-            import math
-            a = math.radians(angle)
-            dx, dy = 11 * math.cos(a), -11 * math.sin(a)
-            tick = QGraphicsLineItem(0, 0, dx * 1.5, dy * 1.5)
-            tick.setPen(QPen(QColor("#f472b6"), 3))
-            tick.setFlag(
-                QGraphicsLineItem.GraphicsItemFlag.ItemIgnoresTransformations)
-            self.addToGroup(tick)
-            self._tick = tick
+            # (2.0.23-beta) نشان دوربین فقط ایموجی 🎥 است؛ دایره و کادر
+            # قطاع دید به خواست کاربر حذف شد.
             glyph = QGraphicsSimpleTextItem("🎥")
-            glyph.setPos(-9, -13)
+            gf = QFont()
+            gf.setPointSize(18)
+            glyph.setFont(gf)
+            glyph.setPos(-14, -19)
             glyph.setFlag(
                 QGraphicsSimpleTextItem.GraphicsItemFlag.ItemIgnoresTransformations)
             self.addToGroup(glyph)
@@ -190,27 +193,11 @@ class DeviceItem(QGraphicsItemGroup):
         self._label = label
 
     def refresh(self):
-        """به‌روزرسانی زنده‌ی ظاهر تجهیز، بدون بازسازی گروه.
+        """به‌روزرسانی زنده‌ی ظاهر تجهیز.
 
-        رفع باگ «پرش دوربین هنگام تغییر زاویه»: نسخه‌ی قبلی کل گروه را با
-        removeFromGroup/addToGroup از نو می‌ساخت؛ چون گروه از قبل در موقعیت
-        P روی صحنه بود، Qt موقعیت صحنه‌ای فرزندهای تازه (۰٬۰) را حفظ می‌کرد
-        و همه‌ی گرافیک دوربین به گوشه‌ی نقشه (مبدأ صحنه) می‌پرید، ضمن این‌که
-        فرزندهای قبلی به‌صورت «روح» در صحنه می‌ماندند. حالا فقط مسیر قطاع
-        دید و خط جهت لنز درجا به‌روز می‌شوند؛ موقعیت دست نمی‌خورد.
+        (2.0.23-beta) دوربین فقط ایموجی است؛ چیزی برای به‌روزرسانی
+        هندسی نیست و موقعیت دست نمی‌خورد.
         """
-        dev = self.device
-        if dev.get("kind") == "camera":
-            angle = float(dev.get("angle", 0))
-            fov = float(dev.get("fov", 90))
-            rng = float(dev.get("view_distance", 8.0)) / (self.to_meter or 1.0)
-            if self._sector is not None:
-                self._sector.setPath(_sector_path(0, 0, rng, angle, fov))
-            if self._tick is not None:
-                import math
-                a = math.radians(angle)
-                dx, dy = 11 * math.cos(a), -11 * math.sin(a)
-                self._tick.setLine(0, 0, dx * 1.5, dy * 1.5)
         self.update()
 
     def set_name(self, name):
@@ -877,12 +864,83 @@ class BuildingMapPage(QWidget):
             "AutoCAD DXF (*.dxf)")
         if not path:
             return
+        # (2.0.23-beta) مهاجرت تجهیزات قدیمی «قبل» از جایگزینی فایل:
+        # مختصات قدیمی با واحد صحنه‌ی نقشه‌ی قبلی ذخیره شده‌اند؛ اگر بعد از
+        # ایمپورت مهاجرت شوند، با to_meter نقشه‌ی جدید ضرب می‌شوند و جای
+        # تجهیزات به‌هم می‌ریزد.
+        old_tm = self.scenes.get(fid, {}).get("to_meter")
+        if old_tm:
+            self.store.ensure_device_meters(fid, old_tm)
         self.store.import_map_file(fid, path)
+        # گارد مقیاس (2.0.23-beta): اگر ابعاد واقعی نقشه نامعقول باشد،
+        # واحد واقعی از کاربر پرسیده و ذخیره می‌شود.
+        self._check_dxf_scale(fid)
         if fid in self.scenes:
             del self.scenes[fid]
         self._activate_floor(fid, fit=True)
         QMessageBox.information(self, "انجام شد",
                                 "نقشه‌ی DXF با دقت کامل مختصات اتوکد بارگذاری شد.")
+
+    # گزینه‌های واحد برای override دستی هنگام ایمپورت (نام فارسی، ضریب به متر)
+    MAP_UNIT_CHOICES = [
+        ("میلی‌متر", 0.001),
+        ("سانتی‌متر", 0.01),
+        ("متر", 1.0),
+        ("کیلومتر", 1000.0),
+        ("اینچ", 0.0254),
+        ("فوت", 0.3048),
+    ]
+
+    def _check_dxf_scale(self, fid):
+        """بررسی معقول‌بودن مقیاس نقشه‌ی DXF تازه ایمپورت‌شده.
+
+        اگر بزرگ‌ترین بعد نقشه (به متر، با واحد شناسایی‌شده‌ی فایل) کمتر
+        از نیم متر یا بیشتر از ۲ کیلومتر باشد، به احتمال زیاد واحد هدر
+        فایل با قصد طراح یکی نیست؛ در این صورت واحد واقعی پرسیده و به‌صورت
+        دستی روی طبقه ذخیره می‌شود (map_unit_override) تا قطاع دید دوربین،
+        گرید و جای تجهیزات درست کار کنند.
+        """
+        fl = self.store.get_floor(fid)
+        if not fl:
+            return
+        map_path, map_kind = self.store.floor_map_abs(fl)
+        if not map_path or map_kind != "dxf":
+            return
+        try:
+            info = DxfMapLoader().load(map_path)
+        except Exception:
+            return
+        w_m = info["bounds"].width() * info["to_meter"]
+        h_m = info["bounds"].height() * info["to_meter"]
+        big_m = max(w_m, h_m)
+        if 0.5 <= big_m <= 2000:
+            # معقول است؛ override مربوط به نقشه‌ی قبلی پاک شود
+            if fl.get("map_unit_override"):
+                fl.pop("map_unit_override", None)
+                self.store.save()
+            return
+        names = [n for n, _ in self.MAP_UNIT_CHOICES]
+        cur_fa = info.get("units_fa") or ""
+        try:
+            cur_idx = names.index(cur_fa)
+        except ValueError:
+            cur_idx = 2
+        item, ok = QInputDialog.getItem(
+            self, "واحد نقشه",
+            "ابعاد نقشه با واحد شناسایی‌شده‌ی فایل "
+            f"(«{cur_fa}») برابر {w_m:.2f} × {h_m:.2f} متر است که برای "
+            "نقشه‌ی ساختمان نامعقول به نظر می‌رسد.\n"
+            "واحد واقعی نقشه را انتخاب کنید تا دید دوربین و مقیاس درست شود:",
+            names, cur_idx, False)
+        if ok and item:
+            for n, tm in self.MAP_UNIT_CHOICES:
+                if n == item:
+                    fl["map_unit_override"] = {"to_meter": tm, "units_fa": n}
+                    self.store.save()
+                    break
+        else:
+            fl.pop("map_unit_override", None)
+            self.store.save()
 
     def _import_image(self):
         fid = self._current_floor_id()
@@ -893,6 +951,10 @@ class BuildingMapPage(QWidget):
             "Images (*.png *.jpg *.jpeg *.bmp)")
         if not path:
             return
+        # (2.0.23-beta) مهاجرت تجهیزات قدیمی «قبل» از جایگزینی تصویر.
+        old_tm = self.scenes.get(fid, {}).get("to_meter")
+        if old_tm:
+            self.store.ensure_device_meters(fid, old_tm)
         self.store.import_map_file(fid, path)
         if fid in self.scenes:
             del self.scenes[fid]
@@ -950,6 +1012,21 @@ class BuildingMapPage(QWidget):
         if bounds is None or bounds.isNull():
             bounds = QRectF(0, 0, 1000, 700)
         scene.setSceneRect(bounds)
+
+        # override دستی واحد نقشه (گارد مقیاس 2.0.23-beta): اگر کاربر هنگام
+        # ایمپورت واحد واقعی را مشخص کرده باشد، همان اعمال می‌شود.
+        try:
+            _ov = fl.get("map_unit_override") or {}
+            _ov_tm = float(_ov.get("to_meter") or 0)
+        except (TypeError, ValueError):
+            _ov_tm = 0
+        if _ov_tm > 0:
+            to_meter = _ov_tm
+            scene.to_meter = to_meter
+            units_fa = str(_ov.get("units_fa") or units_fa) + " (دستی)"
+
+        # مهاجرت یک‌باره‌ی مختصات قدیمی (واحد صحنه) به متر
+        self.store.ensure_device_meters(floor_id, to_meter)
 
         # تجهیزات
         items = {}
@@ -1101,9 +1178,13 @@ class BuildingMapPage(QWidget):
         vals = dlg.values()
         if not vals["name"]:
             vals["name"] = DEVICE_KINDS[kind]["fa"]
+        # ذخیره‌سازی متری (2.0.23-beta): مختصات صحنه به متر تبدیل می‌شود
+        # تا با تعویض نقشه (واحد متفاوت) جای تجهیز به‌هم نریزد.
+        _entry0 = self.scenes.get(self.current_floor)
+        _tm0 = (_entry0 or {}).get("to_meter") or 1.0
         dev = self.store.add_device(
             self.current_floor, kind, vals["name"],
-            scene_pos.x(), scene_pos.y(),
+            scene_pos.x() * _tm0, scene_pos.y() * _tm0,
             ref_id=vals["ref_id"], angle=vals["angle"], fov=vals["fov"],
             view_distance=vals["view_distance"])
         entry = self.scenes.get(self.current_floor)
@@ -1122,7 +1203,10 @@ class BuildingMapPage(QWidget):
         self._update_zoom_label()
 
     def _on_device_moved(self, floor_id, dev_id, x, y):
-        self.store.update_device(floor_id, dev_id, x=float(x), y=float(y))
+        # x و y به واحد صحنه می‌آیند؛ ذخیره‌سازی متری است (2.0.23-beta).
+        tm = (self.scenes.get(floor_id) or {}).get("to_meter") or 1.0
+        self.store.update_device(floor_id, dev_id, x=float(x) * tm,
+                                 y=float(y) * tm, pos_unit="m")
         # گزارش زنده‌ی پوشش: با جابه‌جایی دوربین در لحظه به‌روز می‌شود
         # (2.0.21-beta به دستور کاربر).
         self._refresh_coverage_live()
@@ -1465,8 +1549,13 @@ class BuildingMapPage(QWidget):
                 s = st["sighting"]
                 for fl, dev in st["placements"]:
                     fid = fl.get("id")
+                    # مهاجرت مختصات قدیمی به متر، بعد تبدیل به واحد صحنه
+                    # (2.0.23-beta: x/y ذخیره‌شده متری است)
+                    _e0 = self._build_scene(fid)
+                    _tm0 = (_e0 or {}).get("to_meter") or 1.0
+                    _xs, _ys = device_scene_xy(dev, _tm0)
                     per_floor_points.setdefault(fid, []).append(
-                        (dev.get("x", 0), dev.get("y", 0), seq, s, dev))
+                        (_xs, _ys, seq, s, dev))
             # رسم روی هر طبقه
             for fid, pts in per_floor_points.items():
                 entry = self._build_scene(fid)
@@ -1570,7 +1659,8 @@ class BuildingMapPage(QWidget):
         self._select_floor(fl.get("id"))
         entry = self.scenes.get(fl.get("id"))
         if entry:
-            self.view.centerOn(dev.get("x", 0), dev.get("y", 0))
+            _cx, _cy = device_scene_xy(dev, entry.get("to_meter"))
+            self.view.centerOn(_cx, _cy)
 
     def _clear_path(self):
         self._path = None
@@ -1612,8 +1702,9 @@ class BuildingMapPage(QWidget):
         if not placements:
             return
         self._live_persons[key] = {
-            "placements": [(fl.get("id"), dev.get("x", 0), dev.get("y", 0))
-                           for fl, dev in placements],
+            # dev به‌صورت رفرنس نگه داشته می‌شود تا مهاجرت متریِ بعدی
+            # (ensure_device_meters) روی همین آبجکت اعمال شود.
+            "placements": [(fl.get("id"), dev) for fl, dev in placements],
             "items": [], "rings": [],
             "code": code, "camera_name": camera_name,
             "kind": kind if kind == "candidate" else "live",
@@ -1639,10 +1730,13 @@ class BuildingMapPage(QWidget):
         fill_c = QColor(234, 179, 8, 40) if cand else QColor(34, 197, 94, 40)
         text_c = "#fef9c3" if cand else "#bbf7d0"
         emoji = "🟡" if cand else "🟢"
-        for fid, x, y in info["placements"]:
+        for fid, dev in info["placements"]:
             entry = self.scenes.get(fid)
             if not entry:
                 continue
+            tm = entry.get("to_meter") or 1.0
+            self.store.ensure_device_meters(fid, tm)
+            x, y = device_scene_xy(dev, tm)
             sc = entry["scene"]
             ring = QGraphicsEllipseItem(-20, -20, 40, 40)
             ring.setPos(x, y)
@@ -1751,7 +1845,11 @@ class BuildingMapPage(QWidget):
         for st in stops:
             n += 1
             for fl, dev in st["placements"]:
-                seq_pts.append((fl.get("id"), dev.get("x", 0), dev.get("y", 0)))
+                _fid = fl.get("id")
+                _e = self._build_scene(_fid)
+                _tm = (_e or {}).get("to_meter") or 1.0
+                _xs, _ys = device_scene_xy(dev, _tm)
+                seq_pts.append((_fid, _xs, _ys))
         segs = []
         for a, b in zip(seq_pts, seq_pts[1:]):
             if a[0] == b[0]:
@@ -2196,6 +2294,12 @@ class BuildingMapPage(QWidget):
         if not entry:
             return
         sc = entry["scene"]
+        cur_tm = entry.get("to_meter") or 1.0
+        # نقاط مسیر با واحد صحنه‌ی زمان رسم ذخیره شده‌اند؛ اگر نقشه عوض شده
+        # (واحد متفاوت)، به قاب صحنه‌ی فعلی تبدیل می‌شوند (2.0.23-beta).
+        lane_tm = lane.get("to_meter", cur_tm) or cur_tm
+        _lk = lane_tm / cur_tm if cur_tm else 1.0
+        pts = [[float(x) * _lk, float(y) * _lk] for x, y in pts]
         # خط مسیر
         path = QPainterPath()
         path.moveTo(pts[0][0], pts[0][1])
@@ -2234,7 +2338,7 @@ class BuildingMapPage(QWidget):
             try:
                 for _fl, dev in self.store.devices_by_camera(cam_id):
                     if _fl.get("id") == fid:
-                        x, y = dev.get("x", 0), dev.get("y", 0)
+                        x, y = device_scene_xy(dev, cur_tm)
                         break
             except Exception:
                 pass
@@ -2303,14 +2407,15 @@ class BuildingMapPage(QWidget):
 
     def _lane_camera_positions(self, lane, fid):
         """موقعیت صحنه‌ی دوربین‌های یک مسیر: ({id: (x,y)}, {id: name})."""
+        entry = self._build_scene(fid)
+        tm = (entry or {}).get("to_meter") or 1.0
         xy, names = {}, {}
         for c in (lane.get("cameras") or []):
             cid = str(c.get("camera_id"))
             try:
                 for _fl, dev in self.store.devices_by_camera(cid):
                     if _fl.get("id") == fid:
-                        xy[cid] = (float(dev.get("x", 0)),
-                                   float(dev.get("y", 0)))
+                        xy[cid] = device_scene_xy(dev, tm)
                         names[cid] = dev.get("name") or cid
                         break
             except Exception:
@@ -2335,6 +2440,19 @@ class BuildingMapPage(QWidget):
                                     "این مسیر نقطه‌ی کافی برای شبیه‌سازی ندارد.")
             return
         fid = (lane.get("floor_id") or "").strip()
+        # (2.0.23-beta) نقاط مسیر با واحد صحنه‌ی زمان رسم ذخیره شده‌اند؛
+        # اگر نقشه بعداً با مقیاس متفاوت جایگزین شده باشد، به مقیاس جاری
+        # تبدیل می‌شوند تا با موقعیت دوربین‌ها هم‌خوان باشند.
+        entry = self._build_scene(fid) if fid else None
+        cur_tm = (entry or {}).get("to_meter") or 1.0
+        lane_tm = float(lane.get("to_meter") or 1.0)
+        if lane_tm != cur_tm:
+            ratio = lane_tm / cur_tm
+            lane = dict(lane,
+                        points=[[float(x) * ratio, float(y) * ratio]
+                                for x, y in pts],
+                        to_meter=cur_tm)
+            pts = lane["points"]
         xy, names = self._lane_camera_positions(lane, fid)
         try:
             from lane_simulator import LaneSimDialog
@@ -2423,9 +2541,30 @@ class BuildingMapPage(QWidget):
             to_meter = (self.scenes.get(fid) or {}).get("to_meter") or 1.0
         except Exception:
             to_meter = 1.0
-        cameras = [d for d in (fl.get("devices") or [])
-                   if d.get("kind") == "camera"]
-        result = analyze_lane_coverage(lanes, cameras, to_meter=to_meter,
+        # همه‌چیز به قاب صحنه‌ی فعلی: نقاط مسیر با to_meter زمان رسم ذخیره
+        # شده‌اند و مختصات دوربین‌ها متری است (2.0.23-beta).
+        cur_tm = to_meter
+        lanes_conv = []
+        for lane in lanes:
+            ltm = lane.get("to_meter", cur_tm) or cur_tm
+            k = ltm / cur_tm if cur_tm else 1.0
+            pts = lane.get("points") or []
+            lanes_conv.append(dict(
+                lane,
+                points=[[float(x) * k, float(y) * k] for x, y in pts],
+                to_meter=cur_tm))
+        cameras = []
+        for d in (fl.get("devices") or []):
+            if d.get("kind") != "camera":
+                continue
+            cx, cy = device_scene_xy(d, cur_tm)
+            cameras.append({"name": d.get("name") or d.get("id") or "؟",
+                            "id": d.get("id"),
+                            "x": cx, "y": cy,
+                            "angle": d.get("angle", 0.0),
+                            "fov": d.get("fov", 90.0),
+                            "view_distance": d.get("view_distance", 8.0)})
+        result = analyze_lane_coverage(lanes_conv, cameras, to_meter=cur_tm,
                                        step_m=DEFAULT_SAMPLE_STEP_M)
         self._draw_lane_coverage(result)
         self._render_coverage_report(result, DEFAULT_SAMPLE_STEP_M)
