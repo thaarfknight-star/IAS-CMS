@@ -1,13 +1,8 @@
 # -*- coding: utf-8 -*-
 """تست‌های نسخه‌ی 2.0.16-beta — رفع کرش‌های باقی‌مانده از ممیزی پایداری.
 
-۱) _run_guarded در onvif_imaging: تایم‌اوت *واقعی* (برخلاف نسخه‌ی قبلی که
-   در shutdown(wait=True) گیر می‌کرد).
-۲) _try_ports: با تردهای daemon و مهلت کلی واقعی برمی‌گردد.
 ۳) دیالوگ بازبینی NVR: rw_timeout در PLAYBACK_FFMPEG_OPTS + توقف امن ترد
    در reject/closeEvent (بدون qFatal).
-۴) دیالوگ تنظیمات تصویر: accept/reject/closeEvent ترد ONVIF را متوقف
-   می‌کنند.
 ۵) report_store: نوشتن‌ها در ترد writer جدا انجام می‌شود؛ ترد صداکننده
    (GUI) هرگز روی قفل دیتابیس بلاک نمی‌شود.
 
@@ -31,82 +26,6 @@ def check(name, cond):
     (_passed if cond else _failed).append(name)
     print(("PASS " if cond else "FAIL ") + name)
 
-
-# ================================================= ۱) _run_guarded ======
-import onvif_imaging as oi
-
-
-def _block_forever():
-    time.sleep(60)
-    return {"ok": True}
-
-
-t0 = time.monotonic()
-res = oi._run_guarded(_block_forever, timeout=2)
-dt = time.monotonic() - t0
-check("run_guarded returns on hard-block (real timeout)", dt < 8)
-check("run_guarded timeout error is Persian",
-      isinstance(res, dict) and res.get("ok") is False
-      and "مهلت" in str(res.get("error", "")))
-
-res = oi._run_guarded(lambda: {"ok": True, "v": 42}, timeout=5)
-check("run_guarded success passthrough",
-      res == {"ok": True, "v": 42})
-
-
-def _boom():
-    raise RuntimeError("connection refused")
-
-
-res = oi._run_guarded(_boom, timeout=5)
-check("run_guarded exception -> friendly Persian",
-      res.get("ok") is False and "اتصال رد شد" in str(res.get("error", "")))
-
-# ================================================= ۲) _try_ports ========
-_orig_new_camera = oi._new_camera
-
-
-def _hanging_camera(host, port, user, pwd):
-    time.sleep(60)
-    raise AssertionError("should never return")
-
-
-oi._new_camera = _hanging_camera
-try:
-    t0 = time.monotonic()
-    cam, imaging, media, port, err = oi._try_ports(
-        {"host": "192.0.2.1", "port": None, "user": "a", "pwd": "b"})
-    dt = time.monotonic() - t0
-finally:
-    oi._new_camera = _orig_new_camera
-check("try_ports returns within overall timeout on total hang",
-      dt < oi._OVERALL_TIMEOUT + 10)
-check("try_ports hang -> no crash, error message",
-      cam is None and isinstance(err, str) and len(err) > 0)
-
-
-class _FakeCam:
-    def create_imaging_service(self):
-        return object()
-
-    def create_media_service(self):
-        return object()
-
-
-def _fast_camera(host, port, user, pwd):
-    if port == 80:
-        raise ConnectionError("refused")
-    return _FakeCam()
-
-
-oi._new_camera = _fast_camera
-try:
-    cam, imaging, media, port, err = oi._try_ports(
-        {"host": "192.0.2.1", "port": None, "user": "a", "pwd": "b"})
-finally:
-    oi._new_camera = _orig_new_camera
-check("try_ports success returns first answering port",
-      err is None and port == 8000 and cam is not None)
 
 # ================================== ۳) دیالوگ بازبینی NVR ==============
 import nvr_playback_dialog as npd
@@ -173,25 +92,6 @@ try:
 except Exception as e:
     print("   (Qt behavioral test skipped: %s)" % e)
     _qt_ok = False
-
-# ============================== ۴) دیالوگ تنظیمات تصویر =================
-_src2 = open(os.path.join(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__))), "image_settings_dialog.py"),
-    encoding="utf-8").read()
-_tree2 = ast.parse(_src2)
-_cls2 = next(n for n in ast.walk(_tree2)
-             if isinstance(n, ast.ClassDef) and n.name == "ImageSettingsDialog")
-_methods2 = {n.name: n for n in _cls2.body
-             if isinstance(n, ast.FunctionDef)}
-
-check("_stop_hw_worker defined", "_stop_hw_worker" in _methods2)
-check("accept stops hw worker", _calls(_methods2["accept"], "_stop_hw_worker"))
-check("reject stops hw worker", _calls(_methods2["reject"], "_stop_hw_worker"))
-check("closeEvent stops hw worker",
-      "closeEvent" in _methods2
-      and _calls(_methods2["closeEvent"], "_stop_hw_worker"))
-check("_stop_hw_worker has terminate fallback",
-      "terminate" in ast.dump(_methods2["_stop_hw_worker"]))
 
 # ===================================== ۵) report_store ==================
 from report_store import ReportStore

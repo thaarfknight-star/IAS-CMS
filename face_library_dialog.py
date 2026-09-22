@@ -1,13 +1,15 @@
 import cv2
 import numpy as np
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QPixmap, QImageReader
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QTextEdit,
     QTableWidget, QTableWidgetItem, QPushButton, QMessageBox, QDialogButtonBox,
     QHeaderView, QLabel, QFileDialog, QComboBox
 )
+
+from image_viewer_dialog import ImageViewerDialog  # 👁 دیدن تصویر (دابل‌کلیک روی عکس)
 
 
 def _work_group_combo(work_groups=(), current=""):
@@ -237,6 +239,8 @@ class FaceLibraryPage(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        # دابل‌کلیک روی ستون عکس → باز شدن «👁 دیدن تصویر» (تصویر اصلی، نه بندانگشتی)
+        self.table.cellDoubleClicked.connect(self._on_cell_double_clicked)
 
         add_btn = QPushButton("افزودن چهره از تصویر زنده دوربین فعال")
         add_btn.clicked.connect(self.add_from_live)
@@ -299,9 +303,16 @@ class FaceLibraryPage(QWidget):
             self.table.insertRow(row)
 
             photo_label = QLabel()
-            pix = QPixmap(person.get("photo", ""))
+            # بارگذاری مستقیم در اندازه‌ی هدف (48×48) با QImageReader برای
+            # کاهش مصرف RAM؛ تصویر کامل decode نمی‌شود.
+            reader = QImageReader(person.get("photo", ""))
+            reader.setAutoTransform(True)
+            reader.setScaledSize(QSize(48, 48))
+            pix = QPixmap.fromImageReader(reader)
             if not pix.isNull():
-                photo_label.setPixmap(pix.scaled(48, 48, Qt.AspectRatioMode.KeepAspectRatio))
+                photo_label.setPixmap(pix)
+            # مسیر تصویر اصلی را در ویجت نگه می‌داریم تا دابل‌کلیک آن را باز کند.
+            photo_label.setProperty("photo_path", person.get("photo", "") or "")
             self.table.setCellWidget(row, 0, photo_label)
 
             self.table.setItem(row, 1, QTableWidgetItem(person.get("name", "")))
@@ -311,6 +322,25 @@ class FaceLibraryPage(QWidget):
             self.table.setItem(row, 5, QTableWidgetItem(person.get("note", "")))
             # شناسه داخلی را در آیتم مخفی نگه می‌داریم تا هنگام ویرایش/حذف قابل بازیابی باشد.
             self.table.item(row, 1).setData(Qt.ItemDataRole.UserRole, person.get("id"))
+
+    def _on_cell_double_clicked(self, row, column):
+        """دابل‌کلیک روی ستون عکس → باز شدن دیالوگ «👁 دیدن تصویر».
+
+        فقط ستون صفر (عکس) واکنش نشان می‌دهد؛ ستون‌های دیگر هیچ کاری
+        نمی‌کنند تا رفتار ویرایش/انتخاب موجود تغییر نکند."""
+        if column != 0:
+            return
+        widget = self.table.cellWidget(row, 0)
+        path = widget.property("photo_path") if widget is not None else None
+        if not path:
+            item = self.table.item(row, 1)
+            person_id = item.data(Qt.ItemDataRole.UserRole) if item else None
+            if person_id is not None:
+                person = self.face_engine.get_person(person_id) or {}
+                path = person.get("photo", "")
+        if path:
+            ImageViewerDialog(path, parent=self).exec()
+        # مسیر خالی/ناموجود: خود دیالوگ پیام مناسب نشان می‌دهد؛ هیچ‌وقت کرش نمی‌دهد.
 
     def _selected_person_id(self):
         row = self.table.currentRow()

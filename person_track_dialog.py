@@ -15,8 +15,8 @@ person_reid.py). دو نفر با لباس خیلی شبیه ممکن است ی�
 
 import os
 
-from PyQt6.QtCore import Qt, QDate
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt, QDate, QSize, pyqtSignal
+from PyQt6.QtGui import QPixmap, QImageReader
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QTabWidget, QTableWidget,
     QTableWidgetItem, QHeaderView, QListWidget, QListWidgetItem, QGroupBox,
@@ -26,6 +26,17 @@ from PyQt6.QtWidgets import (
 )
 
 from person_store import person_store
+from image_viewer_dialog import ImageViewerDialog  # 👁 دیدن تصویر (دابل‌کلیک روی thumbnail)
+
+
+class _DoubleClickLabel(QLabel):
+    """QLabel سبک که دابل‌کلیک را با سیگنال گزارش می‌دهد."""
+
+    doubleClicked = pyqtSignal()
+
+    def mouseDoubleClickEvent(self, event):
+        self.doubleClicked.emit()
+        super().mouseDoubleClickEvent(event)
 
 
 class LiveTrackStatusDialog(QDialog):
@@ -240,11 +251,13 @@ class PersonTrackPage(QWidget):
         side = QWidget()
         side_layout = QVBoxLayout(side)
         side_layout.addWidget(QLabel("تصویر ثبت‌شده:"))
-        self.thumb_label = QLabel("—")
+        self.thumb_label = _DoubleClickLabel("—")
         self.thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.thumb_label.setMinimumSize(180, 240)
         self.thumb_label.setStyleSheet(
             "border: 1px solid #555; border-radius: 6px;")
+        self.thumb_label.doubleClicked.connect(self._on_thumb_double_clicked)
+        self._current_thumb_path = ""
         side_layout.addWidget(self.thumb_label)
         self.show_path_btn = QPushButton("🗺 مشاهده‌ی مسیر حرکت این شخص")
         self.show_path_btn.clicked.connect(self._jump_to_path)
@@ -492,21 +505,40 @@ class PersonTrackPage(QWidget):
         if not pid:
             self.thumb_label.setText("—")
             self.thumb_label.setPixmap(QPixmap())
+            self._current_thumb_path = ""
             return
         persons = {p["id"]: p for p in person_store.get_persons()}
         p = persons.get(pid)
         if not p:
+            self.thumb_label.setText("—")
+            self.thumb_label.setPixmap(QPixmap())
+            self._current_thumb_path = ""
             return
         thumb = p.get("thumb_path") or ""
         if thumb and os.path.exists(thumb):
-            pix = QPixmap(thumb)
+            # بارگذاری مستقیم در اندازه‌ی هدف (180×240) با QImageReader برای
+            # کاهش مصرف RAM؛ تصویر کامل decode نمی‌شود.
+            reader = QImageReader(thumb)
+            reader.setAutoTransform(True)
+            reader.setScaledSize(QSize(180, 240))
+            pix = QPixmap.fromImageReader(reader)
             if not pix.isNull():
-                self.thumb_label.setPixmap(pix.scaled(
-                    180, 240, Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation))
+                self.thumb_label.setPixmap(pix)
+                self._current_thumb_path = thumb
                 return
         self.thumb_label.setText("تصویری ثبت نشده")
         self.thumb_label.setPixmap(QPixmap())
+        self._current_thumb_path = ""
+
+    def _on_thumb_double_clicked(self):
+        """دابل‌کلیک روی تصویر ثبت‌شده → باز شدن دیالوگ «👁 دیدن تصویر».
+
+        دابل‌کلیک جدول (_on_person_double_clicked → ویرایش یادداشت) دست‌نخورده
+        می‌ماند؛ فقط thumbnail خودش viewer را باز می‌کند."""
+        path = getattr(self, "_current_thumb_path", "")
+        if path:
+            ImageViewerDialog(path, parent=self).exec()
+        # مسیر خالی/ناموجود: خود دیالوگ پیام مناسب نشان می‌دهد؛ هیچ‌وقت کرش نمی‌دهد.
 
     def _on_person_double_clicked(self, item):
         """دابل‌کلیک روی هر ردیف -> ویرایش یادداشت آن شخص."""

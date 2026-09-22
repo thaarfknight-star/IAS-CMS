@@ -19,8 +19,6 @@
 ۳) (2.0.14-beta) ردیف رسم محدوده سطر دوم نوار ابزار است و ظاهر/مخفی شدنش
    اندازه‌ی پنجره و کادرها را عوض نمی‌کند؛ «تایید»/«لغو» فقط بعد از رسم
    شدن محدوده (در انتظار/ویرایش) دیده می‌شوند.
-۴) (2.0.14-beta) ضد نور سخت‌افزاری (BLC) از طریق ONVIF: get/set_backlight و
-   get_imaging_basics در onvif_imaging.py.
 """
 import os
 import sys
@@ -251,95 +249,6 @@ check("region alert fires despite broken face engine",
 if _broken_events:
     check("broken-face region event values",
           _broken_events[0] == (1, "در"), f"events={_broken_events}")
-
-# ---------- ضد نور سخت‌افزاری (BLC) در onvif_imaging.py (2.0.14-beta) ----------
-# با سرویس ONVIF ساختگی (بدون شبکه): خواندن/نوشتن BLC و خواندن یکجای
-# WDR+BLC، و سازگاری API قدیمی WDR.
-try:
-    import onvif_imaging as oi
-except Exception as e:
-    check("onvif_imaging importable", False, str(e))
-    oi = None
-
-if oi is not None:
-    class _FakeImaging:
-        def __init__(self):
-            self.settings = {
-                "BacklightCompensation": {"Mode": "OFF"},
-                "WideDynamicRange": {"Mode": "ON", "Level": 0.5},
-            }
-            self.options = {
-                "BacklightCompensation": {"Mode": ["OFF", "ON"],
-                                          "Level": {"Min": 0.0, "Max": 1.0}},
-                "WideDynamicRange": {"Mode": ["OFF", "ON"],
-                                     "Level": {"Min": 0.0, "Max": 1.0}},
-            }
-            self.set_calls = []
-
-        def GetImagingSettings(self, req):
-            assert req["VideoSourceToken"] == "vs0"
-            return dict(self.settings)
-
-        def GetOptions(self, req):
-            return dict(self.options)
-
-        def SetImagingSettings(self, req):
-            self.set_calls.append(req)
-            self.settings = dict(req["ImagingSettings"])
-
-    _fake = _FakeImaging()
-    _orig_ports = oi._try_ports
-    _orig_pick = oi._pick_video_source
-    _orig_avail = oi.is_available
-    oi._try_ports = lambda target: (None, _fake, object(), 80, None)
-    oi._pick_video_source = lambda media, ch: ("vs0", "")
-    oi.is_available = lambda: (True, "ok")
-    _cam = {"ip": "192.168.1.50", "user": "admin", "pass": "x"}
-    try:
-        mode, level = oi._extract_param(
-            {"BacklightCompensation": {"Mode": "ON", "Level": 0.7}},
-            "BacklightCompensation")
-        check("blc extract mode/level", mode == "ON" and abs(level - 0.7) < 1e-9,
-              f"{mode},{level}")
-        modes, lo, hi = oi._extract_param_options(
-            _fake.options, "BacklightCompensation")
-        check("blc options parsed",
-              modes == ["OFF", "ON"] and lo == 0.0 and hi == 1.0)
-        lvl, rng = oi._normalize_level_0_100(0.7, 0.0, 1.0)
-        check("blc level normalize 0.7->70", lvl == 70 and rng == (0.0, 1.0))
-        r = oi.get_backlight(_cam)
-        check("get_backlight ok", r.get("ok") and r.get("supported"),
-              str(r)[:100])
-        check("get_backlight mode OFF", r.get("mode") == "OFF", r.get("mode"))
-        r = oi.get_imaging_basics(_cam)
-        check("get_imaging_basics ok", r.get("ok"), str(r)[:100])
-        check("basics carries wdr+blc",
-              r.get("wdr", {}).get("mode") == "ON"
-              and r.get("blc", {}).get("mode") == "OFF"
-              and r.get("wdr", {}).get("level") == 50,
-              f"wdr={r.get('wdr', {}).get('mode')} blc={r.get('blc', {}).get('mode')}")
-        r = oi.set_backlight(_cam, "ON", 80)
-        sent = _fake.settings["BacklightCompensation"]
-        check("set_backlight ok", r.get("ok") and r.get("mode") == "ON",
-              str(r)[:100])
-        check("set_backlight level mapped to 0.8",
-              abs(sent["Level"] - 0.8) < 1e-9 and sent["Mode"] == "ON", str(sent))
-        check("set_backlight ForcePersistence",
-              _fake.set_calls[-1].get("ForcePersistence") is True)
-        check("set_backlight keeps wdr untouched",
-              _fake.settings["WideDynamicRange"]["Mode"] == "ON")
-        r = oi.set_backlight(_cam, "MAYBE")
-        check("set_backlight rejects invalid mode", not r.get("ok"))
-        r = oi.get_wdr(_cam)
-        check("get_wdr still ok", r.get("ok") and r.get("mode") == "ON"
-              and r.get("level") == 50, str(r)[:100])
-        r = oi.set_wdr(_cam, "OFF")
-        check("set_wdr still ok",
-              r.get("ok") and _fake.settings["WideDynamicRange"]["Mode"] == "OFF")
-    finally:
-        oi._try_ports = _orig_ports
-        oi._pick_video_source = _orig_pick
-        oi.is_available = _orig_avail
 
 # ---------- جمع‌بندی ----------
 print(f"\n{len(passed)} passed, {len(failed)} failed")

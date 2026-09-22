@@ -7,8 +7,6 @@
 ۳) plate_direction قانون د: حرکت معکوس در مسیر رسم‌شده -> wrong_way؛
    حرکت رو به جلو، «ورود مجدد» را خنثی می‌کند؛ قانون د فقط وقتی پلاک داخل
    است و عبور قبلی در همان مسیر بوده.
-۴) onvif_imaging._try_ports: پورت اول گیرکرده + پورت دوم سریع موفق ->
-   موفقیت سریع برمی‌گردد (نظرسنجی هم‌زمان).
 ۵) اسموک آفسکرین رسم مسیر روی نقشه: شروع رسم، ثبت نقاط، تأیید، انتخاب
    دوربین روی خط، لغو.
 """
@@ -254,59 +252,6 @@ res = fire(cX, plate=PLATE5)
 check("D8 unordered camera -> plain reentry",
       res and len(res["violations"]) >= 1 and
       "reentry_without_exit" in vtypes(PLATE5))
-
-# ==================================== ۴) _try_ports ==
-import onvif_imaging as oi
-
-orig_new_camera = oi._new_camera
-orig_overall = oi._OVERALL_TIMEOUT
-orig_probe = oi.PROBE_PORTS
-
-
-class _FakeSvc:
-    pass
-
-
-class _FakeCam:
-    def create_imaging_service(self):
-        return _FakeSvc()
-
-    def create_media_service(self):
-        return _FakeSvc()
-
-
-def fake_new_camera_stuck_first(host, port, user, pwd):
-    if port == 1:
-        time.sleep(30)  # گیرکرده؛ هرگز برنمی‌گردد
-        raise RuntimeError("stuck")
-    return _FakeCam()
-
-
-oi._new_camera = fake_new_camera_stuck_first
-oi._OVERALL_TIMEOUT = 10
-oi.PROBE_PORTS = [2]
-t0 = time.monotonic()
-cam, imaging, media, port, err = oi._try_ports(
-    {"host": "1.2.3.4", "port": 1, "user": "a", "pwd": "b"})
-el = time.monotonic() - t0
-check("try_ports: stuck first port, fast second -> success",
-      port == 2 and err is None and cam is not None, f"port={port} err={err}")
-check("try_ports: returns well before deadline", el < 8, f"{el:.2f}s")
-
-
-def fake_new_camera_all_fail(host, port, user, pwd):
-    raise RuntimeError("nope")
-
-
-oi._new_camera = fake_new_camera_all_fail
-cam, imaging, media, port, err = oi._try_ports(
-    {"host": "1.2.3.4", "port": 1, "user": "a", "pwd": "b"})
-check("try_ports: all fail -> Persian error",
-      cam is None and isinstance(err, str) and len(err) > 5, str(err)[:40])
-
-oi._new_camera = orig_new_camera
-oi._OVERALL_TIMEOUT = orig_overall
-oi.PROBE_PORTS = orig_probe
 
 # ==================================== ۵) اسموک رسم مسیر ==
 import building_map_dialog as bmd

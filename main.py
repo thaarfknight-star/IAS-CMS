@@ -88,7 +88,6 @@ except ImportError:
     AlarmSoundPlayer = None
     BuildingFireSettingsDialog = None
     _BUILDING_FIRE_AVAILABLE = False
-from image_settings_dialog import ImageSettingsDialog
 from settings_page import SettingsPage
 from theme import (
     apply_theme, LOGO_SHIELD, APP_NAME_FA, APP_NAME_EN, LOGO_BLUE, TEXT_MUTED,
@@ -1363,9 +1362,6 @@ class CameraSlotWidget(QWidget):
         # همین خانه است).
         if self._people_counting_enabled:
             self.stream_thread.set_people_counting(True)
-        # پروفایل تصویر ذخیره‌شده‌ی این دوربین (اگر قبلاً تنظیم شده) روی ترد
-        # تازه اعمال می‌شود - رجوع کنید به image_profile.py.
-        self._apply_saved_image_profile()
         self._refresh_zoom_buttons()
 
     def on_connected(self):
@@ -1608,23 +1604,6 @@ class CameraSlotWidget(QWidget):
                     self.video_label.setCursor(Qt.CursorShape.ArrowCursor)
                     return True
         return super().eventFilter(obj, event)
-
-    # --------------------------------------- تنظیمات تصویر (هر دوربین جدا) --
-    def apply_image_profile(self, profile):
-        """اعمال زنده‌ی پروفایل تنظیمات تصویر روی ترد پخش جاری (پیش‌نمایش
-        دیالوگ «تنظیمات تصویر») - رجوع کنید به image_profile.py."""
-        if self.stream_thread is not None:
-            self.stream_thread.set_image_profile(profile)
-
-    def _apply_saved_image_profile(self):
-        """اعمال پروفایل ذخیره‌شده‌ی این دوربین (cameras.json) روی ترد تازه."""
-        if self.stream_thread is None or self.cam is None:
-            return
-        try:
-            from image_profile import get_camera_profile
-            self.stream_thread.set_image_profile(get_camera_profile(self.cam))
-        except Exception:
-            pass
 
     def stop(self):
         # رفع درخواست «ردیابی اشخاص»: قبل از بالا بردن نسل استریم (که
@@ -2517,24 +2496,6 @@ class MainWindow(QMainWindow):
         self.manage_regions_btn.clicked.connect(self._on_manage_regions_clicked)
         grid_toolbar.addWidget(self.manage_regions_btn)
 
-        # رفع درخواست «سیستم تنظیمات تصویر (مثل WDR، Anti Fogging و...)»:
-        # دکمه برای دوربینِ خانه‌ی انتخاب‌شده؛ هر دوربین پروفایل مستقل خودش
-        # را دارد (در cameras.json ذخیره می‌شود) و چند پیش‌فرض آماده هم داخل
-        # دیالوگ هست - رجوع کنید به image_settings_dialog.py و image_profile.py.
-        self.image_settings_btn = QPushButton("🎨 تنظیمات تصویر")
-        self.image_settings_btn.setEnabled(False)
-        self.image_settings_btn.setToolTip(
-            "تنظیمات تصویر (روشنایی، کنتراست، WDR، ضد مه و...) برای دوربین "
-            "انتخاب‌شده.\nهر دوربین تنظیم مستقل خودش را دارد؛ چند پیش‌فرض آماده "
-            "هم داخل دیالوگ هست."
-        )
-        self.image_settings_btn.setStyleSheet(
-            "QPushButton{background:#333; color:#ccc; border-radius:4px; padding:3px 8px; font-size:11px;}"
-            "QPushButton:enabled{background:#8e44ad; color:#fff;}"
-        )
-        self.image_settings_btn.clicked.connect(self._on_image_settings_clicked)
-        grid_toolbar.addWidget(self.image_settings_btn)
-
         grid_toolbar.addStretch()
 
         self.camera_grid = CameraGridWidget(
@@ -2975,16 +2936,6 @@ class MainWindow(QMainWindow):
         dialog = RegionManagerDialog(slot, _on_changed, self)
         dialog.exec()
 
-    def _on_image_settings_clicked(self):
-        """باز کردن دیالوگ «تنظیمات تصویر» برای دوربینِ خانه‌ی انتخاب‌شده -
-        هر دوربین پروفایل مستقل خودش را دارد (رجوع کنید به
-        image_settings_dialog.py)."""
-        slot = self._selected_slot()
-        if slot is None or slot.cam is None:
-            return
-        dialog = ImageSettingsDialog(slot, self.camera_store, self)
-        dialog.exec()
-
     def on_region_alert(self, cam, number, name):
         """رفع درخواست: با ورود شخصی به یکی از محدوده‌های هشدار هر دوربین
         (از CameraSlotWidget._on_region_entered)، یک ردیف متنی قرمز هم در
@@ -3128,8 +3079,6 @@ class MainWindow(QMainWindow):
         self.confirm_line_btn.setEnabled(bool(has_pending))
         self.redraw_line_btn.setEnabled(bool(has_pending))
         self.manage_regions_btn.setEnabled(bool(has_confirmed))
-        # دکمه‌ی تنظیمات تصویر فقط وقتی یک خانه‌ی دارای دوربین انتخاب شده.
-        self.image_settings_btn.setEnabled(slot is not None and slot.cam is not None)
         # (2.0.12-beta به دستور کاربر): دکمه‌های مربوط به رسم فقط وقتی دیده
         # می‌شوند که لازم باشند (رجوع کنید به انتهای همین تابع)؛ بقیه‌ی
         # وقت‌ها مخفی‌اند تا نوار ابزار خلوت بماند. ردیف رسم سطر دوم نوار

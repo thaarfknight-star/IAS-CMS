@@ -9,7 +9,6 @@ import time
 
 from rtsp_utils import open_capture, STREAM_FFMPEG_OPTS
 from fire_config import get_params as get_fire_params
-from image_profile import apply_profile as _apply_image_profile, is_neutral as _is_image_profile_neutral
 from small_flame_detector import (
     SmallFlameDetector, DetectionConfirmer, merge_detections, cascade_yolo_confirm,
 )
@@ -584,9 +583,6 @@ class CameraStreamThread(QThread):
         # فقط فاصله‌ی ارسال فریم‌های جدید برای پردازش تشخیص چهره را کنترل می‌کند.
         self.process_every_n = max(1, process_every_n)
         self._run_flag = True
-        # پروفایل «تنظیمات تصویر» این دوربین (روشنایی/WDR/ضد مه/...)؛ None یعنی
-        # خنثی (بدون پردازش). با set_image_profile از ترد GUI به‌روزرسانی می‌شود.
-        self._image_profile = None
         self._last_results = []
         # نتیجه‌ی خام PersonDetector (کادر کل بدن، فارغ از حالت/چهره) روی
         # آخرین فریم پردازش‌شده؛ رجوع کنید به توضیح بالای فایل.
@@ -967,19 +963,6 @@ class CameraStreamThread(QThread):
         self._last_people_count = -1
         if not self.count_people_enabled:
             self.people_count_signal.emit(0)
-
-    def set_image_profile(self, profile):
-        """تنظیم پروفایل «تنظیمات تصویر» (روشنایی/WDR/ضد مه/...) برای این دوربین.
-
-        از ترد GUI صدا زده می‌شود و بلافاصله روی فریم‌های بعدی اعمال می‌گردد.
-        تعویض، اتمیک (جایگزینی ارجاع) است و دیکشنری هیچ‌وقت درجا جهش داده
-        نمی‌شود، پس قفل لازم نیست. پروفایل خنثی/None یعنی بدون پردازش (مسیر سریع).
-        فقط روی فریم نمایشی اثر می‌گذارد؛ فریم خامِ ارسالی برای تشخیص دست‌نخورده می‌ماند.
-        """
-        if profile is None or _is_image_profile_neutral(profile):
-            self._image_profile = None
-        else:
-            self._image_profile = dict(profile)
 
     def set_regions(self, regions):
         """تنظیم لیست کامل محدوده‌های هشدار برای این دوربین. regions لیستی
@@ -1409,19 +1392,17 @@ class CameraStreamThread(QThread):
                     self._last_people_count = current_count
                     self.people_count_signal.emit(current_count)
 
-            # بهینه‌سازی سرعت: بیشتر فریم‌ها هیچ باکس/پروفایلی برای رسم ندارند؛
+            # بهینه‌سازی سرعت: بیشتر فریم‌ها هیچ باکسی برای رسم ندارند؛
             # کپی ۶ مگابایتیِ هر فریم ۱۰۸۰p فقط وقتی لازم است که واقعاً چیزی
             # روی آن رسم یا پردازش شود. در حالت بیکار، همان فریم خام (فقط
             # خواندنی - هیچ‌یک از مراحل بعدی آن را تغییر نمی‌دهند) ارسال
             # می‌شود.
-            _img_profile = self._image_profile
             _needs_overlay = (
                 len(self._last_results) > 0
                 or len(self._last_person_boxes) > 0
                 or len(self._last_fire_detections) > 0
                 or len(self._last_plate_detections) > 0
                 or len(self._person_draw_list) > 0
-                or _img_profile is not None
             )
             if _needs_overlay:
                 display_frame = frame.copy()
@@ -1469,15 +1450,6 @@ class CameraStreamThread(QThread):
                             _plabel = f"PLATE {'OK' if _pdefined else '??'}"
                             cv2.putText(display_frame, _plabel, (_px1, max(0, _py1 - 6)),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, _pcolor, 2)
-                    except Exception:
-                        pass
-
-                # تنظیمات تصویر این دوربین (روشنایی/WDR/ضد مه/...) فقط روی فریم
-                # نمایشی اعمال می‌شود؛ فریم خام (برای تشخیص) دست‌نخورده می‌ماند.
-                # خطا هرگز نباید حلقه‌ی پخش را متوقف کند.
-                if _img_profile is not None:
-                    try:
-                        display_frame = _apply_image_profile(display_frame, _img_profile)
                     except Exception:
                         pass
             else:

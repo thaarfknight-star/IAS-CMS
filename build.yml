@@ -188,30 +188,6 @@ jobs:
         python -m pip install pyinstaller
         if ($LASTEXITCODE -ne 0) { throw "نصب PyInstaller با کد $LASTEXITCODE شکست خورد." }
 
-        # --- فایل‌های wsdl کتابخانه‌ی onvif-zeep (لازم برای بخش «WDR سخت‌افزاری») ---
-        # wheel داخل pip پوشه‌ی wsdl را ندارد؛ از روی sdist استخراج و کنار exe
-        # بسته‌بندی می‌شود (onvif_imaging.py دنبال <bundle>/wsdl می‌گردد).
-        $wsdlDataArg = $null
-        try {
-          $tmpDl = Join-Path $env:RUNNER_TEMP "onvif_sdist"
-          New-Item -ItemType Directory -Path $tmpDl -Force | Out-Null
-          Push-Location $tmpDl
-          python -m pip download --no-deps --no-binary :all: onvif-zeep 2>$null
-          $sdist = Get-ChildItem -Filter "onvif_zeep*.tar.gz" | Select-Object -First 1
-          if ($sdist) {
-            tar -xzf $sdist.FullName
-            $wsdlSrc = Get-ChildItem -Directory -Recurse -Filter "wsdl" | Select-Object -First 1
-            if ($wsdlSrc -and (Test-Path (Join-Path $wsdlSrc.FullName "imaging.wsdl"))) {
-              $wsdlDst = Join-Path $env:GITHUB_WORKSPACE "onvif_wsdl_pkg"
-              New-Item -ItemType Directory -Path $wsdlDst -Force | Out-Null
-              Copy-Item (Join-Path $wsdlSrc.FullName "*") -Destination $wsdlDst -Recurse -Force
-              $wsdlDataArg = "--add-data=onvif_wsdl_pkg;wsdl"
-              Write-Host "onvif wsdl files bundled."
-            }
-          }
-          Pop-Location
-        } catch { Write-Host "WARNING: onvif wsdl bundling skipped: $_" }
-
         $pyiArgs = @(
           "--onedir"
           "--noconfirm"
@@ -280,7 +256,6 @@ jobs:
         } else {
           Write-Host "WARNING: ezdxf not installed in build env; map DXF feature will be disabled in exe."
         }
-        if ($wsdlDataArg) { $pyiArgs += $wsdlDataArg }
         if (Test-Path "assets") { $pyiArgs += "--add-data=assets;assets" }
         if (Test-Path "assets\app.ico") { $pyiArgs += "--icon=assets\app.ico" }
 
