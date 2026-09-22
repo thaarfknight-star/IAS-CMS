@@ -1,17 +1,22 @@
 # -*- coding: utf-8 -*-
 """settings_page.py — صفحه‌ی «⚙️ تنظیمات»: تم، زبان، صداهای هشدار، اعمال آپدیت.
 
+طراحی (2.0.20-beta به دستور کاربر): صفحه اسکرول‌دار است؛ هر بخش ارتفاع
+طبیعی خودش را دارد و لازم نیست همه‌ی گزینه‌ها هم‌زمان در یک نما جا شوند —
+کاربر اسکرول می‌کند و پایین می‌رود.
+
 - تم: تاریک / روشن / سیستم — بلافاصله اعمال و ذخیره می‌شود.
 - زبان: فارسی / English — ذخیره می‌شود؛ خود این صفحه دوزبانه است و بقیه‌ی
   برنامه بعد از راه‌اندازی مجدد با زبان انتخابی بالا می‌آید.
 - صداهای هشدار: سه صدای مستقل (آژیر حریق / بوق ورود به محدوده /
   بوق تخلف طبقاتی) — هر کدام جداگانه فعال/غیرفعال می‌شود.
+- امنیت رمزها: ذخیره‌ی امن با DPAPI ویندوز.
 - اعمال آپدیت: همان دیالوگ قبلی هدر (updater.show_apply_update_dialog).
 """
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QComboBox,
-    QPushButton, QMessageBox, QCheckBox,
+    QPushButton, QMessageBox, QCheckBox, QScrollArea, QFrame,
 )
 from PyQt6.QtCore import Qt
 
@@ -80,21 +85,50 @@ class SettingsPage(QWidget):
     def _t(self, key):
         return STRINGS[key].get(self._lang, STRINGS[key]["fa"])
 
+    # ------------------------------------------------------------------
+    # ساختار صفحه: یک QScrollArea تمام‌صفحه که محتوایش (تیتر + گروه‌ها) با
+    # ارتفاع طبیعی چیده شده؛ اگر از نما بلندتر شد اسکرول عمودی می‌خورد.
+    # ------------------------------------------------------------------
     def _build(self):
         # جهت راست‌به‌چپ برای کل صفحه: بدون این، ترتیب ایموجی و متن فارسی
         # در چک‌باکس‌ها و عنوان گروه‌ها به‌هم می‌ریزد (مشاهده‌شده روی ویندوز).
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer.addWidget(scroll)
+
+        content = QWidget()
+        scroll.setWidget(content)
+
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(28, 20, 28, 28)
+        layout.setSpacing(18)
 
         title = QLabel(self._t("title"))
         title.setStyleSheet("font-size: 20px; font-weight: bold;")
         layout.addWidget(title)
 
-        # --- تم ---
+        layout.addWidget(self._build_theme_group())
+        layout.addWidget(self._build_lang_group())
+        layout.addWidget(self._build_sound_group())
+        layout.addWidget(self._build_security_group())
+        layout.addWidget(self._build_update_group())
+        layout.addWidget(self._build_uninstall_group())
+
+        layout.addStretch()
+
+    # --- سازنده‌های هر بخش (هر کدام ارتفاع طبیعی خودشان را دارند) ---
+
+    def _build_theme_group(self):
         theme_group = QGroupBox(self._t("theme_group"))
         tlay = QVBoxLayout()
+        tlay.setSpacing(10)
         row = QHBoxLayout()
         row.addWidget(QLabel(self._t("theme_label")))
         self.theme_combo = QComboBox()
@@ -115,11 +149,12 @@ class SettingsPage(QWidget):
         hint.setWordWrap(True)
         tlay.addWidget(hint)
         theme_group.setLayout(tlay)
-        layout.addWidget(theme_group)
+        return theme_group
 
-        # --- زبان ---
+    def _build_lang_group(self):
         lang_group = QGroupBox(self._t("lang_group"))
         llay = QVBoxLayout()
+        llay.setSpacing(10)
         lrow = QHBoxLayout()
         lrow.addWidget(QLabel(self._t("lang_label")))
         self.lang_combo = QComboBox()
@@ -138,19 +173,20 @@ class SettingsPage(QWidget):
         lhint.setWordWrap(True)
         llay.addWidget(lhint)
         lang_group.setLayout(llay)
-        layout.addWidget(lang_group)
+        return lang_group
 
+    def _build_sound_group(self):
         # --- صداهای هشدار (هر کدام مستقل) ---
         # هر ردیف: چک‌باکسِ بدون متن + لیبل جداگانه‌ی wrapشونده؛ تا ترتیب
         # ایموجی/متن فارسی با هیچ فونتی به‌هم نریزد و متن هرگز بریده نشود.
         sound_group = QGroupBox(self._t("sound_group"))
         slay = QVBoxLayout()
-        slay.setSpacing(6)
+        slay.setSpacing(8)
         hint = QLabel(self._t("sound_hint"))
         hint.setStyleSheet("color: #888; font-size: 11px;")
         hint.setWordWrap(True)
         slay.addWidget(hint)
-        from alarm_sound import load_config as _load_sound_cfg, set_sound_enabled as _set_sound
+        from alarm_sound import load_config as _load_sound_cfg
         _scfg = _load_sound_cfg()
         self._sound_checks = {}
         for key, label in (("fire", self._t("sound_fire")),
@@ -173,11 +209,13 @@ class SettingsPage(QWidget):
             slay.addLayout(row)
             self._sound_checks[key] = chk
         sound_group.setLayout(slay)
-        layout.addWidget(sound_group)
+        return sound_group
 
+    def _build_security_group(self):
         # --- امنیت رمزها (2.0.15-beta به دستور کاربر) ---
         sec_group = QGroupBox(self._t("sec_group"))
         seclay = QVBoxLayout()
+        seclay.setSpacing(10)
         secrow = QHBoxLayout()
         secrow.setSpacing(8)
         secrow.setContentsMargins(2, 4, 2, 4)
@@ -203,47 +241,49 @@ class SettingsPage(QWidget):
         sechint.setWordWrap(True)
         seclay.addWidget(sechint)
         sec_group.setLayout(seclay)
-        layout.addWidget(sec_group)
+        return sec_group
 
-        # --- آپدیت ---
+    def _action_button(self, text, color):
+        """دکمه‌ی اکشن تمام‌متن: اندازه‌ی طبیعی متن + بدون بریده‌شدن."""
+        btn = QPushButton(text)
+        btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        btn.setStyleSheet(
+            "QPushButton{padding: 10px 22px; border-radius: 8px; font-size: 14px; "
+            f"background: {color}; color: white; font-weight: bold;}}")
+        # حداقل پهنا از روی sizeHint تا متن هیچ‌وقت «...» نشود
+        btn.setMinimumWidth(btn.sizeHint().width() + 8)
+        return btn
+
+    def _build_update_group(self):
         upd_group = QGroupBox(self._t("update_group"))
         ulay = QVBoxLayout()
+        ulay.setSpacing(12)
         desc = QLabel(self._t("update_desc"))
         desc.setWordWrap(True)
         ulay.addWidget(desc)
-        self.update_btn = QPushButton(self._t("apply_update"))
-        self.update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.update_btn.setStyleSheet(
-            "QPushButton{padding: 10px 22px; border-radius: 8px; font-size: 14px; "
-            "background: #0f7cc1; color: white; font-weight: bold;}")
+        self.update_btn = self._action_button(self._t("apply_update"), "#0f7cc1")
         self.update_btn.clicked.connect(self._on_update_clicked)
         urow = QHBoxLayout()
         urow.addWidget(self.update_btn)
         urow.addStretch()
         ulay.addLayout(urow)
         upd_group.setLayout(ulay)
-        layout.addWidget(upd_group)
+        return upd_group
 
-        # --- حذف نصب (اجرای uninstall.exe کنار برنامه) ---
+    def _build_uninstall_group(self):
         un_group = QGroupBox(self._t("uninstall_group"))
         nlay = QVBoxLayout()
+        nlay.setSpacing(12)
         ndesc = QLabel(self._t("uninstall_desc"))
         ndesc.setWordWrap(True)
         nlay.addWidget(ndesc)
-        self.uninstall_btn = QPushButton(self._t("uninstall_btn"))
-        self.uninstall_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.uninstall_btn.setStyleSheet(
-            "QPushButton{padding: 10px 22px; border-radius: 8px; font-size: 14px; "
-            "background: #c0392b; color: white; font-weight: bold;}")
+        self.uninstall_btn = self._action_button(self._t("uninstall_btn"), "#c0392b")
         self.uninstall_btn.clicked.connect(self._on_uninstall_clicked)
         nrow = QHBoxLayout()
         nrow.addWidget(self.uninstall_btn)
         nrow.addStretch()
-        nlay.addLayout(nrow)
         un_group.setLayout(nlay)
-        layout.addWidget(un_group)
-
-        layout.addStretch()
+        return un_group
 
     def _on_theme_changed(self, index):
         mode = self.theme_combo.itemData(index)
@@ -265,20 +305,20 @@ class SettingsPage(QWidget):
         # ساده‌ترین راه مطمئن: بازسازی کامل ویجت؛ اول layout قدیمی را کاملاً
         # حذف می‌کنیم تا _build بتواند یکی تازه روی همین QWidget بسازد
         # (بدون این کار، Qt اخطار setLayout می‌دهد و layout جدید نصب نمی‌شود).
+        # تنها آیتم layout بیرونی، QScrollArea است که با deleteLater همراه
+        # محتوایش حذف می‌شود.
         old_layout = self.layout()
         if old_layout is not None:
             while old_layout.count():
                 item = old_layout.takeAt(0)
                 w = item.widget()
                 if w is not None:
+                    # اول مخفی (تا فلش محتوای قدیمی دیده نشود)، بعد حذف
+                    # deferred؛ حذف مستقیم امن نیست چون ممکن است از داخل
+                    # سیگنال یکی از همین ویجت‌ها (مثلاً کمبوباکس زبان) صدا
+                    # زده شده باشیم.
+                    w.hide()
                     w.deleteLater()
-                lay = item.layout()
-                if lay is not None:
-                    while lay.count():
-                        sub = lay.takeAt(0)
-                        sw = sub.widget()
-                        if sw is not None:
-                            sw.deleteLater()
             from PyQt6 import sip
             sip.delete(old_layout)
         self._build()
