@@ -146,10 +146,10 @@ class DeviceItem(QGraphicsItemGroup):
         self.setZValue(10)
 
     # -- ساخت ظاهر --
-    # (2.0.29-beta) نشان تجهیز فقط «ایموجی» نوع آن است؛ هیچ بدنه‌ی دایره‌ای،
-    # خط جهت، کادر یا لیبلی دور تجهیز رسم نمی‌شود (به دستور کاربر). قطاع دید
-    # دوربین (پوشش، نه بدنه‌ی تجهیز) حفظ شده تا تغییر زاویه/پهنا/برد روی
-    # نقشه دیده شود. انتخاب/درگ/دابل‌کلیک مثل قبل کار می‌کند.
+    # (2.0.32-beta) نشان دوربین: قطاع دید + بدنه‌ی دایره‌ای + خط جهت.
+    # ایموجی دوربین کاملاً حذف شد (به دستور کاربر؛ رندر ایموجی روی
+    # Windows کادر سفید ایجاد می‌کرد). قطاع دید، زاویه، FOV و برد حفظ
+    # شده‌اند. انتخاب/درگ/دابل‌کلیک مثل قبل کار می‌کند.
     def _visual_rng(self, rng):
         """شعاع نمایشی قطاع دید: حداقل ~۲۸ پیکسل روی صفحه.
 
@@ -169,6 +169,14 @@ class DeviceItem(QGraphicsItemGroup):
             pass
         return rng
 
+    @staticmethod
+    def _tick_coords(angle):
+        """مختصات خط جهت لنز برای زاویه‌ی داده‌شده (درجه)."""
+        import math as _math
+        a = _math.radians(float(angle or 0))
+        dx, dy = 11 * _math.cos(a), -11 * _math.sin(a)
+        return (0, 0, dx * 1.5, dy * 1.5)
+
     def _build(self):
         # پاک‌سازی قبلی (برای refresh)
         for ch in self.childItems():
@@ -178,6 +186,7 @@ class DeviceItem(QGraphicsItemGroup):
         self._sector = None
         self._tick = None
         self._label = None
+        accent = QColor("#22d3ee")
 
         if kind == "camera":
             import math as _math
@@ -191,6 +200,22 @@ class DeviceItem(QGraphicsItemGroup):
             sector.setBrush(QBrush(QColor(34, 211, 238, 38)))
             self.addToGroup(sector)
             self._sector = sector
+            # (2.0.32-beta) بدنه‌ی دایره‌ای دوربین (اندازه ثابت روی صفحه؛
+            # ایموجی حذف شد)
+            body = QGraphicsEllipseItem(-11, -11, 22, 22)
+            body.setPen(QPen(accent, 2))
+            body.setBrush(QBrush(QColor("#0e1620")))
+            body.setFlag(
+                QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
+            self.addToGroup(body)
+            # خط جهت لنز (با تغییر زاویه در refresh به‌روز می‌شود)
+            tick = QGraphicsLineItem(*self._tick_coords(angle))
+            tick.setPen(QPen(QColor("#f472b6"), 3))
+            tick.setFlag(
+                QGraphicsLineItem.GraphicsItemFlag.ItemIgnoresTransformations)
+            self.addToGroup(tick)
+            self._tick = tick
+            return
         info = DEVICE_KINDS.get(kind, DEVICE_KINDS["other"])
         glyph = QGraphicsSimpleTextItem(info["icon"])
         gf = QFont()
@@ -204,10 +229,10 @@ class DeviceItem(QGraphicsItemGroup):
     def refresh(self):
         """به‌روزرسانی زنده‌ی ظاهر تجهیز، بدون بازسازی گروه.
 
-        فقط مسیر قطاع دید درجا به‌روز می‌شود؛ موقعیت دست نمی‌خورد
-        (رفع باگ «پرش دوربین هنگام تغییر زاویه»: بازسازی گروه با
+        مسیر قطاع دید و خط جهت لنز درجا به‌روز می‌شوند؛ موقعیت دست
+        نمی‌خورد (رفع باگ «پرش دوربین هنگام تغییر زاویه»: بازسازی گروه با
         removeFromGroup/addToGroup موقعیت صحنه‌ای را به مبدأ می‌پراند).
-        (2.0.29-beta: نشان فقط ایموجی؛ قطاع دید با حداقل اندازه‌ی نمایشی.)
+        (2.0.32-beta: نشان دوربین = دایره + خط جهت + قطاع دید؛ بدون ایموجی.)
         """
         dev = self.device
         if dev.get("kind") == "camera":
@@ -217,6 +242,8 @@ class DeviceItem(QGraphicsItemGroup):
             if self._sector is not None:
                 self._sector.setPath(
                     _sector_path(0, 0, self._visual_rng(rng), angle, fov))
+            if self._tick is not None:
+                self._tick.setLine(*self._tick_coords(angle))
         self.update()
 
     def set_name(self, name):
@@ -560,11 +587,8 @@ class BuildingMapPage(QWidget):
         self.dxf_btn.clicked.connect(self._import_dxf)
         self.img_btn = QPushButton("🖼 تصویر")
         self.img_btn.clicked.connect(self._import_image)
-        self.delmap_btn = QPushButton("🗑 حذف نقشه")
-        self.delmap_btn.clicked.connect(self._remove_map)
         mr.addWidget(self.dxf_btn)
         mr.addWidget(self.img_btn)
-        mr.addWidget(self.delmap_btn)
         ll.addLayout(mr)
         self.units_label = QLabel("واحد نقشه: —")
         self.units_label.setStyleSheet("color:#8fa3b8; font-size:11px;")
@@ -986,45 +1010,6 @@ class BuildingMapPage(QWidget):
         if fid in self.scenes:
             del self.scenes[fid]
         self._activate_floor(fid, fit=True)
-
-    def _remove_map(self):
-        """حذف نقشه‌ی طبقه‌ی فعال (2.0.30-beta).
-
-        پس‌زمینه‌ی سفید (تصویر/DXF واردشده) از صحنه برداشته می‌شود؛
-        تجهیزات (ایموجی + قطاع دید دوربین و بقیه‌ی تنظیمات) سر جایشان
-        می‌مانند و روی گرید تیره قابل انتخاب، درگ و تنظیم هستند.
-        """
-        fid = self._current_floor_id()
-        if not fid:
-            return
-        fl = self.store.get_floor(fid)
-        map_path, _ = self.store.floor_map_abs(fl) if fl else (None, None)
-        if not map_path:
-            QMessageBox.information(self, "حذف نقشه",
-                                    "این طبقه نقشه‌ای ندارد.")
-            return
-        if QMessageBox.question(
-                self, "حذف نقشه",
-                "نقشه‌ی این طبقه حذف شود؟\n\n"
-                "تجهیزات (دوربین‌ها با پهنای دید و…) سر جایشان می‌مانند "
-                "و روی پس‌زمینه‌ی تیره قابل تنظیم هستند.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
-            return
-        # (2.0.23-beta) مهاجرت تجهیزات قدیمی به متر «قبل» از جداکردن
-        # نقشه؛ مثل مسیر ایمپورت تا جای تجهیزات به‌هم نریزد.
-        old_tm = self.scenes.get(fid, {}).get("to_meter")
-        if old_tm:
-            self.store.ensure_device_meters(fid, old_tm)
-        self.store.set_floor_map(fid, "", "")
-        if fl and fl.get("map_unit_override"):
-            fl.pop("map_unit_override", None)
-            self.store.save()
-        if fid in self.scenes:
-            del self.scenes[fid]
-        self._activate_floor(fid, fit=True)
-        QMessageBox.information(self, "انجام شد",
-                                "نقشه حذف شد؛ تجهیزات روی گرید تیره باقی ماندند.")
 
     def _build_scene(self, floor_id):
         """ساخت (یا بازیابی از کش) صحنه‌ی یک طبقه."""
