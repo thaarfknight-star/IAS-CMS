@@ -12,6 +12,7 @@ XPStyle on
 !include "LogicLib.nsh"
 !include "nsDialogs.nsh"
 !include "StrFunc.nsh"
+!include "FileFunc.nsh"
 ${StrStr}
 
 ; ---------- defines ----------
@@ -567,6 +568,9 @@ Function DoInstall
     "UninstallString" '"$INSTDIR\uninstall.exe"'
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}" "NoModify" 1
   WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}" "NoRepair" 1
+  ; ثبت حجم نصب (به کیلوبایت) تا در Settings و Control Panel نمایش داده شود (2.0.25-beta)
+  ${GetSize} "$INSTDIR" "/S=0K" $0 $1 $2
+  WriteRegDWORD HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_EN}" "EstimatedSize" $0
   StrCpy $R9 "ok"
 FunctionEnd
 

@@ -563,6 +563,49 @@ jobs:
         if ($LASTEXITCODE -ne 0) { throw "makensis failed with code $LASTEXITCODE" }
         Get-ChildItem dist/IAS-CMS-Setup-*.exe
 
+    - name: Code-sign app EXE (optional)
+      # فقط وقتی اجرا می‌شود که سکرت گواهی امضا (WINDOWS_CERT_PFX) در ریپو تعریف شده باشد.
+      # گواهی را باید به‌صورت base64 از فایل PFX در Secrets گذاشت: WINDOWS_CERT_PFX و WINDOWS_CERT_PASSWORD
+      if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event.inputs.update_only != 'true' && secrets.WINDOWS_CERT_PFX != '' }}
+      shell: pwsh
+      env:
+        CERT_PFX_B64: ${{ secrets.WINDOWS_CERT_PFX }}
+        CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+      run: |
+        $ErrorActionPreference = "Stop"
+        $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+        [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERT_PFX_B64))
+        $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+        if (-not $signtool) { throw "signtool.exe not found in Windows Kits" }
+        $target = "dist\CCTV_CMS\CCTV_CMS.exe"
+        if (-not (Test-Path $target)) { throw "$target not found" }
+        & $signtool sign /f $pfx /p $env:CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $target
+        if ($LASTEXITCODE -ne 0) { throw "signtool failed for $target" }
+        Remove-Item $pfx -Force
+        Write-Host "signed $target"
+
+    - name: Code-sign Setup EXE (optional)
+      # امضای فایل نصب نهایی — بدون گواهی معتبر، هشدار SmartScreen ویندوز باقی می‌ماند.
+      if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event.inputs.update_only != 'true' && secrets.WINDOWS_CERT_PFX != '' }}
+      shell: pwsh
+      env:
+        CERT_PFX_B64: ${{ secrets.WINDOWS_CERT_PFX }}
+        CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+      run: |
+        $ErrorActionPreference = "Stop"
+        $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+        [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERT_PFX_B64))
+        $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
+        if (-not $signtool) { throw "signtool.exe not found in Windows Kits" }
+        $setups = @(Get-ChildItem dist/IAS-CMS-Setup-*.exe | Select-Object -ExpandProperty FullName)
+        if ($setups.Count -eq 0) { throw "no Setup exe found in dist" }
+        foreach ($s in $setups) {
+          & $signtool sign /f $pfx /p $env:CERT_PASSWORD /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 $s
+          if ($LASTEXITCODE -ne 0) { throw "signtool failed for $s" }
+          Write-Host "signed $s"
+        }
+        Remove-Item $pfx -Force
+
     - name: Fetch previous manifest (for diff update)
       if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
       shell: pwsh
