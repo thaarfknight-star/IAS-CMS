@@ -71,10 +71,14 @@ def test_workflow_has_optional_sign_steps():
     yml = _read(YML)
     assert "Code-sign app EXE (optional)" in yml, "مرحله‌ی امضای exe اصلی باید باشد"
     assert "Code-sign Setup EXE (optional)" in yml, "مرحله‌ی امضای Setup باید باشد"
-    assert "secrets.WINDOWS_CERT_PFX" in yml, "امضا باید گیت‌شده روی سکرت گواهی باشد"
+    # گواهی فقط از طریق env پاس داده شود — استفاده از secrets داخل if در گیت‌هاب خطا می‌دهد
+    assert "secrets.WINDOWS_CERT_PFX != ''" not in yml, \
+        "secrets نباید داخل if استفاده شود (خطای اعتبارسنجی ورک‌فلو)"
+    assert "CERT_PFX_B64: ${{ secrets.WINDOWS_CERT_PFX }}" in yml, \
+        "گواهی باید از طریق env به استپ پاس داده شود"
+    assert "IsNullOrEmpty($env:CERT_PFX_B64)" in yml, \
+        "چک خالی‌بودن گواهی باید داخل اسکریپت باشد تا بدون گواهی skip شود نه fail"
     assert "signtool" in yml, "باید از signtool استفاده شود"
-    # بدون سکرت نباید تلاشی برای امضا شود (مرحله skip شود، بیلد قرمز نشود)
-    assert yml.count("secrets.WINDOWS_CERT_PFX != ''") >= 2
 
 
 def test_nsi_still_has_required_uninstall_keys():

@@ -566,13 +566,15 @@ jobs:
     - name: Code-sign app EXE (optional)
       # فقط وقتی اجرا می‌شود که سکرت گواهی امضا (WINDOWS_CERT_PFX) در ریپو تعریف شده باشد.
       # گواهی را باید به‌صورت base64 از فایل PFX در Secrets گذاشت: WINDOWS_CERT_PFX و WINDOWS_CERT_PASSWORD
-      if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event.inputs.update_only != 'true' && secrets.WINDOWS_CERT_PFX != '' }}
+      # نکته: کانتکست secrets داخل if مجاز نیست، پس چک خالی‌بودن داخل خود اسکریپت انجام می‌شود.
+      if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event.inputs.update_only != 'true' }}
       shell: pwsh
       env:
         CERT_PFX_B64: ${{ secrets.WINDOWS_CERT_PFX }}
         CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
       run: |
         $ErrorActionPreference = "Stop"
+        if ([string]::IsNullOrEmpty($env:CERT_PFX_B64)) { Write-Host "no code-signing certificate configured, skipping"; exit 0 }
         $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
         [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERT_PFX_B64))
         $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
@@ -586,13 +588,15 @@ jobs:
 
     - name: Code-sign Setup EXE (optional)
       # امضای فایل نصب نهایی — بدون گواهی معتبر، هشدار SmartScreen ویندوز باقی می‌ماند.
-      if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event.inputs.update_only != 'true' && secrets.WINDOWS_CERT_PFX != '' }}
+      # نکته: کانتکست secrets داخل if مجاز نیست، پس چک خالی‌بودن داخل خود اسکریپت انجام می‌شود.
+      if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event.inputs.update_only != 'true' }}
       shell: pwsh
       env:
         CERT_PFX_B64: ${{ secrets.WINDOWS_CERT_PFX }}
         CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
       run: |
         $ErrorActionPreference = "Stop"
+        if ([string]::IsNullOrEmpty($env:CERT_PFX_B64)) { Write-Host "no code-signing certificate configured, skipping"; exit 0 }
         $pfx = Join-Path $env:RUNNER_TEMP "codesign.pfx"
         [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERT_PFX_B64))
         $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
