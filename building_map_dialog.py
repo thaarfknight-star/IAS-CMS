@@ -29,7 +29,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QFileDialog,
     QInputDialog, QGroupBox, QAbstractItemView, QGraphicsPolygonItem,
-    QScrollArea,
+    QScrollArea, QTextEdit,
 )
 
 from building_map import (
@@ -502,6 +502,10 @@ class BuildingMapPage(QWidget):
         self._lane_pick_rings = {}  # device_id -> QGraphicsEllipseItem
         self._lane_selected_id = None  # مسیر انتخاب‌شده در لیست (نمایش روی نقشه)
         self._heatmap_on = False  # وضعیت نمایش هیت‌مپ تردد (2.0.18-beta)
+        # --- گزارش زنده‌ی پوشش دوربین روی نقاط مسیر (2.0.21-beta) ---
+        # وقتی دکمه‌ی «📡 پوشش» زده می‌شود فعال می‌شود و با هر جابه‌جایی یا
+        # تغییر دوربین (موقعیت/زاویه/پهنا/برد) خودکار به‌روز می‌شود.
+        self._coverage_live = None  # None | {"floor_id": ...}
         self._pending_fit = False
         self._play_timer = QTimer(self)
         self._play_timer.timeout.connect(self._play_tick)
@@ -616,7 +620,8 @@ class BuildingMapPage(QWidget):
         self.lane_sim_btn.clicked.connect(self._start_lane_sim)
         self.coverage_btn = QPushButton("📡 پوشش")
         self.coverage_btn.setToolTip(
-            "تحلیل پوشش دوربین: درهای بدون دوربین در شعاع ۵ متر")
+            "تحلیل زنده‌ی پوشش دوربین روی نقاط مسیر: کدام نقاط مسیر "
+            "بدون دوربین‌اند و هر دوربین کدام نقاط را می‌بیند")
         self.coverage_btn.clicked.connect(self._analyze_coverage)
         self.heatmap_btn = QPushButton("🔥 هیت‌مپ")
         self.heatmap_btn.setToolTip(
@@ -627,6 +632,23 @@ class BuildingMapPage(QWidget):
         ltoolbox.addWidget(self.coverage_btn)
         ltoolbox.addWidget(self.heatmap_btn)
         ll.addLayout(ltoolbox)
+
+        # --- گزارش زنده‌ی پوشش دوربین روی نقاط مسیر (2.0.21-beta) ---
+        # با زدن «📡 پوشش» پر می‌شود و با هر جابه‌جایی/تغییر دوربین
+        # خودکار به‌روز می‌شود (در لحظه).
+        ll.addWidget(self._title("📡 گزارش پوشش زنده"))
+        self.coverage_report = QTextEdit()
+        self.coverage_report.setReadOnly(True)
+        self.coverage_report.setMaximumHeight(180)
+        self.coverage_report.setLayoutDirection(
+            Qt.LayoutDirection.RightToLeft)
+        self.coverage_report.setStyleSheet(
+            "font-size: 11px; background: #0e1620;")
+        self.coverage_report.setPlainText(
+            "برای تحلیل پوشش، دکمه‌ی «📡 پوشش» را بزنید.\n"
+            "بعد از آن با هر جابه‌جایی دوربین، گزارش در لحظه "
+            "به‌روز می‌شود.")
+        ll.addWidget(self.coverage_report)
 
         ll.addStretch()
         left_scroll = QScrollArea()
@@ -948,6 +970,15 @@ class BuildingMapPage(QWidget):
         if not floor_id:
             return
         self.current_floor = floor_id
+        # تحلیل پوشش زنده مال طبقه‌ی قبلی بود؛ روی طبقه‌ی جدید ریست می‌شود
+        # (2.0.21-beta).
+        self._coverage_live = None
+        self._clear_geo_tag("coverage-geo")
+        if hasattr(self, "coverage_report"):
+            self.coverage_report.setPlainText(
+                "برای تحلیل پوشش، دکمه‌ی «📡 پوشش» را بزنید.\n"
+                "بعد از آن با هر جابه‌جایی دوربین، گزارش در لحظه "
+                "به‌روز می‌شود.")
         entry = self._build_scene(floor_id)
         if not entry:
             return
@@ -1092,6 +1123,9 @@ class BuildingMapPage(QWidget):
 
     def _on_device_moved(self, floor_id, dev_id, x, y):
         self.store.update_device(floor_id, dev_id, x=float(x), y=float(y))
+        # گزارش زنده‌ی پوشش: با جابه‌جایی دوربین در لحظه به‌روز می‌شود
+        # (2.0.21-beta به دستور کاربر).
+        self._refresh_coverage_live()
 
     def _on_device_clicked(self, item):
         dev = item.device
@@ -1203,6 +1237,9 @@ class BuildingMapPage(QWidget):
                 self._sync_camera_floor(old_ref, "")
             if ref_id:
                 self._sync_camera_floor(ref_id, self.current_floor)
+        # گزارش زنده‌ی پوشش: با تغییر زاویه/پهنا/برد دوربین در لحظه به‌روز
+        # می‌شود (2.0.21-beta به دستور کاربر).
+        self._refresh_coverage_live()
 
     def _prop_angle_changed(self, value):
         # سینک اسلایدر و اسپین‌باکس + به‌روزرسانی زنده‌ی قطاع دید.
@@ -2318,79 +2355,168 @@ class BuildingMapPage(QWidget):
                     pass
 
     def _analyze_coverage(self):
-        """تحلیل پوشش دوربین: درهای بدون دوربین در شعاع ۵ متر."""
+        """تحلیل زنده‌ی پوشش دوربین روی نقاط مسیرهای پلاک‌خوان (2.0.21-beta).
+
+        برای هر مسیرِ این طبقه، هر ۲ متر یک نقطه نمونه‌برداری می‌شود؛ نقطه‌ای
+        که در قطاع دید هیچ دوربینی نباشد «بدون پوشش» است. نتیجه در پنل
+        «گزارش پوشش زنده» نوشته می‌شود و از این به بعد با هر جابه‌جایی یا
+        تغییر دوربین (موقعیت/زاویه/پهنا/برد) خودکار و در لحظه به‌روز می‌شود.
+        """
         fid = self.current_floor
         if not fid:
             QMessageBox.information(self, "تحلیل پوشش",
                                     "اول یک طبقه را انتخاب کنید.")
             return
-        fl = self.store.get_floor(fid)
-        map_path, map_kind = self.store.floor_map_abs(fl)
-        if map_kind != "dxf" or not map_path:
+        lanes = self._floor_lanes(fid)
+        if not lanes:
             QMessageBox.information(
                 self, "تحلیل پوشش",
-                "تحلیل موقعیت درها فقط برای نقشه‌ی DXF انجام می‌شود.\n"
-                "برای این طبقه نقشه‌ی DXF وارد کنید.")
+                "برای این طبقه مسیری رسم نشده است.\n"
+                "اول با «✏️ رسم مسیر جدید» یک مسیر پلاک‌خوان رسم کنید.")
             return
+        self._coverage_live = {"floor_id": fid}
+        self._refresh_coverage_live()
+
+    def _floor_lanes(self, fid):
+        """مسیرهای رسم‌شده‌ی یک طبقه (حداقل ۲ نقطه)."""
         try:
-            from map_coverage import (DEFAULT_COVERAGE_RADIUS_M,
-                                      analyze_coverage,
-                                      extract_doors_from_dxf)
-        except Exception as e:
-            QMessageBox.warning(self, "خطا",
-                                f"بارگذاری ماژول تحلیل ناموفق بود:\n{e}")
+            all_lanes = plate_store.get_lanes() or {}
+        except Exception:
+            return []
+        out = []
+        for lid, lane in all_lanes.items():
+            if not isinstance(lane, dict):
+                continue
+            if (lane.get("floor_id") or "") != fid:
+                continue
+            if len(lane.get("points") or []) < 2:
+                continue
+            out.append(dict(lane, _id=lid))
+        return out
+
+    def _refresh_coverage_live(self):
+        """به‌روزرسانی در لحظه‌ی گزارش پوشش.
+
+        بعد از هر جابه‌جایی دوربین (_on_device_moved) و هر تغییر مشخصات
+        دوربین (_prop_apply) صدا زده می‌شود؛ اگر تحلیل پوشش فعال نباشد یا
+        طبقه عوض شده باشد کاری نمی‌کند.
+        """
+        live = getattr(self, "_coverage_live", None)
+        if not live or live.get("floor_id") != self.current_floor:
             return
-        doors, to_meter = extract_doors_from_dxf(map_path)
-        if not doors:
-            QMessageBox.information(
-                self, "تحلیل پوشش",
-                "دری در فایل DXF شناسایی نشد.\n"
-                "(درها از روی قوس‌های لنگه‌ی در تشخیص داده می‌شوند.)")
+        fid = self.current_floor
+        try:
+            from lane_coverage import (DEFAULT_SAMPLE_STEP_M,
+                                       analyze_lane_coverage)
+        except Exception:
             return
+        lanes = self._floor_lanes(fid)
+        if not lanes:
+            self._coverage_live = None
+            self._clear_geo_tag("coverage-geo")
+            if hasattr(self, "coverage_report"):
+                self.coverage_report.setPlainText(
+                    "مسیری برای این طبقه باقی نمانده؛ تحلیل پوشش متوقف شد.")
+            return
+        fl = self.store.get_floor(fid) or {}
+        try:
+            to_meter = (self.scenes.get(fid) or {}).get("to_meter") or 1.0
+        except Exception:
+            to_meter = 1.0
         cameras = [d for d in (fl.get("devices") or [])
                    if d.get("kind") == "camera"]
-        results = analyze_coverage(doors, cameras,
-                                   radius_m=DEFAULT_COVERAGE_RADIUS_M,
-                                   to_meter=to_meter)
-        self._draw_coverage(results)
-        uncovered = [r for r in results if not r["covered"]]
-        lines = [f"مجموع درهای شناسایی‌شده: {len(results)}",
-                 f"✅ دارای پوشش: {len(results) - len(uncovered)}",
-                 f"⛔ بدون دوربین در {DEFAULT_COVERAGE_RADIUS_M:.0f} متر: "
-                 f"{len(uncovered)}"]
-        for i, r in enumerate(uncovered[:20], 1):
-            nm = (f"{r['nearest_m']:.1f} متر"
-                  if r["nearest_m"] is not None else "بدون دوربین")
-            lines.append(f"{i}. در در موقعیت ({r['x']:.1f}، {r['y']:.1f}) — "
-                         f"نزدیک‌ترین دوربین: {nm}")
-        if len(uncovered) > 20:
-            lines.append(f"… و {len(uncovered) - 20} مورد دیگر")
-        QMessageBox.information(self, "📡 نتیجه‌ی تحلیل پوشش",
-                                "\n".join(lines))
+        result = analyze_lane_coverage(lanes, cameras, to_meter=to_meter,
+                                       step_m=DEFAULT_SAMPLE_STEP_M)
+        self._draw_lane_coverage(result)
+        self._render_coverage_report(result, DEFAULT_SAMPLE_STEP_M)
 
-    def _draw_coverage(self, results):
+    def _draw_lane_coverage(self, result):
+        """نقاط نمونه‌برداری‌شده روی نقشه: سبز = دارای پوشش، قرمز = بدون پوشش."""
         self._clear_geo_tag("coverage-geo")
         entry = self._build_scene(self.current_floor)
         if not entry:
             return
         sc = entry["scene"]
-        for r in results:
-            x, y = r["x"], r["y"]
-            if r["covered"]:
-                dot = QGraphicsEllipseItem(-5, -5, 10, 10)
-                dot.setPos(x, y)
-                dot.setPen(QPen(QColor("#16a34a"), 2))
-                dot.setBrush(QBrush(QColor("#16a34a")))
-            else:
-                dot = QGraphicsEllipseItem(-12, -12, 24, 24)
-                dot.setPos(x, y)
-                dot.setPen(QPen(QColor("#ef4444"), 3))
-                dot.setBrush(QBrush(QColor(239, 68, 68, 90)))
-            dot.setFlag(
-                QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
-            dot.setZValue(26)
-            dot.setData(0, "coverage-geo")
-            sc.addItem(dot)
+        for lane in result.get("lanes", []):
+            for p in lane.get("points", []):
+                x, y = p["x"], p["y"]
+                if p.get("covered_by"):
+                    dot = QGraphicsEllipseItem(-5, -5, 10, 10)
+                    dot.setPos(x, y)
+                    dot.setPen(QPen(QColor("#16a34a"), 2))
+                    dot.setBrush(QBrush(QColor("#16a34a")))
+                else:
+                    dot = QGraphicsEllipseItem(-12, -12, 24, 24)
+                    dot.setPos(x, y)
+                    dot.setPen(QPen(QColor("#ef4444"), 3))
+                    dot.setBrush(QBrush(QColor(239, 68, 68, 90)))
+                dot.setFlag(
+                    QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
+                dot.setZValue(26)
+                dot.setData(0, "coverage-geo")
+                sc.addItem(dot)
+
+    def _render_coverage_report(self, result, step_m):
+        """نوشتن گزارش پوشش در پنل «گزارش پوشش زنده».
+
+        دو بخش: ۱) کدام نقاط هر مسیر بدون پوشش‌اند ۲) هر دوربین کدام
+        نقاط کدام مسیر را پوشش می‌دهد.
+        """
+        lines = [f"📡 پوشش مسیرها (زنده — هر {step_m:g} متر یک نقطه)",
+                 ""]
+        for lane in result.get("lanes", []):
+            pts = lane.get("points", [])
+            unc = lane.get("uncovered", [])
+            lines.append(
+                f"🛣 «{lane['name']}»: {len(pts)} نقطه | "
+                f"✅ {len(pts) - len(unc)} با پوشش | "
+                f"⛔ {len(unc)} بدون پوشش")
+            if unc:
+                spots = "، ".join(f"{p['s_m']:g}م" for p in unc[:12])
+                if len(unc) > 12:
+                    spots += f" …و {len(unc) - 12} نقطه‌ی دیگر"
+                lines.append(
+                    f"   نقاط بدون پوشش (متراژ از ابتدای مسیر): {spots}")
+            lines.append("")
+        lines.append("🎥 هر دوربین کدام نقاط را می‌بیند:")
+        cams = result.get("cameras", [])
+        if not cams:
+            lines.append("   دوربینی در این طبقه ثبت نشده است.")
+        for cam in cams:
+            cov = cam.get("covered", [])
+            if not cov:
+                lines.append(f"   • {cam['name']}: —")
+                continue
+            # گروه‌بندی بر اساس مسیر + فشرده‌سازی متراژهای پشت‌سرهم
+            by_lane = {}
+            for c in cov:
+                by_lane.setdefault(c["lane"], []).append(c["s_m"])
+            parts = []
+            for lname, sms in by_lane.items():
+                sms = sorted(sms)
+                parts.append(f"«{lname}» ← {self._compact_ranges(sms)}")
+            lines.append(f"   • {cam['name']}: " + "؛ ".join(parts))
+        self.coverage_report.setPlainText("\n".join(lines).strip())
+
+    @staticmethod
+    def _compact_ranges(values):
+        """فشرده‌سازی لیست مرتب متراژها: [0,2,4,10] -> «0–4، 10» (متر)."""
+        vals = sorted(values)
+        if not vals:
+            return "—"
+        ranges = []
+        start = prev = vals[0]
+        for v in vals[1:]:
+            if abs(v - prev - 2.0) < 0.05:  # گام نمونه‌برداری
+                prev = v
+                continue
+            ranges.append((start, prev))
+            start = prev = v
+        ranges.append((start, prev))
+        out = []
+        for a, b in ranges:
+            out.append(f"{a:g}–{b:g}" if abs(b - a) > 1e-9 else f"{a:g}")
+        return "، ".join(out) + "م"
 
     def _toggle_heatmap(self):
         """نمایش/پنهان‌سازی هیت‌مپ تردد روی نقشه."""
