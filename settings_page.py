@@ -282,6 +282,7 @@ class SettingsPage(QWidget):
         nrow = QHBoxLayout()
         nrow.addWidget(self.uninstall_btn)
         nrow.addStretch()
+        nlay.addLayout(nrow)
         un_group.setLayout(nlay)
         return un_group
 
