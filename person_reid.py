@@ -452,7 +452,7 @@ class PersonLocalTracker:
     # بعد از چند «هیت»، کاندیدا اعلام شود (زودتر از تأیید نهایی — نشان زرد)
     CANDIDATE_HITS = 2
 
-    def __init__(self, confirm_frames=3, max_miss=20, iou_thresh=0.30):
+    def __init__(self, confirm_frames=2, max_miss=20, iou_thresh=0.30):
         self.confirm_frames = max(1, int(confirm_frames))
         # max_miss در نسخه‌ی قبل «تیکِ بدون باکس تا پایان رد» بود؛ حالا همان
         # نقش max_age در ByteTrack را دارد: رد گمشده چند تیک نگه داشته شود.
@@ -487,11 +487,29 @@ class PersonLocalTracker:
             # ۲) پیش‌بینی همه‌ی ردها با کالمن برای همین لحظه
             for tr in self._tracks:
                 tr["pred_box"] = tr["kf"].predict(ts)
-            # ۳) مرحله‌ی اول: ردهای فعال (tentative/confirmed) ← باکس‌ها
-            active = [tr for tr in self._tracks
-                      if tr["state"] in ("tentative", "confirmed")]
-            matches, unmatched_tr, unmatched_det = self._associate(
-                active, dets, self.iou_thresh)
+            # ۳) مرحله‌ی اول: ردهای فعال ← باکس‌ها
+            # (2.0.29-beta) تطبیق دومرحله‌ای برای گرفتن «شخصِ در حال حرکت
+            # از اولین لحظه»: اول ردهای تأییدشده با آستانه‌ی معمول، بعد
+            # ردهای تازه (tentative) با آستانه‌ی بازتر (_IOU_REJECT)؛ وگرنه
+            # جابه‌جایی سریع شخص بین دو تشخیصِ پیاپی رد را می‌شکست، هیچ
+            # ردی به حد تأیید نمی‌رسید و شخصِ در حال حرکت هرگز ثبت نمی‌شد.
+            confirmed_tr = [tr for tr in self._tracks
+                            if tr["state"] == "confirmed"]
+            tentative_tr = [tr for tr in self._tracks
+                            if tr["state"] == "tentative"]
+            matches_c, unmatched_c, unmatched_det_c = self._associate(
+                confirmed_tr, dets, self.iou_thresh)
+            rem_dets = [dets[i] for i in unmatched_det_c]
+            matches_t, unmatched_t, unmatched_det_t = self._associate(
+                tentative_tr, rem_dets, _IOU_REJECT)
+            _nc = len(confirmed_tr)
+            active = confirmed_tr + tentative_tr
+            matches = ([(ti, unmatched_det_c[di]) for ti, di in matches_c]
+                       + [(_nc + ti, unmatched_det_c[di])
+                          for ti, di in matches_t])
+            unmatched_tr = (list(unmatched_c)
+                            + [_nc + i for i in unmatched_t])
+            unmatched_det = [unmatched_det_c[i] for i in unmatched_det_t]
             # ۴) مرحله‌ی دوم (ایده‌ی ByteTrack): ردهای گمشده ← باکس‌های مانده
             # un_lost: ایندکس‌های ردهای گمشده‌ای که در مرحله‌ی دوم هم
             # بی‌باکس ماندند (ایندکس داخل لیست lost — جدا از unmatched_tr).

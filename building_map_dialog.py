@@ -146,88 +146,68 @@ class DeviceItem(QGraphicsItemGroup):
         self.setZValue(10)
 
     # -- ساخت ظاهر --
+    # (2.0.29-beta) نشان تجهیز فقط «ایموجی» نوع آن است؛ هیچ بدنه‌ی دایره‌ای،
+    # خط جهت، کادر یا لیبلی دور تجهیز رسم نمی‌شود (به دستور کاربر). قطاع دید
+    # دوربین (پوشش، نه بدنه‌ی تجهیز) حفظ شده تا تغییر زاویه/پهنا/برد روی
+    # نقشه دیده شود. انتخاب/درگ/دابل‌کلیک مثل قبل کار می‌کند.
+    def _visual_rng(self, rng):
+        """شعاع نمایشی قطاع دید: حداقل ~۲۸ پیکسل روی صفحه.
+
+        مقدار واقعی برد (view_distance، به متر) دست نمی‌خورد و محاسبات پوشش
+        با همان انجام می‌شود؛ فقط اگر قطاع در زوم فعلی از چند پیکسل کوچک‌تر
+        باشد، برای دیده‌شدنِ تغییر زاویه کمی بزرگ‌تر رسم می‌شود.
+        """
+        try:
+            views = self.scene().views() if self.scene() else []
+            if views:
+                inv, ok = views[0].transform().inverted()
+                if ok:
+                    px = inv.mapRect(QRectF(0, 0, 1, 1)).width()
+                    if px > 0:
+                        return max(rng, 28.0 * px)
+        except Exception:
+            pass
+        return rng
+
     def _build(self):
         # پاک‌سازی قبلی (برای refresh)
         for ch in self.childItems():
             self.removeFromGroup(ch)
         dev = self.device
         kind = dev.get("kind", "other")
-        name = dev.get("name", "")
-        accent = QColor("#22d3ee")
+        self._sector = None
+        self._tick = None
+        self._label = None
 
         if kind == "camera":
-            # (2.0.28-beta) قطاع دید برگردانده شد: مخروط دید + بدنه + خط
-            # جهت لنز + ایموجی؛ تغییر زاویه/پهنای دید/فاصله دید دوباره
-            # به‌صورت زنده روی نقشه دیده می‌شود.
             import math as _math
             angle = float(dev.get("angle", 0))
             fov = float(dev.get("fov", 90))
             # برد نمایشی قطاع دید = «فاصله دید» دوربین (متر) به واحد صحنه
             rng = float(dev.get("view_distance", 8.0)) / (self.to_meter or 1.0)
-            sector = QGraphicsPathItem(_sector_path(0, 0, rng, angle, fov))
+            sector = QGraphicsPathItem(
+                _sector_path(0, 0, self._visual_rng(rng), angle, fov))
             sector.setPen(QPen(QColor(34, 211, 238, 110), 0))
             sector.setBrush(QBrush(QColor(34, 211, 238, 38)))
             self.addToGroup(sector)
             self._sector = sector
-            # بدنه‌ی دوربین (اندازه ثابت روی صفحه)
-            body = QGraphicsEllipseItem(-11, -11, 22, 22)
-            body.setPen(QPen(accent, 2))
-            body.setBrush(QBrush(QColor("#0e1620")))
-            body.setFlag(
-                QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
-            self.addToGroup(body)
-            # جهت لنز
-            a = _math.radians(angle)
-            dx, dy = 11 * _math.cos(a), -11 * _math.sin(a)
-            tick = QGraphicsLineItem(0, 0, dx * 1.5, dy * 1.5)
-            tick.setPen(QPen(QColor("#f472b6"), 3))
-            tick.setFlag(
-                QGraphicsLineItem.GraphicsItemFlag.ItemIgnoresTransformations)
-            self.addToGroup(tick)
-            self._tick = tick
-            glyph = QGraphicsSimpleTextItem("🎥")
-            gf = QFont()
-            gf.setPointSize(18)
-            glyph.setFont(gf)
-            glyph.setPos(-14, -19)
-            glyph.setFlag(
-                QGraphicsSimpleTextItem.GraphicsItemFlag.ItemIgnoresTransformations)
-            self.addToGroup(glyph)
-        else:
-            info = DEVICE_KINDS.get(kind, DEVICE_KINDS["other"])
-            box = QGraphicsPathItem()
-            pp = QPainterPath()
-            pp.addRoundedRect(-16, -13, 32, 26, 6, 6)
-            box.setPath(pp)
-            box.setPen(QPen(accent, 2))
-            box.setBrush(QBrush(QColor("#0e1620")))
-            box.setFlag(
-                QGraphicsPathItem.GraphicsItemFlag.ItemIgnoresTransformations)
-            self.addToGroup(box)
-            glyph = QGraphicsSimpleTextItem(info["icon"])
-            glyph.setPos(-10, -14)
-            glyph.setFlag(
-                QGraphicsSimpleTextItem.GraphicsItemFlag.ItemIgnoresTransformations)
-            self.addToGroup(glyph)
-
-        label = QGraphicsSimpleTextItem(name)
-        f = QFont()
-        f.setPointSize(9)
-        label.setFont(f)
-        label.setBrush(QBrush(QColor("#e2e8f0")))
-        label.setPos(-30, 16)
-        label.setFlag(
+        info = DEVICE_KINDS.get(kind, DEVICE_KINDS["other"])
+        glyph = QGraphicsSimpleTextItem(info["icon"])
+        gf = QFont()
+        gf.setPointSize(20)
+        glyph.setFont(gf)
+        glyph.setPos(-13, -18)
+        glyph.setFlag(
             QGraphicsSimpleTextItem.GraphicsItemFlag.ItemIgnoresTransformations)
-        self.addToGroup(label)
-        self._label = label
+        self.addToGroup(glyph)
 
     def refresh(self):
         """به‌روزرسانی زنده‌ی ظاهر تجهیز، بدون بازسازی گروه.
 
-        فقط مسیر قطاع دید و خط جهت لنز درجا به‌روز می‌شوند؛ موقعیت
-        دست نمی‌خورد (رفع باگ «پرش دوربین هنگام تغییر زاویه»: بازسازی
-        گروه با removeFromGroup/addToGroup موقعیت صحنه‌ای را به مبدأ
-        می‌پراند). (2.0.28-beta: قطاع دید برگردانده شد.)
+        فقط مسیر قطاع دید درجا به‌روز می‌شود؛ موقعیت دست نمی‌خورد
+        (رفع باگ «پرش دوربین هنگام تغییر زاویه»: بازسازی گروه با
+        removeFromGroup/addToGroup موقعیت صحنه‌ای را به مبدأ می‌پراند).
+        (2.0.29-beta: نشان فقط ایموجی؛ قطاع دید با حداقل اندازه‌ی نمایشی.)
         """
         dev = self.device
         if dev.get("kind") == "camera":
@@ -235,16 +215,13 @@ class DeviceItem(QGraphicsItemGroup):
             fov = float(dev.get("fov", 90))
             rng = float(dev.get("view_distance", 8.0)) / (self.to_meter or 1.0)
             if self._sector is not None:
-                self._sector.setPath(_sector_path(0, 0, rng, angle, fov))
-            if self._tick is not None:
-                import math
-                a = math.radians(angle)
-                dx, dy = 11 * math.cos(a), -11 * math.sin(a)
-                self._tick.setLine(0, 0, dx * 1.5, dy * 1.5)
+                self._sector.setPath(
+                    _sector_path(0, 0, self._visual_rng(rng), angle, fov))
         self.update()
 
     def set_name(self, name):
-        self._label.setText(name)
+        if self._label is not None:
+            self._label.setText(name)
 
     # -- کلیک در برابر درگ --
     # کلیک ساده فقط «انتخاب» می‌کند (پنل مشخصات: زاویه/پهنای دید)؛
@@ -762,6 +739,10 @@ class BuildingMapPage(QWidget):
         self.prop_angle_num.setRange(0, 359)
         self.prop_angle_num.setSuffix("°")
         self.prop_angle_num.valueChanged.connect(self._prop_angle_changed)
+        # (2.0.29-beta) اطمینان مضاعف از ذخیره‌شدن زاویه‌ی واردشده با
+        # دکمه‌های بالا/پایین یا تایپ عدد: علاوه بر تایمر ۷۰۰ms، پایان
+        # ویرایش هم مستقیم ذخیره می‌کند.
+        self.prop_angle_num.editingFinished.connect(self._prop_apply)
         ang_row.addWidget(self.prop_angle, 1)
         ang_row.addWidget(self.prop_angle_num)
         pf.addRow("زاویه:", ang_row)
