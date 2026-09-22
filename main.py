@@ -43,6 +43,7 @@ def _get_floor_detect_thread():
 from add_camera_dialog import AddCameraDialog
 from add_nvr_dialog import AddNVRDialog
 from nvr_scanner import DirectCameraProbeThread
+from nvr_channel_select_dialog import NVRChannelSelectDialog
 try:
     from nvr_webview_dialog import NVRWebViewDialog, _WEBENGINE_AVAILABLE
 except ImportError:
@@ -3505,20 +3506,18 @@ class MainWindow(QMainWindow):
                                      "همه‌ی این کانال‌ها قبلاً به لیست شما اضافه شده‌اند.")
             return
 
-        names = "\n".join(
-            f"- کانال {c} ({n})" + (f"  —  IP دوربین: {ip} (اتصال مستقیم)" if ip else "  —  بدون IP دوربین (اتصال از طریق NVR)")
-            for c, n, ip in new_entries
-        )
-        confirm = QMessageBox.question(
-            self, "افزودن کانال‌ها",
-            f"{len(new_entries)} کانال جدید از این NVR پیدا شد:\n\n{names}\n\n"
-            "کانال‌هایی که IP دوربینشان مشخص است، مستقیماً به همان IP وصل "
-            "می‌شوند (با یوزرنیم/رمز همین NVR)؛ در حال بررسی مسیر اتصال هر "
-            "کدام هستیم که ممکن است چند ثانیه طول بکشد.\n\n"
-            "آیا به لیست «دوربین‌ها و NVRهای من» اضافه شوند؟"
-        )
-        if confirm != QMessageBox.StandardButton.Yes:
+        # (2.0.24-beta) به‌جای Yes/No برای همه‌ی کانال‌ها، کاربر تیک می‌زند
+        # کدام کانال‌ها واقعاً اضافه و متصل شوند.
+        dlg = NVRChannelSelectDialog(
+            nvr.get("name") or nvr.get("ip") or "", new_entries, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             return
+        chosen = dlg.selected()
+        if not chosen:
+            QMessageBox.information(self, "انصراف",
+                                    "هیچ کانالی انتخاب نشد؛ چیزی اضافه نشد.")
+            return
+        new_entries = chosen
 
         self.statusBar().showMessage("در حال بررسی مسیر اتصال مستقیم دوربین‌ها...")
         self._direct_probe_thread = DirectCameraProbeThread(
