@@ -22,7 +22,7 @@ from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon, QDrag, QFontMetrics, QP
 from PyQt6.QtCore import Qt, QSize, QMimeData, QPointF, QRectF, QTimer, QEvent, pyqtSignal
 
 from face_engine import FaceEngine
-from scanner import NetworkScanThread
+from scanner import NetworkScanThread, parse_ip_range
 from camera_store import CameraStore
 from camera_stream import CameraStreamThread, region_to_polygon, is_low_spec_mode
 # نکته: floor_detector عمداً در بالای فایل import نمی‌شود؛ transformers و
@@ -2262,7 +2262,12 @@ class MainWindow(QMainWindow):
         scan_group = QGroupBox("اسکن شبکه (Network Scan)")
         scan_layout = QVBoxLayout()
         self.subnet_input = QLineEdit("192.168.1")
-        self.subnet_input.setPlaceholderText("پیشوند ساب‌نت (مثلاً 192.168.1)")
+        self.subnet_input.setPlaceholderText(
+            "رنج IP؛ مثلاً: 192.168.1 یا 192.168.1.20-192.168.1.80 یا 192.168.2.0/24")
+        self.subnet_input.setToolTip(
+            "رنج IP برای اسکن شبکه.\n"
+            "قالب‌ها: «192.168.1» (کل ساب‌نت)، «192.168.1.20-192.168.1.80»،\n"
+            "«192.168.1.20-80»، «192.168.2.0/24»؛ چند رنج با ویرگول جدا شود.")
         self.scan_btn = QPushButton("اسکن شبکه")
         self.scan_btn.clicked.connect(self.run_network_scan)
         self.scan_result_list = QListWidget()
@@ -4340,8 +4345,16 @@ class MainWindow(QMainWindow):
             return
 
         subnet = self.subnet_input.text().strip()
+        # (2.0.31-beta) اعتبارسنجی رنج IP قبل از شروع اسکن؛ قالب‌های مجاز:
+        # «192.168.1»، «192.168.1.20-192.168.1.80»، «192.168.1.20-80»،
+        # «192.168.2.0/24» و ترکیب چند رنج با ویرگول.
+        try:
+            ip_count = len(parse_ip_range(subnet))
+        except ValueError as ex:
+            QMessageBox.warning(self, "رنج IP نامعتبر", str(ex))
+            return
         self.scan_result_list.clear()
-        self.scan_result_list.addItem("در حال اسکن شبکه...")
+        self.scan_result_list.addItem(f"در حال اسکن {ip_count} آدرس...")
         self.scan_btn.setEnabled(False)
 
         self.network_scan_thread = NetworkScanThread(subnet, self)
