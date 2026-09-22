@@ -560,8 +560,11 @@ class BuildingMapPage(QWidget):
         self.dxf_btn.clicked.connect(self._import_dxf)
         self.img_btn = QPushButton("🖼 تصویر")
         self.img_btn.clicked.connect(self._import_image)
+        self.delmap_btn = QPushButton("🗑 حذف نقشه")
+        self.delmap_btn.clicked.connect(self._remove_map)
         mr.addWidget(self.dxf_btn)
         mr.addWidget(self.img_btn)
+        mr.addWidget(self.delmap_btn)
         ll.addLayout(mr)
         self.units_label = QLabel("واحد نقشه: —")
         self.units_label.setStyleSheet("color:#8fa3b8; font-size:11px;")
@@ -983,6 +986,45 @@ class BuildingMapPage(QWidget):
         if fid in self.scenes:
             del self.scenes[fid]
         self._activate_floor(fid, fit=True)
+
+    def _remove_map(self):
+        """حذف نقشه‌ی طبقه‌ی فعال (2.0.30-beta).
+
+        پس‌زمینه‌ی سفید (تصویر/DXF واردشده) از صحنه برداشته می‌شود؛
+        تجهیزات (ایموجی + قطاع دید دوربین و بقیه‌ی تنظیمات) سر جایشان
+        می‌مانند و روی گرید تیره قابل انتخاب، درگ و تنظیم هستند.
+        """
+        fid = self._current_floor_id()
+        if not fid:
+            return
+        fl = self.store.get_floor(fid)
+        map_path, _ = self.store.floor_map_abs(fl) if fl else (None, None)
+        if not map_path:
+            QMessageBox.information(self, "حذف نقشه",
+                                    "این طبقه نقشه‌ای ندارد.")
+            return
+        if QMessageBox.question(
+                self, "حذف نقشه",
+                "نقشه‌ی این طبقه حذف شود؟\n\n"
+                "تجهیزات (دوربین‌ها با پهنای دید و…) سر جایشان می‌مانند "
+                "و روی پس‌زمینه‌ی تیره قابل تنظیم هستند.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        # (2.0.23-beta) مهاجرت تجهیزات قدیمی به متر «قبل» از جداکردن
+        # نقشه؛ مثل مسیر ایمپورت تا جای تجهیزات به‌هم نریزد.
+        old_tm = self.scenes.get(fid, {}).get("to_meter")
+        if old_tm:
+            self.store.ensure_device_meters(fid, old_tm)
+        self.store.set_floor_map(fid, "", "")
+        if fl and fl.get("map_unit_override"):
+            fl.pop("map_unit_override", None)
+            self.store.save()
+        if fid in self.scenes:
+            del self.scenes[fid]
+        self._activate_floor(fid, fit=True)
+        QMessageBox.information(self, "انجام شد",
+                                "نقشه حذف شد؛ تجهیزات روی گرید تیره باقی ماندند.")
 
     def _build_scene(self, floor_id):
         """ساخت (یا بازیابی از کش) صحنه‌ی یک طبقه."""
