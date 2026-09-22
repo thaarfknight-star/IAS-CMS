@@ -105,12 +105,14 @@ devc = {"id": "c1", "kind": "camera", "name": "Fani 2",
         "view_distance": 2.0, "pos_unit": "m"}
 item = bmd.DeviceItem(fid, devc, 0.01, {})  # نقشه‌ی سانتی‌متری
 kids = item.childItems()
-check("camera has no circle",
-      not any(isinstance(k, QGraphicsEllipseItem) for k in kids))
-check("camera has no sector/box",
-      not any(isinstance(k, QGraphicsPathItem) for k in kids))
-check("camera has no lens tick",
-      not any(isinstance(k, QGraphicsLineItem) for k in kids))
+# (2.0.28-beta) قطاع دید برگردانده شد: دوربین دوباره بدنه (دایره) +
+# قطاع دید + خط جهت لنز + ایموجی دارد.
+check("camera has circle body",
+      any(isinstance(k, QGraphicsEllipseItem) for k in kids))
+check("camera has sector",
+      any(isinstance(k, QGraphicsPathItem) for k in kids))
+check("camera has lens tick",
+      any(isinstance(k, QGraphicsLineItem) for k in kids))
 texts = [k.text() for k in kids if isinstance(k, QGraphicsSimpleTextItem)]
 check("camera emoji marker", "🎥" in texts, str(texts))
 check("camera label kept", "Fani 2" in texts)

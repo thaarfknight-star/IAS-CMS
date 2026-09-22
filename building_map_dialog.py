@@ -136,6 +136,8 @@ class DeviceItem(QGraphicsItemGroup):
         self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsMovable)
         self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable)
         self._press_scene = None
+        self._sector = None
+        self._tick = None
         self._build()
         # مختصات ذخیره‌شده به متر است؛ رندر به واحد صحنه برمی‌گردد
         # (2.0.23-beta: مستقل از واحد نقشه).
@@ -154,8 +156,35 @@ class DeviceItem(QGraphicsItemGroup):
         accent = QColor("#22d3ee")
 
         if kind == "camera":
-            # (2.0.23-beta) نشان دوربین فقط ایموجی 🎥 است؛ دایره و کادر
-            # قطاع دید به خواست کاربر حذف شد.
+            # (2.0.28-beta) قطاع دید برگردانده شد: مخروط دید + بدنه + خط
+            # جهت لنز + ایموجی؛ تغییر زاویه/پهنای دید/فاصله دید دوباره
+            # به‌صورت زنده روی نقشه دیده می‌شود.
+            import math as _math
+            angle = float(dev.get("angle", 0))
+            fov = float(dev.get("fov", 90))
+            # برد نمایشی قطاع دید = «فاصله دید» دوربین (متر) به واحد صحنه
+            rng = float(dev.get("view_distance", 8.0)) / (self.to_meter or 1.0)
+            sector = QGraphicsPathItem(_sector_path(0, 0, rng, angle, fov))
+            sector.setPen(QPen(QColor(34, 211, 238, 110), 0))
+            sector.setBrush(QBrush(QColor(34, 211, 238, 38)))
+            self.addToGroup(sector)
+            self._sector = sector
+            # بدنه‌ی دوربین (اندازه ثابت روی صفحه)
+            body = QGraphicsEllipseItem(-11, -11, 22, 22)
+            body.setPen(QPen(accent, 2))
+            body.setBrush(QBrush(QColor("#0e1620")))
+            body.setFlag(
+                QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
+            self.addToGroup(body)
+            # جهت لنز
+            a = _math.radians(angle)
+            dx, dy = 11 * _math.cos(a), -11 * _math.sin(a)
+            tick = QGraphicsLineItem(0, 0, dx * 1.5, dy * 1.5)
+            tick.setPen(QPen(QColor("#f472b6"), 3))
+            tick.setFlag(
+                QGraphicsLineItem.GraphicsItemFlag.ItemIgnoresTransformations)
+            self.addToGroup(tick)
+            self._tick = tick
             glyph = QGraphicsSimpleTextItem("🎥")
             gf = QFont()
             gf.setPointSize(18)
@@ -193,11 +222,25 @@ class DeviceItem(QGraphicsItemGroup):
         self._label = label
 
     def refresh(self):
-        """به‌روزرسانی زنده‌ی ظاهر تجهیز.
+        """به‌روزرسانی زنده‌ی ظاهر تجهیز، بدون بازسازی گروه.
 
-        (2.0.23-beta) دوربین فقط ایموجی است؛ چیزی برای به‌روزرسانی
-        هندسی نیست و موقعیت دست نمی‌خورد.
+        فقط مسیر قطاع دید و خط جهت لنز درجا به‌روز می‌شوند؛ موقعیت
+        دست نمی‌خورد (رفع باگ «پرش دوربین هنگام تغییر زاویه»: بازسازی
+        گروه با removeFromGroup/addToGroup موقعیت صحنه‌ای را به مبدأ
+        می‌پراند). (2.0.28-beta: قطاع دید برگردانده شد.)
         """
+        dev = self.device
+        if dev.get("kind") == "camera":
+            angle = float(dev.get("angle", 0))
+            fov = float(dev.get("fov", 90))
+            rng = float(dev.get("view_distance", 8.0)) / (self.to_meter or 1.0)
+            if self._sector is not None:
+                self._sector.setPath(_sector_path(0, 0, rng, angle, fov))
+            if self._tick is not None:
+                import math
+                a = math.radians(angle)
+                dx, dy = 11 * math.cos(a), -11 * math.sin(a)
+                self._tick.setLine(0, 0, dx * 1.5, dy * 1.5)
         self.update()
 
     def set_name(self, name):
