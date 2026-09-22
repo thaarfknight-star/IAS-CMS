@@ -851,14 +851,23 @@ class CameraSlotWidget(QWidget):
         """رفع درخواست: تایید و نام‌گذاری محدوده‌ی تازه‌بسته‌شده. محدوده به
         لیست محدوده‌های فعال این خانه اضافه و بلافاصله روی ترد پخش برای
         تشخیص ورود فعال می‌شود. دیکشنری محدوده‌ی تازه (برای ذخیره در
-        camera_store) یا None برمی‌گرداند اگر نقاطی در انتظار تایید نبود."""
-        if self.pending_points is None:
+        camera_store) یا None برمی‌گرداند اگر نقاطی در انتظار تایید نبود.
+
+        نکته‌ی مهم (رفع باگ 2.0.26): نقاط از video_label خوانده می‌شوند، نه
+        از self.pending_points؛ چون کاربر ممکن است بعد از قرارگرفتن شکل
+        (مثلاً خروجی «تشخیص هوشمند زمین») گوشه‌ها را با ماوس جابه‌جا کرده
+        باشد و آن ویرایش فقط روی کپیِ داخل video_label اعمال می‌شود
+        (رجوع کنید به VideoDisplayLabel.mouseMoveEvent). خواندن از
+        self.pending_points باعث می‌شد ویرایش کاربر نادیده گرفته شود و
+        شکلِ خامِ تشخیص ذخیره شود."""
+        points = self.video_label.pending_points_norm()
+        if not points or len(points) < 3:
             return None
         region = {
             "id": str(uuid.uuid4()),
             "number": len(self.regions) + 1,
             "name": (name or "").strip(),
-            "points": list(self.pending_points),
+            "points": list(points),
         }
         self.regions.append(region)
         self.pending_points = None
