@@ -400,31 +400,18 @@ FunctionEnd
 !define MUI_FINISHPAGE_RUN_TEXT "$(RUN_TEXT)"
 !insertmacro MUI_PAGE_FINISH
 
-; (2.0.38-beta) نصب‌کننده دوزبانه: فارسی (پیش‌فرض) + انگلیسی؛
-; در شروع نصب، دیالوگ انتخاب زبان نمایش داده می‌شود و انتخاب کاربر
-; در رجیستری ذخیره می‌شود تا دفعه‌ی بعد همان زبان پیشنهاد شود.
-!define MUI_LANGDLL_ALLLANGUAGES
-!define MUI_LANGDLL_REGISTRY_ROOT "HKCU"
-!define MUI_LANGDLL_REGISTRY_KEY "Software\${APP_EN}"
-!define MUI_LANGDLL_REGISTRY_VALUENAME "Installer Language"
-
-!insertmacro MUI_LANGUAGE "English"
+; (2.0.42-beta به دستور کاربر) نصب‌کننده فقط فارسی است؛ انتخاب زبان حذف شد.
 !insertmacro MUI_LANGUAGE "Farsi"
 
 ; نکته‌ی NSIS: ثابت‌های ${LANG_xxx} فقط بعد از !insertmacro MUI_LANGUAGE
 ; همان زبان تعریف می‌شوند؛ پس LangStringهای سفارشی حتماً باید بعد از
-; زبان‌ها بیایند، وگرنه به زبان اشتباه (۱۰۳۳) می‌چسبند.
-LangString SEC_INSTALL ${LANG_ENGLISH} "Install"
+; زبان‌ها بیایند، وگرنه به زبان اشتباه می‌چسبند.
 LangString SEC_INSTALL ${LANG_Farsi} "نصب"
-LangString RUN_TEXT ${LANG_ENGLISH} "Run ${APP_EN}"
 LangString RUN_TEXT ${LANG_Farsi} "اجرای ${APP_NAME}"
-LangString APP_RUNNING_MSG ${LANG_ENGLISH} "${APP_EN} is currently running.$\nPlease close it and click «Retry»."
 LangString APP_RUNNING_MSG ${LANG_Farsi} "برنامه‌ی ${APP_NAME} در حال اجراست.$\nلطفاً آن را ببندید و «تلاش مجدد» را بزنید."
-LangString UNINSTALL_CONFIRM ${LANG_ENGLISH} "Remove «${APP_EN}» completely from this system?$\n$\nAll files, settings, cameras, face database and plate history will be permanently deleted."
 LangString UNINSTALL_CONFIRM ${LANG_Farsi} "«${APP_NAME}» به‌طور کامل از سیستم حذف شود؟$\n$\nهمه‌ی فایل‌ها، تنظیمات، دوربین‌ها، بانک چهره و سوابق پلاک‌ها برای همیشه پاک می‌شوند."
 
 Function .onInit
-  !insertmacro MUI_LANGDLL_DISPLAY
 FunctionEnd
 
 ; --- سکشن نصب واقعی (کپی فایل‌ها + میان‌برها + رجیستری) ---

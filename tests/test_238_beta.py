@@ -1,8 +1,9 @@
-"""Headless regression test for IAS-CMS 2.0.38-beta.
+"""Headless regression test for IAS-CMS 2.0.38-beta (installer checks updated
+for 2.0.42-beta: installer is Farsi-only).
 
-۱) نصب‌کننده دوزبانه: welcome/header با لوگوی برنامه، MUI_HEADERIMAGE،
-   زبان‌های English + Farsi (بدون Persian)، MUI_LANGDLL_DISPLAY در .onInit،
-   LangStringهای سفارشی برای هر دو زبان، و تولید BMPها در make_graphics.py.
+۱) نصب‌کننده فقط فارسی: welcome/header با لوگوی برنامه، MUI_HEADERIMAGE،
+   فقط زبان Farsi (بدون English/Persian)، بدون MUI_LANGDLL_DISPLAY،
+   LangStringهای سفارشی فقط فارسی، و تولید BMPها در make_graphics.py.
 ۲) تاگل پوشش: coverage_btn checkable است؛ _on_coverage_toggled(False)
    تحلیل را متوقف و نقاط را پاک می‌کند؛ _analyze_coverage بدون مسیر False
    برمی‌گرداند و دکمه unchecked می‌ماند.
@@ -56,15 +57,16 @@ check("WELCOMEFINISHPAGE_BITMAP uses logo",
 check("HEADERIMAGE defined", "!define MUI_HEADERIMAGE" in nsi)
 check("HEADERIMAGE_BITMAP uses logo",
       "MUI_HEADERIMAGE_BITMAP" in nsi and "header_logo.bmp" in nsi)
-check("English language present", '!insertmacro MUI_LANGUAGE "English"' in nsi)
 check("Farsi language present", '!insertmacro MUI_LANGUAGE "Farsi"' in nsi)
+# (2.0.42-beta به دستور کاربر) نصب‌کننده فقط فارسی است؛ انتخاب زبان حذف شد
+check("no English language", '!insertmacro MUI_LANGUAGE "English"' not in nsi)
 check("no Persian language", '"Persian"' not in nsi)
-check("MUI_LANGDLL_DISPLAY in installer .onInit",
-      "MUI_LANGDLL_DISPLAY" in nsi and "Function .onInit" in nsi)
+check("no MUI_LANGDLL_DISPLAY (single language)",
+      "MUI_LANGDLL_DISPLAY" not in nsi)
 for ls in ["SEC_INSTALL", "RUN_TEXT", "APP_RUNNING_MSG", "UNINSTALL_CONFIRM"]:
-    check(f"LangString {ls} EN+FA",
-          f"LangString {ls} ${{LANG_ENGLISH}}" in nsi
-          and f"LangString {ls} ${{LANG_Farsi}}" in nsi)
+    check(f"LangString {ls} FA-only",
+          f"LangString {ls} ${{LANG_Farsi}}" in nsi
+          and f"LangString {ls} ${{LANG_ENGLISH}}" not in nsi)
 check("FINISHPAGE_RUN_TEXT uses LangString",
       '!define MUI_FINISHPAGE_RUN_TEXT "$(RUN_TEXT)"' in nsi)
 check('Section uses LangString', 'Section "$(SEC_INSTALL)"' in nsi)
