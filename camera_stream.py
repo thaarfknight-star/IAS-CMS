@@ -608,6 +608,9 @@ class CameraStreamThread(QThread):
         # ویدیو را متوقف کند.
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self._recognize_busy = threading.Event()
+        # شمارنده‌ی تیک تشخیص برای زمان‌بندی متناوب مدل‌های سنگین
+        # (رجوع کنید به _run_recognition).
+        self._tick_idx = 0
 
         # --- شمارش افراد (اختیاری، پیش‌فرض خاموش) ---
         # تِرد جداگانه‌ای ندارد: تشخیص شخص (person_detector) همان‌جایی که
@@ -999,6 +1002,19 @@ class CameraStreamThread(QThread):
             except Exception:
                 _fd = None
 
+            # --- زمان‌بندی متناوب مدل‌های سنگین (2.0.34-beta) ---
+            # قبلاً هر تیک همه‌ی مدل‌ها (شخص + چهره + حریق + پلاک + OCR) را
+            # پشت‌سرهم اجرا می‌کرد و روی CPU بدون GPU چند ثانیه طول می‌کشید؛
+            # نرخ تیک (~۰٫۲۵ هرتز) برای گرفتن سوژه‌ی متحرک کافی نبود.
+            # حالا: تشخیص شخص هر تیک (هسته‌ی شمارش/محدوده/ردیابی)، چهره و
+            # پلاک در تیک‌های زوج، حریق در تیک‌های فرد. هر تیک تقریباً نصف
+            # سبک‌تر می‌شود و نرخ تیک بالا می‌رود؛ نتیجه‌ی تیک‌های فرد برای
+            # چهره/پلاک (و تیک‌های زوج برای حریق) از تیک قبل نگه داشته
+            # می‌شود — فقط یک تیک تأخیر نمایشی، بدون از دست رفتن رویداد.
+            self._tick_idx += 1
+            _do_face_plate = (self._tick_idx % 2 == 0)
+            _do_fire = not _do_face_plate
+
             # --- تشخیص شخص + محدوده‌ی هشدار: عمداً «قبل» از تشخیص چهره ---
             # رفع ریشه‌ای باگ «سیستم محدوده کار نمی‌کند»: این بلوک قبلاً بعد
             # از self.face_engine.recognize(frame) قرار داشت و چون recognize
@@ -1043,13 +1059,21 @@ class CameraStreamThread(QThread):
                             region_boxes, regions, w, h):
                     self.region_entered.emit(number, name)
 
-            results, unknown_event, known_events = self.face_engine.recognize(frame)            # رفع باگ «کادر چشمک می‌زنه» و «برچسب/رنگ ناپایدار (سبز/قرمز عوض
+            if _do_face_plate:
+                results, unknown_event, known_events = \
+                    self.face_engine.recognize(frame)
+            else:
+                # تیک فرد: تشخیص چهره اجرا نمی‌شود؛ نتیجه‌ی تیک زوجِ قبل
+                # نگه داشته می‌شود و رویداد چهره تکرار نمی‌شود.
+                unknown_event, known_events = None, []
+            # رفع باگ «کادر چشمک می‌زنه» و «برچسب/رنگ ناپایدار (سبز/قرمز عوض
             # می‌شه)»: نتیجه‌ی خام هر دور تشخیص مستقیماً نمایش داده نمی‌شود؛
             # از _FaceTracker (تعریف بالای فایل) عبور می‌کند که هم ظاهر/محو
             # ناگهانی کادر را (با نگه‌داشتن چند دور) میرا می‌کند، هم برچسب هر
             # چهره را فقط بعد از تکرار پیاپی یک هویت جدید عوض می‌کند - نه با
             # اولین نوسان لحظه‌ای تشخیص.
-            self._last_results = self._face_tracker.update(results)
+            if _do_face_plate:
+                self._last_results = self._face_tracker.update(results)
 
             # --- ردیابی اشخاص بین دوربین‌ها (اختیاری، با کمک چهره) ---
             # دقیقاً همان الگوی تشخیص شخص/آتش: در همین ترد پس‌زمینه‌ی تشخیص
@@ -1123,7 +1147,9 @@ class CameraStreamThread(QThread):
             if not self.fire_detection_enabled:
                 self._last_fire_detections = []
                 self._fire_detector_available = False
-            else:
+            elif _do_fire:
+                # تیک فرد: کل خط لوله‌ی حریق. در تیک زوج اجرا نمی‌شود و
+                # نتیجه‌ی تیک قبل نگه داشته می‌شود (یک تیک تأخیر نمایشی).
                 _yolo_dets = _fd.detect(frame, conf=fparams["yolo_conf"]) if _fd is not None else []
                 _small_dets = self._small_flame_detector.detect(frame)
                 _cascade_dets = cascade_yolo_confirm(frame, _small_dets, conf=fparams["yolo_conf"])
@@ -1153,7 +1179,10 @@ class CameraStreamThread(QThread):
             # فعال است). تطبیق با پلاک‌های تعریف‌شده همین‌جا (ارزان، با کش)
             # انجام می‌شود تا رنگ باکس روی تصویر درست باشد؛ ثبت رویداد و
             # به‌روزرسانی گزارش در main.py است.
-            if self.plate_detection_enabled and self._plate_tracker is not None:
+            if self.plate_detection_enabled and self._plate_tracker is not None \
+                    and _do_face_plate:
+                # تیک زوج: کل زنجیره‌ی پلاک‌خوان. در تیک فرد اجرا نمی‌شود؛
+                # ترک‌ها با TTL خودشان زنده می‌مانند.
                 try:
                     _pld = _get_plate_detector()
                 except Exception:

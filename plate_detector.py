@@ -303,6 +303,9 @@ def get_plate_detector_load_error():
 # آستانه‌های استاندارد گیت تاری (واریانس لاپلاسین) — مطابق مقالات ANPR:
 _BLUR_HEAVY = 25.0    # کمتر از این: خیلی تار → OCR بی‌فایده است، رد می‌شود
 _BLUR_MILD = 100.0    # بین این دو: کمی تار → فیلتر bilateral
+# ترکِ در حال حرکت: موشن‌بلر ذاتاً بیشتر است؛ گیت تاری بازتر می‌شود تا پلاکِ
+# خودروی متحرک شانس OCR بگیرد (خوانش نامعتبر باز هم در رأی‌گیری رد می‌شود).
+_BLUR_HEAVY_MOVING = 12.0
 
 
 def _blur_score(gray):
@@ -379,9 +382,12 @@ def _rectify_plate(crop):
         return crop, False
 
 
-def _preprocess_for_ocr(crop):
+def _preprocess_for_ocr(crop, blur_heavy=None):
     """آماده‌سازی کراپ پلاک برای OCR. خروجی: (image, info) که info شامل
-    blur_score و rectified و skipped_reason است."""
+    blur_score و rectified و skipped_reason است.
+    blur_heavy: آستانه‌ی گیت تاری (پیش‌فرض _BLUR_HEAVY)؛ برای ترکِ متحرک
+    بازتر پاس داده می‌شود."""
+    _bh = float(blur_heavy) if blur_heavy else _BLUR_HEAVY
     info = {"blur": -1.0, "rectified": False, "skipped": ""}
     h, w = crop.shape[:2]
     if h <= 0 or w <= 0:
@@ -397,7 +403,7 @@ def _preprocess_for_ocr(crop):
         h, w = crop.shape[:2]
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
     info["blur"] = _blur_score(gray)
-    if info["blur"] < _BLUR_HEAVY:
+    if info["blur"] < _bh:
         # خیلی تار: OCR فقط نویز تولید می‌کند
         info["skipped"] = "blur"
         return crop, info
@@ -643,14 +649,15 @@ class PlateOCR:
             "hezar_error": self._hezar_error,
         }
 
-    def read(self, crop_bgr):
+    def read(self, crop_bgr, blur_heavy=None):
         """خوانش متن از کراپ پلاک. خروجی: لیست [(text, conf, engine)] مرتب
         بر اساس اطمینان (نزولی)، بدون تکراری. فقط متن‌های با قالب معتبر
-        پلاک ایرانی برمی‌گرداند."""
+        پلاک ایرانی برمی‌گرداند.
+        blur_heavy: آستانه‌ی گیت تاری؛ برای کراپِ ترکِ متحرک بازتر."""
         if crop_bgr is None or crop_bgr.size == 0:
             return []
         self.diag["ocr_calls"] += 1
-        crop, info = _preprocess_for_ocr(crop_bgr)
+        crop, info = _preprocess_for_ocr(crop_bgr, blur_heavy=blur_heavy)
         if info.get("rectified"):
             self.diag["rectified"] += 1
         else:
@@ -730,6 +737,27 @@ def _iou(a, b):
     return inter / ua if ua > 0 else 0.0
 
 
+def _shift_box(box, dx, dy):
+    """جابه‌جایی باکس با بردار (dx, dy) — برای پیش‌بینی موقعیت ترکِ متحرک."""
+    x1, y1, x2, y2 = box
+    return [x1 + dx, y1 + dy, x2 + dx, y2 + dy]
+
+
+def _center_close(a, b, ratio=2.0):
+    """آیا مرکز b به‌اندازه‌ی کافی به مرکز a نزدیک است که همان شیءِ
+    در حال حرکتِ سریع باشد؟ (وقتی جابه‌جایی بین دو تیکِ کم‌تکرار، IoU را
+    صفر می‌کند ولی مرکز هنوز در همسایگی است.)"""
+    acx, acy = (a[0] + a[2]) / 2.0, (a[1] + a[3]) / 2.0
+    bcx, bcy = (b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0
+    aw, ah = max(1.0, a[2] - a[0]), max(1.0, a[3] - a[1])
+    bw, bh = max(1.0, b[2] - b[0]), max(1.0, b[3] - b[1])
+    dist = ((acx - bcx) ** 2 + (acy - bcy) ** 2) ** 0.5
+    if dist > ratio * (aw + bw) / 2.0:
+        return False
+    area_ratio = (aw * ah) / max(1.0, bw * bh)
+    return 0.4 <= area_ratio <= 2.5
+
+
 def _expand_box(box, frame_w, frame_h, ratio=0.12):
     x1, y1, x2, y2 = box
     w, h = x2 - x1, y2 - y1
@@ -774,12 +802,16 @@ def majority_vote(reads):
 class PlateTracker:
     """ردیابی هر پلاک در فریم‌های متوالی (نمونه‌ی جدا برای هر دوربین).
 
-    - هر باکس تازه با IoU حریصانه به نزدیک‌ترین ترک موجود وصل می‌شود
-      (ابزار استاندارد دوربین‌های ثابت).
-    - OCR حداکثر هر ~۱ ثانیه برای هر ترک اجرا می‌شود (صرفه‌جویی CPU).
+    - هر باکس تازه با IoU حریصانه به نزدیک‌ترین ترک موجود وصل می‌شود؛
+      برای ترکِ متحرک، باکس با سرعتِ برآوردشده به لحظه‌ی فعلی جلو برده
+      می‌شود (پیش‌بینی) و اگر IoU ناکافی بود ولی مرکز نزدیک بود، باز هم
+      لینک می‌شود تا ترکِ پلاکِ در حال حرکت بین تیک‌های کم‌تکرار نشکند.
+    - OCR حداکثر هر ~۱ ثانیه برای هر ترک اجرا می‌شود (صرفه‌جویی CPU)؛
+      برای ترکِ متحرک هر ~۰٫۵ ثانیه و با گیت تاریِ بازتر.
     - متن نهایی با رأی‌گیری اکثریت به‌ازای هر موقعیت کاراکتر ساخته می‌شود؛
       وقتی تعداد خوانش‌های شرکت‌کننده به confirm_reads برسد، «تأیید» و رویداد
-      صادر می‌شود؛ برای همان پلاک تا پایان کول‌داون رویداد تکراری صادر نمی‌شود.
+      صادر می‌شود (برای ترکِ متحرک: ۲ خوانش کافی است)؛ برای همان پلاک تا
+      پایان کول‌داون رویداد تکراری صادر نمی‌شود.
     """
 
     def __init__(self, confirm_reads=3, ocr_interval_s=1.0,
@@ -807,15 +839,41 @@ class PlateTracker:
         with self._lock:
             self.diag["ticks"] += 1
             self.diag["detections_total"] += len(detections)
-            # ۱) تطبیق دتکشن‌ها به ترک‌ها (IoU حریصانه)
+            # ۱) تطبیق دتکشن‌ها به ترک‌ها — آگاه از حرکت:
+            # باکس هر ترک با سرعتِ برآوردشده به لحظه‌ی فعلی جلو برده می‌شود
+            # (پیش‌بینی) و IoU با باکسِ پیش‌بینی‌شده حساب می‌شود؛ اگر IoU
+            # ناکافی بود ولی مرکز دتکشن در همسایگی مرکز پیش‌بینی‌شده بود
+            # (جابه‌جایی سریع بین دو تیکِ کم‌تکرار)، باز هم لینک می‌شود تا
+            # ترکِ پلاکِ متحرک نشکند.
             unmatched = list(detections)
             for tr in self._tracks:
-                best, best_iou, best_idx = None, 0.35, -1
+                _dt = min(max(now - tr["last_seen"], 0.0), 5.0)
+                _vx, _vy = tr.get("vel", (0.0, 0.0))
+                _pb = _shift_box(tr["box"][:4], _vx * _dt, _vy * _dt)
+                best, best_score, best_idx = None, -1.0, -1
                 for i, det in enumerate(unmatched):
-                    iou = _iou(tr["box"][:4], det[:4])
-                    if iou > best_iou:
-                        best, best_iou, best_idx = det, iou, i
+                    _iou_v = _iou(_pb, det[:4])
+                    if _iou_v >= 0.30:
+                        _score = _iou_v
+                    elif _center_close(_pb, det[:4]):
+                        _score = 0.15  # لینک اضطراریِ حرکت سریع
+                    else:
+                        continue
+                    if _score > best_score:
+                        best, best_score, best_idx = det, _score, i
                 if best is not None:
+                    # به‌روزرسانی سرعت از جابه‌جایی مرکز (میانگین نمایی)
+                    _ocx = (tr["box"][0] + tr["box"][2]) / 2.0
+                    _ocy = (tr["box"][1] + tr["box"][3]) / 2.0
+                    _ncx = (best[0] + best[2]) / 2.0
+                    _ncy = (best[1] + best[3]) / 2.0
+                    _bw = max(1.0, tr["box"][2] - tr["box"][0])
+                    if _dt > 1e-3:
+                        _mvx, _mvy = (_ncx - _ocx) / _dt, (_ncy - _ocy) / _dt
+                        tr["vel"] = (0.65 * _vx + 0.35 * _mvx,
+                                     0.65 * _vy + 0.35 * _mvy)
+                    _disp = ((_ncx - _ocx) ** 2 + (_ncy - _ocy) ** 2) ** 0.5
+                    tr["moving"] = _disp > 0.30 * _bw
                     tr["box"] = best
                     tr["last_seen"] = now
                     unmatched.pop(best_idx)
@@ -825,15 +883,25 @@ class PlateTracker:
                     "box": det, "reads": [], "last_seen": now,
                     "last_ocr_ts": 0.0, "last_event_ts": 0.0,
                     "last_text": "", "last_conf": 0.0, "voted_text": "",
+                    "vel": (0.0, 0.0), "moving": False,
                 })
                 self.diag["tracks_created"] += 1
             # ۳) حذف ترک‌های منقضی
             self._tracks = [t for t in self._tracks
                             if now - t["last_seen"] <= self.track_ttl_s]
-            # ۴) OCR تنبل + رأی‌گیری (در حالت زوم‌بوست مشتاق‌تر)
-            _ocr_gap = 0.4 if self.zoom_boost else self.ocr_interval_s
-            _need_votes = 2 if self.zoom_boost else self.confirm_reads
+            # ۴) OCR تنبل + رأی‌گیری — آگاه از حرکت:
+            # ترکِ متحرک فقط چند تیک دیده می‌شود؛ پس OCR زودتر تکرار، تأیید
+            # با رأی کمتر صادر و گیت تاری بازتر می‌شود. (در حالت زوم‌بوست
+            # هم همین رفتار مشتاقانه اعمال می‌شود.)
             for tr in self._tracks:
+                _moving = bool(tr.get("moving"))
+                _is_new = not tr["reads"]
+                # ترکِ تازه هم مشتاق است: پلاکی که فقط یک تیک دیده می‌شود
+                # (خودروی تندگذر) باید همان‌جا شانس تأیید داشته باشد.
+                _eager = self.zoom_boost or _moving or _is_new
+                _ocr_gap = 0.4 if _eager else self.ocr_interval_s
+                _need_votes = 2 if _eager else self.confirm_reads
+                _blur_gate = _BLUR_HEAVY_MOVING if _moving else None
                 if now - tr["last_ocr_ts"] < _ocr_gap:
                     continue
                 tr["last_ocr_ts"] = now
@@ -842,20 +910,38 @@ class PlateTracker:
                 if crop.size == 0:
                     continue
                 try:
-                    reads = ocr.read(crop)
+                    reads = ocr.read(crop, blur_heavy=_blur_gate)
+                    if _is_new and reads:
+                        # خوانش دوم با کراپِ کمی بازتر: اگر هر دو خوانش
+                        # معتبر و هم‌طول باشند، همان تیک اول ۲ رأی دارد و
+                        # پلاکِ تک‌تیکیِ متحرک هم تأیید می‌شود.
+                        x1b, y1b, x2b, y2b = _expand_box(
+                            tr["box"][:4], w, h, ratio=0.22)
+                        crop2 = frame[y1b:y2b, x1b:x2b]
+                        if crop2.size > 0:
+                            try:
+                                reads = reads + ocr.read(
+                                    crop2, blur_heavy=_blur_gate)
+                            except Exception:
+                                pass
                 except Exception:
                     reads = []
                 self.diag["ocr_runs"] += 1
                 if not reads:
                     continue
-                text, conf = reads[0][0], reads[0][1]
-                # فقط خوانش‌های با قالب معتبر وارد رأی‌گیری می‌شوند
-                if not _looks_like_plate(text):
-                    self.diag["reads_rejected"] += 1
-                    continue
-                tr["reads"].append((text, float(conf)))
+                # همه‌ی خوانش‌های معتبر وارد رأی‌گیری می‌شوند (نه فقط بهترین)
+                _added = 0
+                for _rt, _rc, _re in reads:
+                    if not _looks_like_plate(_rt):
+                        self.diag["reads_rejected"] += 1
+                        continue
+                    tr["reads"].append((_rt, float(_rc)))
+                    _added += 1
                 tr["reads"] = tr["reads"][-10:]
-                self.diag["reads_total"] += 1
+                if not _added:
+                    continue
+                self.diag["reads_total"] += _added
+                text, conf = tr["reads"][-1]
                 tr["last_text"] = text
                 tr["last_conf"] = float(conf)
                 # ۵) رأی‌گیری اکثریت به‌ازای هر موقعیت کاراکتر

@@ -116,7 +116,7 @@ def _box_iou(a, b):
 class PersonDetector:
     _MODEL_FILENAME = "yolov8n.pt"
 
-    def __init__(self, conf_threshold=0.35, imgsz=480):
+    def __init__(self, conf_threshold=0.30, imgsz=480):
         self.conf_threshold = conf_threshold
         self.imgsz = imgsz
         self._model = None

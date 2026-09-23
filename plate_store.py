@@ -433,10 +433,12 @@ class PlateStore:
 
     @property
     def cooldown_seconds(self):
+        # پیش‌فرض ۱۵ ثانیه (قانون ثابت پروژه)؛ اگر کاربر دستی در تنظیمات
+        # عوض کرده باشد، همان مقدار ذخیره‌شده اعمال می‌شود.
         try:
-            return int(float(self.get_setting("cooldown_seconds", "45")))
+            return int(float(self.get_setting("cooldown_seconds", "15")))
         except ValueError:
-            return 45
+            return 15
 
     # ------------------------------------------------- پلاک‌های تعریف‌شده -
 

@@ -374,7 +374,8 @@ class _KalmanBox:
     """
 
     _K_POS = 0.55   # بهره‌ی تصحیح مرکز/ابعاد با مشاهده‌ی تازه
-    _K_VEL = 0.35   # بهره‌ی تصحیح سرعت
+    _K_VEL = 0.55   # بهره‌ی تصحیح سرعت (بالا نگه داشته شده تا بین تیک‌های
+                    # کم‌تکرارِ CPU، سرعتِ شخصِ در حال حرکت زود برآورد شود)
 
     def __init__(self, box_xyxy, ts):
         x1, y1, x2, y2 = box_xyxy
@@ -382,11 +383,17 @@ class _KalmanBox:
                            max(1.0, x2 - x1), max(1.0, y2 - y1),
                            0.0, 0.0, 0.0, 0.0], dtype=np.float64)
         self.last_ts = float(ts)
+        # (2.0.34-beta) زمان‌بندی جدا برای پیش‌بینی و به‌روزرسانی: قبلاً
+        # predict() همان last_ts را جلو می‌برد و update() با dt=۰ سرعت را
+        # هیچ‌وقت یاد نمی‌گرفت (سرعت همیشه صفر می‌ماند و پیش‌بینیِ شخصِ
+        # در حال حرکت بی‌فایده بود).
+        self._last_pred_ts = float(ts)
 
     def predict(self, ts):
         """باکس پیش‌بینی‌شده برای لحظه‌ی ts به قالب [x1,y1,x2,y2]."""
-        dt = min(max(float(ts) - self.last_ts, 0.0), 5.0)
-        self.last_ts = float(ts)
+        ts = float(ts)
+        dt = min(max(ts - self._last_pred_ts, 0.0), 5.0)
+        self._last_pred_ts = ts
         if dt > 0:
             self.x[0] += self.x[4] * dt
             self.x[1] += self.x[5] * dt
@@ -396,7 +403,8 @@ class _KalmanBox:
 
     def update(self, box_xyxy, ts):
         """تصحیح حالت با مشاهده‌ی تازه."""
-        dt = min(max(float(ts) - self.last_ts, 0.0), 5.0)
+        ts = float(ts)
+        dt = min(max(ts - self.last_ts, 0.0), 5.0)
         x1, y1, x2, y2 = box_xyxy
         z = np.array([(x1 + x2) / 2.0, (y1 + y2) / 2.0,
                       max(1.0, x2 - x1), max(1.0, y2 - y1)], dtype=np.float64)
@@ -407,7 +415,8 @@ class _KalmanBox:
             self.x[4:] = (self.x[4:] + self._K_VEL * (v_meas - self.x[4:]))
         else:
             self.x[4:] *= 0.9
-        self.last_ts = float(ts)
+        self.last_ts = ts
+        self._last_pred_ts = ts
         return self._to_box()
 
     def _to_box(self):
@@ -426,6 +435,21 @@ class _KalmanBox:
 _IOU_MATCH = 0.30
 _IOU_REJECT = 0.20
 _IOU_REACQUIRE = 0.25
+
+
+def _centers_near(a, b, ratio=1.6):
+    """آیا مرکز b در همسایگی مرکز a است (متناسب با ابعاد)؟ برای لینکِ
+    شخصِ در حال حرکت، وقتی جابه‌جایی سریع بین دو تیکِ کم‌تکرار IoU را
+    صفر کرده ولی همان شخص است."""
+    acx, acy = (a[0] + a[2]) / 2.0, (a[1] + a[3]) / 2.0
+    bcx, bcy = (b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0
+    aw, ah = max(1.0, a[2] - a[0]), max(1.0, a[3] - a[1])
+    bw, bh = max(1.0, b[2] - b[0]), max(1.0, b[3] - b[1])
+    dist = ((acx - bcx) ** 2 + (acy - bcy) ** 2) ** 0.5
+    if dist > ratio * (aw + bw + ah + bh) / 4.0:
+        return False
+    ar = (aw * ah) / max(1.0, bw * bh)
+    return 0.35 <= ar <= 2.8
 
 
 class PersonLocalTracker:
@@ -493,6 +517,9 @@ class PersonLocalTracker:
             # ردهای تازه (tentative) با آستانه‌ی بازتر (_IOU_REJECT)؛ وگرنه
             # جابه‌جایی سریع شخص بین دو تشخیصِ پیاپی رد را می‌شکست، هیچ
             # ردی به حد تأیید نمی‌رسید و شخصِ در حال حرکت هرگز ثبت نمی‌شد.
+            # (2.0.34-beta) برای ردهای تازه/گمشده، اگر IoU صفر شد ولی مرکز
+            # دتکشن در همسایگی مرکز پیش‌بینی‌شده بود (حرکت سریع بین دو تیکِ
+            # کم‌تکرار روی CPU)، لینک اضطراری صادر می‌شود.
             confirmed_tr = [tr for tr in self._tracks
                             if tr["state"] == "confirmed"]
             tentative_tr = [tr for tr in self._tracks
@@ -501,7 +528,7 @@ class PersonLocalTracker:
                 confirmed_tr, dets, self.iou_thresh)
             rem_dets = [dets[i] for i in unmatched_det_c]
             matches_t, unmatched_t, unmatched_det_t = self._associate(
-                tentative_tr, rem_dets, _IOU_REJECT)
+                tentative_tr, rem_dets, _IOU_REJECT, dist_fallback=True)
             _nc = len(confirmed_tr)
             active = confirmed_tr + tentative_tr
             matches = ([(ti, unmatched_det_c[di]) for ti, di in matches_c]
@@ -518,7 +545,7 @@ class PersonLocalTracker:
             if lost and unmatched_det:
                 rem_dets = [dets[i] for i in unmatched_det]
                 m2, un_lost, un_det2 = self._associate(
-                    lost, rem_dets, _IOU_REACQUIRE)
+                    lost, rem_dets, _IOU_REACQUIRE, dist_fallback=True)
                 for ti, di in m2:
                     tr = lost[ti]
                     det = rem_dets[di]
@@ -579,10 +606,13 @@ class PersonLocalTracker:
         return events, draw
 
     @staticmethod
-    def _associate(tracks, dets, iou_thresh):
+    def _associate(tracks, dets, iou_thresh, dist_fallback=False):
         """تطبیق حریصانه‌ی IoU بین باکس پیش‌بینی‌شده‌ی ردها و باکس‌ها.
         خروجی: (matches [(ti, di)], unmatched_track_idx, unmatched_det_idx).
-        IoU < ‎_IOU_REJECT‎ همیشه رد می‌شود (عدد مقاله‌ی ByteTrack)."""
+        IoU < ‎_IOU_REJECT‎ همیشه رد می‌شود (عدد مقاله‌ی ByteTrack)؛ اگر
+        dist_fallback=True باشد، برای ردهایی که IoU صفر گرفته‌اند ولی مرکز
+        دتکشن در همسایگی مرکز پیش‌بینی‌شده است (حرکت سریع بین دو تیک)،
+        لینک اضطراری با امتیاز پایین صادر می‌شود."""
         pairs = []
         for ti, tr in enumerate(tracks):
             pb = tr.get("pred_box") or tr["box"]
@@ -590,6 +620,8 @@ class PersonLocalTracker:
                 v = _iou(pb, det)
                 if v >= max(iou_thresh, _IOU_REJECT):
                     pairs.append((v, ti, di))
+                elif dist_fallback and _centers_near(pb, det):
+                    pairs.append((_IOU_REJECT * 0.75, ti, di))
         pairs.sort(key=lambda p: p[0], reverse=True)
         used_t, used_d, matches = set(), set(), []
         for v, ti, di in pairs:
@@ -701,7 +733,21 @@ class PersonLocalTracker:
 
     def _describe_box(self, frame, box):
         crop = self._crop(frame, box)
-        if crop is None or crop.shape[0] < 40 or crop.shape[1] < 20:
+        if crop is None:
+            return None
+        # کراپ‌های کوچک (شخصِ دور) را تا حداقلِ لازم برای توصیف‌گر بزرگ
+        # می‌کنیم تا شخصِ دورِ در حال حرکت هم شانس تأیید داشته باشد؛
+        # بزرگ‌نمایی حداکثر ۴ برابر تا نویز غالب نشود.
+        try:
+            ch, cw = crop.shape[:2]
+            if (ch < 40 or cw < 20) and cv2 is not None:
+                _sc = min(4.0, max(40.0 / max(1, ch), 20.0 / max(1, cw)))
+                crop = cv2.resize(crop, (max(1, int(cw * _sc)),
+                                        max(1, int(ch * _sc))),
+                                  interpolation=cv2.INTER_CUBIC)
+        except Exception:
+            pass
+        if crop.shape[0] < 40 or crop.shape[1] < 20:
             return None
         try:
             return describe_person(crop)
