@@ -89,28 +89,9 @@ except ImportError:
     BuildingFireSettingsDialog = None
     _BUILDING_FIRE_AVAILABLE = False
 from settings_page import SettingsPage
-import i18n
 from theme import (
     apply_theme, LOGO_SHIELD, APP_NAME_FA, APP_NAME_EN, LOGO_BLUE, TEXT_MUTED,
 )
-
-# (2.0.39-beta) برچسب‌های دوزبانه‌ی دکمه‌های ناوبری هدر اصلی.
-NAV_STRINGS = {
-    "home": {"fa": "🏠 صفحه اصلی", "en": "🏠 Home"},
-    "fire": {"fa": "🔥 اعلام حریق", "en": "🔥 Fire alarm"},
-    "face": {"fa": "👤 چهره‌ها", "en": "👤 Faces"},
-    "reports": {"fa": "📊 گزارش‌ها", "en": "📊 Reports"},
-    "plate": {"fa": "🚗 پلاک‌خوان", "en": "🚗 Plate reader"},
-    "person": {"fa": "👥 ردیابی اشخاص", "en": "👥 Person tracking"},
-    "map": {"fa": "🗺 نقشه ساختمان", "en": "🗺 Building map"},
-    "settings": {"fa": "⚙️ تنظیمات", "en": "⚙️ Settings"},
-    "map_missing_title": {"fa": "صفحه‌ی نقشه در دسترس نیست",
-                          "en": "Building map page is unavailable"},
-    "map_missing_body": {"fa": "فایل building_map_dialog.py (و building_map.py) کنار برنامه "
-                               "پیدا نشد؛ آن‌ها را کنار main.py بگذارید و دوباره اجرا کنید.",
-                         "en": "building_map_dialog.py (and building_map.py) were not found "
-                               "next to the application; place them next to main.py and restart."},
-}
 
 # بهینه‌سازی برای سیستم‌های ضعیف (رم کم / بدون کارت گرافیک):
 # OpenCV به‌صورت پیش‌فرض برای عملیات داخلی (resize، cvtColor و ...) روی *تمام*
@@ -2209,11 +2190,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         from updater import get_app_version
         self.app_version = get_app_version()
-        # (2.0.39-beta) عنوان دوزبانه: در حالت انگلیسی نام انگلیسی اول می‌آید.
-        if i18n.get_lang() == "en":
-            self.setWindowTitle(f"{APP_NAME_EN} | {APP_NAME_FA} v{self.app_version}")
-        else:
-            self.setWindowTitle(f"{APP_NAME_FA} | {APP_NAME_EN} v{self.app_version}")
+        self.setWindowTitle(f"{APP_NAME_FA} | {APP_NAME_EN} v{self.app_version}")
         # آیکون پنجره: سپر لوگوی شرکت (هم در اجرای عادی، هم داخل exe).
         _logo_icon = QIcon(LOGO_SHIELD)
         if not _logo_icon.isNull():
@@ -3898,9 +3875,17 @@ class MainWindow(QMainWindow):
         header_layout.addStretch()
 
         self.nav_buttons = {}
-        for key in ("home", "fire", "face", "reports", "plate",
-                    "person", "map", "settings"):
-            btn = QPushButton(i18n.t(NAV_STRINGS, key))
+        for key, label in (
+            ("home", "🏠 صفحه اصلی"),
+            ("fire", "🔥 اعلام حریق"),
+            ("face", "👤 چهره‌ها"),
+            ("reports", "📊 گزارش‌ها"),
+            ("plate", "🚗 پلاک‌خوان"),
+            ("person", "👥 ردیابی اشخاص"),
+            ("map", "🗺 نقشه ساختمان"),
+            ("settings", "⚙️ تنظیمات"),
+        ):
+            btn = QPushButton(label)
             btn.setCheckable(True)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setStyleSheet(
@@ -3941,8 +3926,9 @@ class MainWindow(QMainWindow):
                  "person": 5, "map": 6, "settings": 7}[key]
         if key == "map" and self.map_page is None:
             QMessageBox.warning(
-                self, i18n.t(NAV_STRINGS, "map_missing_title"),
-                i18n.t(NAV_STRINGS, "map_missing_body"))
+                self, "صفحه‌ی نقشه در دسترس نیست",
+                "فایل building_map_dialog.py (و building_map.py) کنار برنامه "
+                "پیدا نشد؛ آن‌ها را کنار main.py بگذارید و دوباره اجرا کنید.")
             return
         page = self.pages.widget(index)
         refresh = getattr(page, "refresh", None)
@@ -4559,7 +4545,6 @@ if __name__ == "__main__":
 
     app = _SafeApplication(sys.argv)
     apply_theme(app)  # تم تیره‌ی سازگار با لوگوی ایمن آرا سورنا
-    i18n.tr_app(app)  # (2.0.39-beta) جهت برنامه بر اساس زبان (fa=راست‌به‌چپ)
     window = MainWindow()
     # برنامه از ابتدا ماکسیمایز باز می‌شود (درخواست قبلی کاربر).
     window.showMaximized()

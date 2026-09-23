@@ -39,22 +39,7 @@ plate_store.log_event.
 
 import time
 
-import i18n
 from plate_store import normalize_plate_text
-
-# (2.0.39-beta) متن جزئیات تخلف در لحظه‌ی ثبت، به زبان فعلی ساخته می‌شود
-# (رکوردهای قدیمی همان فارسی می‌مانند).
-_DIR_STRINGS = {
-    "watchlist_seen": {"fa": "پلاک «{plate}» در {label} توسط «{cam}» دیده شد",
-                       "en": "Plate “{plate}” seen by “{cam}” ({label})"},
-    "watchlist_note": {"fa": " — یادداشت: {note}", "en": " — Note: {note}"},
-    "wrong_way": {"fa": "{crossing} ({travel}) در «{lane}» که فقط جهت «{allowed}» مجاز است",
-                  "en": "{crossing} ({travel}) in “{lane}” where only “{allowed}” is allowed"},
-}
-
-
-def _dt(key, **kwargs):
-    return i18n.t(_DIR_STRINGS, key, **kwargs)
 
 # نقش‌های مجاز دوربین (فیلد plate_role رکورد دوربین در cameras.json)
 ROLE_ENTRY = "entry"
@@ -161,12 +146,10 @@ class PlateDirectionEngine:
                 vtype = ("watchlist_black" if wkind == "black"
                          else "watchlist_white")
                 note = (w.get("note") or "").strip()
-                detail = _dt("watchlist_seen",
-                             plate=w.get('plate_display') or text,
-                             label=self.store.watchlist_label(wkind),
-                             cam=cam_name)
-                if note:
-                    detail += _dt("watchlist_note", note=note)
+                detail = (f"پلاک «{w.get('plate_display') or text}» در "
+                          f"{self.store.WATCHLIST_LABELS.get(wkind, wkind)} "
+                          f"توسط «{cam_name}» دیده شد"
+                          + (f" — یادداشت: {note}" if note else ""))
                 violations.append(self.store.log_violation(
                     vtype, text, camera_id=cam_id, camera_name=cam_name,
                     lane_id=lane_id, detail=detail, snapshot_path=snapshot,
@@ -181,12 +164,11 @@ class PlateDirectionEngine:
             allowed = (lane.get("allowed") or "").strip()
             if allowed in (TRAVEL_GOING, TRAVEL_RETURN) and travel != allowed:
                 lane_name = lane.get("name") or lane_id
-                detail = _dt(
-                    "wrong_way",
-                    crossing=self.store.crossing_label(crossing),
-                    travel=self.store.travel_label(travel),
-                    lane=lane_name,
-                    allowed=self.store.travel_label(allowed))
+                detail = (
+                    f"{self.store.CROSSING_LABELS[crossing]} "
+                    f"({self.store.TRAVEL_LABELS[travel]}) در «{lane_name}» "
+                    f"که فقط جهت «{self.store.TRAVEL_LABELS[allowed]}» مجاز است"
+                )
                 violations.append(self.store.log_violation(
                     "wrong_way", text, camera_id=cam_id, camera_name=cam_name,
                     lane_id=lane_id, detail=detail, snapshot_path=snapshot,

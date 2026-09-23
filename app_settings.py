@@ -19,7 +19,6 @@ _SETTINGS_PATH = os.path.join(_settings_dir(), "app_settings.json")
 
 DEFAULTS = {
     "theme": "dark",      # dark | light | system
-    "language": "fa",     # fa | en
     # (2.0.15-beta به دستور کاربر) ذخیره‌ی امن رمزهای دوربین/NVR بین اجراها
     # با DPAPI ویندوز (credential_vault.py)؛ با False رفتار قبلی برمی‌گردد
     # (رمز هرگز روی دیسک نمی‌ماند و هر بار پرسیده می‌شود).
@@ -39,8 +38,6 @@ def load_settings():
         pass
     if cfg.get("theme") not in ("dark", "light", "system"):
         cfg["theme"] = "dark"
-    if cfg.get("language") not in ("fa", "en"):
-        cfg["language"] = "fa"
     return cfg
 
 
@@ -60,14 +57,4 @@ def get_theme_mode():
 def set_theme_mode(mode):
     cfg = load_settings()
     cfg["theme"] = mode if mode in ("dark", "light", "system") else "dark"
-    save_settings(cfg)
-
-
-def get_language():
-    return load_settings().get("language", "fa")
-
-
-def set_language(lang):
-    cfg = load_settings()
-    cfg["language"] = lang if lang in ("fa", "en") else "fa"
     save_settings(cfg)

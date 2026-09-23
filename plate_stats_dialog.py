@@ -14,9 +14,6 @@ from PyQt6.QtWidgets import (QComboBox, QDateEdit, QDialog, QFileDialog,
                              QHBoxLayout, QLabel, QMessageBox, QPushButton,
                              QVBoxLayout, QWidget)
 
-import i18n
-from plate_library_dialog import _tr
-
 
 class BarChart(QWidget):
     """نمودار میله‌ای ساده: data = لیست (label, value)."""
@@ -44,7 +41,7 @@ class BarChart(QWidget):
         p.drawText(8, 18, self._title)
         if not self._data:
             p.setPen(QColor("#64748b"))
-            p.drawText(8, 44, _tr("no_data"))
+            p.drawText(8, 44, "داده‌ای در این بازه نیست.")
             p.end()
             return
         vals = [v for _l, v in self._data]
@@ -77,9 +74,8 @@ class PlateStatsDialog(QDialog):
     def __init__(self, store, parent=None):
         super().__init__(parent)
         self.store = store
-        self.setWindowTitle(_tr("stats_title"))
+        self.setWindowTitle("📊 آمار تردد پلاک‌ها")
         self.resize(860, 620)
-        i18n.apply_direction(self)
         self._rows = []
         self._build_ui()
         self._reload_lanes()
@@ -88,34 +84,34 @@ class PlateStatsDialog(QDialog):
     def _build_ui(self):
         root = QVBoxLayout(self)
         frow = QHBoxLayout()
-        frow.addWidget(QLabel(_tr("from_date")))
+        frow.addWidget(QLabel("از تاریخ:"))
         self.from_date = QDateEdit(calendarPopup=True)
         self.from_date.setDate(QDate.currentDate().addDays(-7))
         self.from_date.setDisplayFormat("yyyy/MM/dd")
         frow.addWidget(self.from_date)
-        frow.addWidget(QLabel(_tr("to_date")))
+        frow.addWidget(QLabel("تا تاریخ:"))
         self.to_date = QDateEdit(calendarPopup=True)
         self.to_date.setDate(QDate.currentDate())
         self.to_date.setDisplayFormat("yyyy/MM/dd")
         frow.addWidget(self.to_date)
-        frow.addWidget(QLabel(_tr("lane_l")))
+        frow.addWidget(QLabel("مسیر:"))
         self.lane_combo = QComboBox()
         frow.addWidget(self.lane_combo)
-        frow.addWidget(QLabel(_tr("type_l")))
+        frow.addWidget(QLabel("نوع:"))
         self.type_combo = QComboBox()
-        self.type_combo.addItem(_tr("all"), "")
-        self.type_combo.addItem(_tr("role_entry"), "entry")
-        self.type_combo.addItem(_tr("role_exit"), "exit")
+        self.type_combo.addItem("همه", "")
+        self.type_combo.addItem("⬅ ورود", "entry")
+        self.type_combo.addItem("➡ خروج", "exit")
         frow.addWidget(self.type_combo)
-        go = QPushButton(_tr("apply_btn"))
+        go = QPushButton("🔍 اعمال")
         go.clicked.connect(self.refresh)
         frow.addWidget(go)
         frow.addStretch()
         root.addLayout(frow)
 
-        self.hourly = BarChart(_tr("chart_hourly"))
+        self.hourly = BarChart("🕐 توزیع ساعتی عبورها (مجموع بازه)")
         root.addWidget(self.hourly, 1)
-        self.daily = BarChart(_tr("chart_daily"))
+        self.daily = BarChart("📅 عبور روزانه")
         root.addWidget(self.daily, 1)
 
         brow = QHBoxLayout()
@@ -123,17 +119,17 @@ class PlateStatsDialog(QDialog):
         self.summary.setStyleSheet("color:#8fa3b8; font-size:12px;")
         brow.addWidget(self.summary)
         brow.addStretch()
-        csv_btn = QPushButton(_tr("export_csv_btn"))
+        csv_btn = QPushButton("📤 خروجی CSV")
         csv_btn.clicked.connect(self._export_csv)
         brow.addWidget(csv_btn)
-        close_btn = QPushButton(_tr("close_btn"))
+        close_btn = QPushButton("بستن")
         close_btn.clicked.connect(self.accept)
         brow.addWidget(close_btn)
         root.addLayout(brow)
 
     def _reload_lanes(self):
         self.lane_combo.clear()
-        self.lane_combo.addItem(_tr("all_lanes"), "")
+        self.lane_combo.addItem("همه‌ی مسیرها", "")
         try:
             lanes = self.store.get_lanes() or {}
         except Exception:
@@ -150,7 +146,7 @@ class PlateStatsDialog(QDialog):
         try:
             rows = self.store.crossing_stats(df, dt, lid, ctype)
         except Exception as e:
-            QMessageBox.warning(self, _tr("err_title"), _tr("err_read_stats", err=e))
+            QMessageBox.warning(self, "خطا", f"خواندن آمار ناموفق بود:\n{e}")
             return
         self._rows = rows
         # ساعتی: جمع ۲۴ ساعت روی کل بازه
@@ -166,15 +162,16 @@ class PlateStatsDialog(QDialog):
         self.daily.set_data([(d[5:], days[d]) for d in sorted(days)])
         peak_h = max(hours, key=lambda k: hours[k]) if total else "—"
         peak_d = max(days, key=lambda k: days[k]) if total else "—"
-        self.summary.setText(_tr("stats_summary", total=total,
-                                 peak_h=peak_h, peak_d=peak_d))
+        self.summary.setText(
+            f"مجموع عبورها: {total} — شلوغ‌ترین ساعت: {peak_h} — "
+            f"شلوغ‌ترین روز: {peak_d}")
 
     def _export_csv(self):
         if not self._rows:
-            QMessageBox.information(self, _tr("csv_title"), _tr("csv_no_data"))
+            QMessageBox.information(self, "خروجی CSV", "داده‌ای برای خروجی نیست.")
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, _tr("stats_csv_title"), "plate_stats.csv",
+            self, "خروجی CSV آمار تردد", "plate_stats.csv",
             "CSV (*.csv)")
         if not path:
             return
@@ -185,7 +182,7 @@ class PlateStatsDialog(QDialog):
                 for date_g, hour, c in self._rows:
                     w.writerow([date_g, hour, c])
         except Exception as e:
-            QMessageBox.warning(self, _tr("err_title"), _tr("err_save", err=e))
+            QMessageBox.warning(self, "خطا", f"ذخیره ناموفق بود:\n{e}")
             return
-        QMessageBox.information(self, _tr("csv_title"),
-                                _tr("csv_saved", n=len(self._rows)))
+        QMessageBox.information(self, "خروجی CSV",
+                                f"✅ {len(self._rows)} ردیف ذخیره شد.")
