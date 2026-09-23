@@ -164,7 +164,7 @@ class SettingsPage(QWidget):
         self.lang_combo = QComboBox()
         self.lang_combo.addItem("فارسی", "fa")
         self.lang_combo.addItem("English", "en")
-        lidx = self.lang_combo.findData(self._lang)
+        lidx = self.lang_combo.findData(app_settings.get_language())
         if lidx >= 0:
             self.lang_combo.setCurrentIndex(lidx)
         self.lang_combo.currentIndexChanged.connect(self._on_lang_changed)
