@@ -74,6 +74,49 @@ def point_in_sector(px, py, cx, cy, angle_deg, fov_deg, range_scene):
     return abs(diff) <= float(fov_deg) / 2.0 + 1e-9
 
 
+def build_camera_sectors(cameras, to_meter=1.0):
+    """ساخت قطاع دید دوربین‌ها (مشترک برای تحلیل نمونه‌ها و نقاط رسم‌شده).
+
+    cameras: لیست {"name"/"id", "x", "y", "angle", "fov", "view_distance"}
+      که view_distance به «متر» و x/y به واحد صحنه است.
+    """
+    tm = to_meter or 1.0
+    cam_secs = []
+    for cam in cameras or []:
+        cam_secs.append({
+            "name": cam.get("name") or cam.get("id") or "؟",
+            "x": float(cam.get("x", 0.0)),
+            "y": float(cam.get("y", 0.0)),
+            "angle": float(cam.get("angle", 0.0)),
+            "fov": float(cam.get("fov", 90.0)),
+            "range_scene": float(cam.get("view_distance", 8.0)) / tm,
+            "covered": [],
+        })
+    return cam_secs
+
+
+def analyze_waypoint_coverage(waypoints, cam_secs):
+    """پوشش دوربین‌ها روی «نقاط رسم‌شده»ی مسیر (waypointها — همان‌هایی که
+    کاربر برای رسم مسیر گذاشته است).
+
+    waypoints: لیست [(x, y), ...] به واحد صحنه.
+    cam_secs: خروجی build_camera_sectors.
+    خروجی: لیست [{"x","y","index","covered_by":[نام دوربین‌ها]}].
+    """
+    out = []
+    for i, (x, y) in enumerate(waypoints or []):
+        try:
+            px, py = float(x), float(y)
+        except (TypeError, ValueError):
+            continue
+        covering = [c["name"] for c in cam_secs
+                    if point_in_sector(px, py, c["x"], c["y"],
+                                       c["angle"], c["fov"],
+                                       c["range_scene"])]
+        out.append({"x": px, "y": py, "index": i, "covered_by": covering})
+    return out
+
+
 def analyze_lane_coverage(lanes, cameras, to_meter=1.0,
                           step_m=DEFAULT_SAMPLE_STEP_M):
     """تحلیل پوشش دوربین‌ها روی نقاط نمونه‌برداری‌شده‌ی مسیرها.
@@ -89,17 +132,7 @@ def analyze_lane_coverage(lanes, cameras, to_meter=1.0,
        "cameras": [{"name", "covered": [{"lane", "s_m", "x", "y"}]}, ...]}
     """
     tm = to_meter or 1.0
-    cam_secs = []
-    for cam in cameras or []:
-        cam_secs.append({
-            "name": cam.get("name") or cam.get("id") or "؟",
-            "x": float(cam.get("x", 0.0)),
-            "y": float(cam.get("y", 0.0)),
-            "angle": float(cam.get("angle", 0.0)),
-            "fov": float(cam.get("fov", 90.0)),
-            "range_scene": float(cam.get("view_distance", 8.0)) / tm,
-            "covered": [],
-        })
+    cam_secs = build_camera_sectors(cameras, tm)
     lane_results = []
     for lane in lanes or []:
         lane_tm = lane.get("to_meter", tm) or tm

@@ -135,7 +135,10 @@ class DeviceItem(QGraphicsItemGroup):
         self.cb = callbacks
         self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsMovable)
         self.setFlag(QGraphicsItemGroup.GraphicsItemFlag.ItemIsSelectable)
+        self.setFlag(
+            QGraphicsItemGroup.GraphicsItemFlag.ItemSendsGeometryChanges)
         self._press_scene = None
+        self._dragging = False
         self._sector = None
         self._tick = None
         self._build()
@@ -256,6 +259,7 @@ class DeviceItem(QGraphicsItemGroup):
     # پیش‌نمایش مزاحم نشود.
     def mousePressEvent(self, event):
         self._press_scene = event.scenePos()
+        self._dragging = True
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event):
@@ -264,6 +268,20 @@ class DeviceItem(QGraphicsItemGroup):
             cb(self)
         super().mouseDoubleClickEvent(event)
 
+    def itemChange(self, change, value):
+        # (2.0.37-beta) حین درگ، با هر جابه‌جایی موقعیت، پوشش زنده
+        # به‌روز می‌شود (بدون ذخیره در دیتابیس تا ریلیز).
+        if (change == QGraphicsItemGroup.GraphicsItemChange
+                .ItemPositionHasChanged and self._dragging):
+            cbl = self.cb.get("moved_live")
+            if callable(cbl):
+                try:
+                    cbl(self.floor_id, self.device.get("id"),
+                        float(value.x()), float(value.y()))
+                except Exception:
+                    pass
+        return super().itemChange(change, value)
+
     def mouseReleaseEvent(self, event):
         moved = True
         try:
@@ -271,6 +289,7 @@ class DeviceItem(QGraphicsItemGroup):
                 moved = (event.scenePos() - self._press_scene).manhattanLength() > 4
         except Exception:
             pass
+        self._dragging = False
         super().mouseReleaseEvent(event)
         if moved:
             cbm = self.cb.get("moved")
@@ -1148,6 +1167,7 @@ class BuildingMapPage(QWidget):
         for dev in fl.get("devices", []):
             item = DeviceItem(floor_id, dev, to_meter, {
                 "moved": self._on_device_moved,
+                "moved_live": self._on_device_moved_live,
                 "clicked": self._on_device_clicked,
             })
             scene.addItem(item)
@@ -1317,6 +1337,7 @@ class BuildingMapPage(QWidget):
         if entry and dev:
             item = DeviceItem(self.current_floor, dev, entry["to_meter"], {
                 "moved": self._on_device_moved,
+                "moved_live": self._on_device_moved_live,
                 "clicked": self._on_device_clicked,
             })
             entry["scene"].addItem(item)
@@ -1341,6 +1362,29 @@ class BuildingMapPage(QWidget):
         # گزارش زنده‌ی پوشش: با جابه‌جایی دوربین در لحظه به‌روز می‌شود
         # (2.0.21-beta به دستور کاربر).
         self._refresh_coverage_live()
+
+    def _on_device_moved_live(self, floor_id, dev_id, x, y):
+        """به‌روزرسانی زنده‌ی پوشش «حین درگ» دوربین (2.0.37-beta).
+
+        x و y به واحد صحنه‌اند؛ فقط موقعیت نمایشی دوربینِ در حال درگ
+        جایگزین می‌شود و چیزی در دیتابیس ذخیره نمی‌شود (ذخیره موقع
+        ریلیز در _on_device_moved انجام می‌شود). برای سبک ماندن، حداکثر
+        هر ۸۰ میلی‌ثانیه یک‌بار رفرش می‌شود.
+        """
+        try:
+            import time as _time
+            now = _time.monotonic()
+            last = getattr(self, "_live_move_ts", 0.0)
+            if now - last < 0.08:
+                return
+            self._live_move_ts = now
+        except Exception:
+            pass
+        try:
+            self._refresh_coverage_live(
+                cam_override={str(dev_id): (float(x), float(y))})
+        except Exception:
+            pass
 
     def _on_device_clicked(self, item):
         dev = item.device
@@ -2810,12 +2854,15 @@ class BuildingMapPage(QWidget):
             out.append(dict(lane, _id=lid))
         return out
 
-    def _refresh_coverage_live(self):
+    def _refresh_coverage_live(self, cam_override=None):
         """به‌روزرسانی در لحظه‌ی گزارش پوشش.
 
         بعد از هر جابه‌جایی دوربین (_on_device_moved) و هر تغییر مشخصات
         دوربین (_prop_apply) صدا زده می‌شود؛ اگر تحلیل پوشش فعال نباشد یا
         طبقه عوض شده باشد کاری نمی‌کند.
+
+        cam_override: دیکشنری اختیاری {dev_id: (x, y)} به واحد صحنه —
+        برای نمایش زنده‌ی حین درگ، بدون دست‌کاری دیتابیس (2.0.37-beta).
         """
         live = getattr(self, "_coverage_live", None)
         if not live or live.get("floor_id") != self.current_floor:
@@ -2823,7 +2870,9 @@ class BuildingMapPage(QWidget):
         fid = self.current_floor
         try:
             from lane_coverage import (DEFAULT_SAMPLE_STEP_M,
-                                       analyze_lane_coverage)
+                                       analyze_lane_coverage,
+                                       analyze_waypoint_coverage,
+                                       build_camera_sectors)
         except Exception:
             return
         lanes = self._floor_lanes(fid)
@@ -2862,13 +2911,33 @@ class BuildingMapPage(QWidget):
                             "angle": d.get("angle", 0.0),
                             "fov": d.get("fov", 90.0),
                             "view_distance": d.get("view_distance", 8.0)})
+        # جایگزینی زنده‌ی موقعیت دوربینِ در حال درگ (واحد صحنه)
+        if cam_override:
+            for cam in cameras:
+                ov = cam_override.get(str(cam.get("id")))
+                if ov:
+                    cam["x"], cam["y"] = float(ov[0]), float(ov[1])
         result = analyze_lane_coverage(lanes_conv, cameras, to_meter=cur_tm,
                                        step_m=DEFAULT_SAMPLE_STEP_M)
+        # (2.0.37-beta) پوشش «نقاط رسم‌شده»ی هر مسیر — همان‌هایی که کاربر
+        # برای رسم گذاشته؛ همه در حالت پوشش نمایش داده می‌شوند.
+        cam_secs = build_camera_sectors(cameras, cur_tm)
+        for lane_res, lane_c in zip(result.get("lanes", []), lanes_conv):
+            lane_res["waypoints"] = analyze_waypoint_coverage(
+                lane_c.get("points"), cam_secs)
         self._draw_lane_coverage(result)
         self._render_coverage_report(result, DEFAULT_SAMPLE_STEP_M)
 
     def _draw_lane_coverage(self, result):
-        """نقاط نمونه‌برداری‌شده روی نقشه: سبز = دارای پوشش، قرمز = بدون پوشش."""
+        """نقاط روی نقشه در حالت پوشش (2.0.37-beta):
+
+        - نقاط نمونه‌برداری‌شده (هر ۲ متر): دایره‌ی کوچک؛ سبز = دارای
+          پوشش، قرمز = بدون پوشش.
+        - نقاط «رسم‌شده»ی مسیر (waypointها — همان‌هایی که کاربر گذاشته):
+          دایره‌ی بزرگ‌تر با حاشیه‌ی سفید و شماره‌ی نقطه؛ سبز = در دید
+          دوربین، قرمز = خارج از دید. همه‌ی نقاط رسم‌شده همیشه نمایش
+          داده می‌شوند.
+        """
         self._clear_geo_tag("coverage-geo")
         entry = self._build_scene(self.current_floor)
         if not entry:
@@ -2892,6 +2961,41 @@ class BuildingMapPage(QWidget):
                 dot.setZValue(26)
                 dot.setData(0, "coverage-geo")
                 sc.addItem(dot)
+            # نقاط رسم‌شده‌ی مسیر
+            for wp in lane.get("waypoints", []):
+                x, y = wp["x"], wp["y"]
+                covered = bool(wp.get("covered_by"))
+                color = QColor("#16a34a") if covered else QColor("#ef4444")
+                dot = QGraphicsEllipseItem(-9, -9, 18, 18)
+                dot.setPos(x, y)
+                dot.setPen(QPen(QColor("#ffffff"), 2))
+                dot.setBrush(QBrush(color))
+                dot.setFlag(
+                    QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
+                dot.setZValue(27)
+                dot.setData(0, "coverage-geo")
+                try:
+                    cams = "، ".join(wp.get("covered_by") or [])
+                    tip = (f"نقطه‌ی {wp.get('index', 0) + 1} مسیر "
+                           f"«{lane.get('name', '؟')}»\n")
+                    tip += (f"✅ در دید: {cams}" if covered
+                            else "⛔ خارج از دید دوربین‌ها")
+                    dot.setToolTip(tip)
+                except Exception:
+                    pass
+                sc.addItem(dot)
+                num = QGraphicsSimpleTextItem(str(wp.get("index", 0) + 1))
+                num.setPos(x + 10, y - 18)
+                try:
+                    num.setBrush(QBrush(QColor("#ffffff")))
+                except Exception:
+                    pass
+                num.setFlag(
+                    QGraphicsSimpleTextItem.GraphicsItemFlag
+                    .ItemIgnoresTransformations)
+                num.setZValue(28)
+                num.setData(0, "coverage-geo")
+                sc.addItem(num)
 
     def _render_coverage_report(self, result, step_m):
         """نوشتن گزارش پوشش در پنل «گزارش پوشش زنده».
@@ -2908,6 +3012,20 @@ class BuildingMapPage(QWidget):
                 f"🛣 «{lane['name']}»: {len(pts)} نقطه | "
                 f"✅ {len(pts) - len(unc)} با پوشش | "
                 f"⛔ {len(unc)} بدون پوشش")
+            # (2.0.37-beta) خلاصه‌ی نقاط رسم‌شده
+            wps = lane.get("waypoints", []) or []
+            if wps:
+                w_unc = [w for w in wps if not w.get("covered_by")]
+                lines.append(
+                    f"   📍 نقاط رسم‌شده: {len(wps)} نقطه | "
+                    f"✅ {len(wps) - len(w_unc)} در دید دوربین | "
+                    f"⛔ {len(w_unc)} خارج از دید")
+                if w_unc:
+                    nums = "، ".join(
+                        str(w.get("index", 0) + 1) for w in w_unc[:12])
+                    if len(w_unc) > 12:
+                        nums += f" …و {len(w_unc) - 12} نقطه‌ی دیگر"
+                    lines.append(f"   نقاط رسم‌شده‌ی خارج از دید: {nums}")
             if unc:
                 spots = "، ".join(f"{p['s_m']:g}م" for p in unc[:12])
                 if len(unc) > 12:
