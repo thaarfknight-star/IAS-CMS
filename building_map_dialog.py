@@ -280,12 +280,44 @@ class DeviceItem(QGraphicsItemGroup):
 
 
 # ---------------------------------------------------------------------------
+# دستگیره‌ی نقطه‌ی مسیر در حالت ویرایش (2.0.33-beta)
+# ---------------------------------------------------------------------------
+class _LanePointHandle(QGraphicsEllipseItem):
+    """دایره‌ی قابل درگ برای یک نقطه‌ی مسیر؛ با جابه‌جایی، مختصات نقطه
+    در BuildingMapPage._lane_points به‌روز می‌شود."""
+
+    def __init__(self, index, on_moved):
+        super().__init__(-13, -13, 26, 26)
+        self._index = index
+        self._on_moved = on_moved
+        self.setFlag(
+            QGraphicsEllipseItem.GraphicsItemFlag.ItemIsMovable)
+        self.setFlag(
+            QGraphicsEllipseItem.GraphicsItemFlag.ItemSendsGeometryChanges)
+        self.setFlag(
+            QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
+        self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
+
+    def itemChange(self, change, value):
+        if (change == QGraphicsEllipseItem.GraphicsItemChange
+                .ItemPositionHasChanged):
+            cb = self._on_moved
+            if callable(cb):
+                try:
+                    cb(self._index, float(value.x()), float(value.y()))
+                except Exception:
+                    pass
+        return super().itemChange(change, value)
+
+
+# ---------------------------------------------------------------------------
 # ویوی نقشه
 # ---------------------------------------------------------------------------
 class MapView(QGraphicsView):
     place_clicked = pyqtSignal(QPointF)   # کلیک در حالت جای‌گذاری
     mouse_moved = pyqtSignal(QPointF)     # مختصات موس (واحد صحنه)
     lane_click = pyqtSignal(QPointF)       # کلیک تمیز در حالت رسم/انتخاب مسیر
+    lane_double_click = pyqtSignal(QPointF)  # دابل‌کلیک در حالت رسم/ویرایش مسیر
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -297,9 +329,12 @@ class MapView(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.placing = False
-        self.lane_drawing = False  # حالت رسم مسیر / انتخاب دوربین‌های مسیر
+        self.lane_drawing = False  # حالت رسم/ویرایش مسیر / انتخاب دوربین‌های مسیر
         self._pan = None
         self._press_pos = None
+        # بعد از دابل‌کلیک در حالت رسم، ریلیز دوم نباید کلیک جدید ثبت کند
+        # (2.0.33-beta: دابل‌کلیک روی نقطه = حذف آن نقطه)
+        self._suppress_lane_click = False
 
     def wheelEvent(self, event):
         factor = 1.18 if event.angleDelta().y() > 0 else 1 / 1.18
@@ -346,7 +381,11 @@ class MapView(QGraphicsView):
                 self.unsetCursor()
             except Exception:
                 pass
-            if (self._press_pos is not None
+            # (2.0.33-beta) اگر این ریلیزِ بعد از دابل‌کلیک است، کلیک جدید
+            # ثبت نمی‌شود چون دابل‌کلیک خودش نقطه را حذف کرده است.
+            suppressed = self._suppress_lane_click
+            self._suppress_lane_click = False
+            if (not suppressed and self._press_pos is not None
                     and (event.pos() - self._press_pos).manhattanLength() < 5):
                 try:
                     self.lane_click.emit(self.mapToScene(event.pos()))
@@ -379,6 +418,20 @@ class MapView(QGraphicsView):
             except Exception:
                 pass
         super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        # (2.0.33-beta) در حالت رسم/ویرایش مسیر: دابل‌کلیک روی یک نقطه‌ی
+        # رسم‌شده آن نقطه را حذف می‌کند. ریلیزِ بعدی سرکوب می‌شود تا نقطه‌ی
+        # تکراری ثبت نشود (ترتیب رویدادهای Qt: ریلیز، دابل‌کلیک، ریلیز).
+        if self.lane_drawing and event.button() == Qt.MouseButton.LeftButton:
+            self._suppress_lane_click = True
+            try:
+                self.lane_double_click.emit(self.mapToScene(event.pos()))
+            except Exception:
+                pass
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +588,10 @@ class BuildingMapPage(QWidget):
         self._lane_pick = {}      # device_id -> DeviceItem (دوربین‌های انتخاب‌شده)
         self._lane_pick_rings = {}  # device_id -> QGraphicsEllipseItem
         self._lane_selected_id = None  # مسیر انتخاب‌شده در لیست (نمایش روی نقشه)
+        # --- ویرایش مسیر رسم‌شده (2.0.33-beta) ---
+        self._lane_edit_id = None    # شناسه‌ی مسیری که در حال ویرایش است
+        self._lane_edit_path_item = None  # آیتم خط مسیر در حالت ویرایش
+        self._pending_lane_edit = None    # ویرایش معوق بعد از تعویض طبقه
         self._heatmap_on = False  # وضعیت نمایش هیت‌مپ تردد (2.0.18-beta)
         # --- گزارش زنده‌ی پوشش دوربین روی نقاط مسیر (2.0.21-beta) ---
         # وقتی دکمه‌ی «📡 پوشش» زده می‌شود فعال می‌شود و با هر جابه‌جایی یا
@@ -639,19 +696,25 @@ class BuildingMapPage(QWidget):
         lanerow = QHBoxLayout()
         self.lane_del_btn = QPushButton("🗑 حذف")
         self.lane_del_btn.clicked.connect(self._delete_lane)
+        self.lane_edit_btn = QPushButton("✏️ ویرایش")
+        self.lane_edit_btn.setToolTip(
+            "ویرایش نقاط مسیر انتخاب‌شده:\n"
+            "• جابه‌جایی نقطه با درگ\n"
+            "• حذف نقطه با دابل‌کلیک روی آن\n"
+            "• افزودن نقطه با کلیک روی نقشه")
+        self.lane_edit_btn.clicked.connect(self._start_lane_edit)
         self.lane_rules_btn = QPushButton("❓ قوانین")
         self.lane_rules_btn.clicked.connect(self._show_lane_rules)
         lanerow.addWidget(self.lane_del_btn)
+        lanerow.addWidget(self.lane_edit_btn)
         lanerow.addWidget(self.lane_rules_btn)
         ll.addLayout(lanerow)
-        # ابزارهای مسیر (2.0.18-beta): شبیه‌سازی، پوشش، هیت‌مپ
-        # عمودی (نه افقی ۳تایی): ردیف افقی با فونت‌های پهن از عرض ۲۷۲ پیکسل
+        # ابزارهای مسیر: پوشش، هیت‌مپ
+        # (شبیه‌سازی در 2.0.33-beta به دستور کاربر کاملاً حذف شد)
+        # عمودی (نه افقی): ردیف افقی با فونت‌های پهن از عرض ۲۷۲ پیکسل
         # پنل بیشتر می‌شد و عنوان‌های بخش‌ها از چپ بریده می‌شدند.
         ltoolbox = QVBoxLayout()
         ltoolbox.setSpacing(4)
-        self.lane_sim_btn = QPushButton("▶️ شبیه‌سازی")
-        self.lane_sim_btn.setToolTip("شبیه‌سازی حرکت خودرو روی مسیر انتخاب‌شده")
-        self.lane_sim_btn.clicked.connect(self._start_lane_sim)
         self.coverage_btn = QPushButton("📡 پوشش")
         self.coverage_btn.setToolTip(
             "تحلیل زنده‌ی پوشش دوربین روی نقاط مسیر: کدام نقاط مسیر "
@@ -662,7 +725,6 @@ class BuildingMapPage(QWidget):
             "نمایش پرترددترین مسیرها با رنگ روی نقشه")
         self.heatmap_btn.setCheckable(True)
         self.heatmap_btn.clicked.connect(self._toggle_heatmap)
-        ltoolbox.addWidget(self.lane_sim_btn)
         ltoolbox.addWidget(self.coverage_btn)
         ltoolbox.addWidget(self.heatmap_btn)
         ll.addLayout(ltoolbox)
@@ -723,6 +785,8 @@ class BuildingMapPage(QWidget):
             "border-radius:8px;")
         self._lane_bar.hide()
         self.view.lane_click.connect(self._on_lane_click)
+        # (2.0.33-beta) دابل‌کلیک روی نقطه‌ی رسم‌شده = حذف آن نقطه
+        self.view.lane_double_click.connect(self._on_lane_double_click)
         self.view.installEventFilter(self)
         coord_row = QHBoxLayout()
         self.coord_label = QLabel("X: — ، Y: —")
@@ -1147,6 +1211,17 @@ class BuildingMapPage(QWidget):
                     self._show_lane(self._lane_selected_id)
             except Exception:
                 pass
+        # ویرایش معوق مسیر بعد از تعویض طبقه (2.0.33-beta)
+        pending = self._pending_lane_edit
+        self._pending_lane_edit = None
+        if pending:
+            try:
+                _lane2 = plate_store.get_lanes().get(pending) or {}
+            except Exception:
+                _lane2 = {}
+            if ((_lane2.get("floor_id") or "") == floor_id
+                    and len(_lane2.get("points") or []) >= 2):
+                self._begin_lane_edit(pending, _lane2)
 
     def _fit_current(self):
         sc = self.view.scene()
@@ -1252,6 +1327,11 @@ class BuildingMapPage(QWidget):
             self._sync_camera_floor(dev["ref_id"], self.current_floor)
         # در حالت جای‌گذاری می‌مانیم تا چند تجهیز پشت سر هم بگذاریم
         self._update_zoom_label()
+        # (2.0.33-beta) پوشش زنده بعد از افزودن تجهیز به‌روز می‌شود
+        try:
+            self._refresh_coverage_live()
+        except Exception:
+            pass
 
     def _on_device_moved(self, floor_id, dev_id, x, y):
         # x و y به واحد صحنه می‌آیند؛ ذخیره‌سازی متری است (2.0.23-beta).
@@ -1428,6 +1508,11 @@ class BuildingMapPage(QWidget):
             entry["scene"].removeItem(item)
             entry["items"].pop(item.device["id"], None)
         self._refresh_prop_panel()
+        # (2.0.33-beta) پوشش زنده بعد از حذف تجهیز به‌روز می‌شود
+        try:
+            self._refresh_coverage_live()
+        except Exception:
+            pass
 
     def _update_zoom_label(self):
         try:
@@ -1975,6 +2060,9 @@ class BuildingMapPage(QWidget):
         "۳) دوربین باید نقش پلاکی (ورود/خروج) داشته باشد.\n"
         "۴) هر دوربین فقط عضو یک مسیر است؛ اتصال به مسیر جدید، اتصال قبلی را قطع می‌کند.\n"
         "۵) ترتیب دوربین‌ها از ابتدای مسیر محاسبه و برای تشخیص «حرکت معکوس» استفاده می‌شود.\n"
+        "۶) هنگام رسم، دابل‌کلیک روی یک نقطه آن نقطه را حذف می‌کند.\n"
+        "۷) با دکمه‌ی «✏️ ویرایش» می‌توانید نقاط مسیر ذخیره‌شده را جابه‌جا کنید "
+        "(درگ)، حذف کنید (دابل‌کلیک) یا نقطه‌ی جدید اضافه کنید.\n"
         "\nقوانین موتور تردد:\n"
         "الف) خروج بدون ورود ثبت‌شده ← تخلف\n"
         "ب) ورود مجدد بدون خروج قبلی ← تخلف (بدون اغماض)\n"
@@ -1996,6 +2084,7 @@ class BuildingMapPage(QWidget):
         self._stop_placing()
         self._cancel_lane_mode(silent=True)
         self._lane_mode = "draw"
+        self._lane_edit_id = None
         self._lane_points = []
         self.view.lane_drawing = True
         self.view.setCursor(QCursor(Qt.CursorShape.CrossCursor))
@@ -2005,13 +2094,16 @@ class BuildingMapPage(QWidget):
         if not self._lane_mode and not self.view.lane_drawing:
             return
         self._lane_mode = None
+        self._lane_edit_id = None
+        self._lane_edit_path_item = None
+        self._pending_lane_edit = None
         self._lane_points = []
         self.view.lane_drawing = False
         self.view.unsetCursor()
         for entry in self.scenes.values():
             for it in list(entry["scene"].items()):
                 try:
-                    if it.data(0) in ("lane-draw", "lane-pick"):
+                    if it.data(0) in ("lane-draw", "lane-edit", "lane-pick"):
                         entry["scene"].removeItem(it)
                 except Exception:
                     pass
@@ -2040,8 +2132,17 @@ class BuildingMapPage(QWidget):
         if self._lane_mode == "draw":
             n = len(self._lane_points)
             self._lane_bar_label.setText(
-                f"🖊 نقطه‌ی {n + 1} — روی نقشه کلیک کنید (حداقل ۲ نقطه)")
+                f"🖊 نقطه‌ی {n + 1} — روی نقشه کلیک کنید (حداقل ۲ نقطه)\n"
+                "دابل‌کلیک روی نقطه = حذف آن نقطه")
             self._lane_bar_confirm.setText("✅ تأیید مسیر")
+            self._lane_bar_confirm.setEnabled(n >= 2)
+        elif self._lane_mode == "edit":
+            n = len(self._lane_points)
+            self._lane_bar_label.setText(
+                f"✏️ ویرایش مسیر ({n} نقطه)\n"
+                "کلیک: افزودن نقطه | درگ نقطه: جابه‌جایی | "
+                "دابل‌کلیک نقطه: حذف")
+            self._lane_bar_confirm.setText("💾 ذخیره تغییرات")
             self._lane_bar_confirm.setEnabled(n >= 2)
         elif self._lane_mode == "pick":
             n = len(self._lane_pick)
@@ -2057,19 +2158,54 @@ class BuildingMapPage(QWidget):
     def _on_lane_bar_confirm(self):
         if self._lane_mode == "draw":
             self._confirm_lane_points()
+        elif self._lane_mode == "edit":
+            self._save_lane_edit()
         elif self._lane_mode == "pick":
             self._save_lane()
 
-    # -- کلیک‌های رسم/انتخاب --
+    def _lane_point_near(self, scene_pos, px=14):
+        """نزدیک‌ترین نقطه‌ی رسم‌شده به موقعیت صحنه (آستانه به پیکسل صفحه).
+
+        خروجی: ایندکس نقطه یا None. (2.0.33-beta)
+        """
+        if not self._lane_points:
+            return None
+        try:
+            scale = abs(self.view.transform().m11()) or 1.0
+        except Exception:
+            scale = 1.0
+        tol = px / max(scale, 1e-6)
+        best, best_d = None, None
+        for i, (x, y) in enumerate(self._lane_points):
+            d = math.hypot(x - scene_pos.x(), y - scene_pos.y())
+            if d <= tol and (best_d is None or d < best_d):
+                best, best_d = i, d
+        return best
+
+    # -- کلیک‌های رسم/ویرایش/انتخاب --
     def _on_lane_click(self, scene_pos):
-        if self._lane_mode == "draw":
+        if self._lane_mode in ("draw", "edit"):
             if (self.current_floor or "") not in self.scenes:
+                return
+            # (2.0.33-beta) کلیکِ روی نقطه‌ی موجود، نقطه‌ی تکراری نمی‌سازد
+            if self._lane_point_near(scene_pos) is not None:
                 return
             self._lane_points.append((scene_pos.x(), scene_pos.y()))
             self._redraw_lane_preview()
             self._update_lane_bar()
         elif self._lane_mode == "pick":
             self._toggle_pick_camera(scene_pos)
+
+    def _on_lane_double_click(self, scene_pos):
+        """دابل‌کلیک روی یک نقطه‌ی رسم‌شده = حذف آن نقطه (2.0.33-beta)."""
+        if self._lane_mode not in ("draw", "edit"):
+            return
+        idx = self._lane_point_near(scene_pos)
+        if idx is None:
+            return
+        del self._lane_points[idx]
+        self._redraw_lane_preview()
+        self._update_lane_bar()
 
     def _redraw_lane_preview(self):
         entry = self.scenes.get(self.current_floor)
@@ -2078,12 +2214,15 @@ class BuildingMapPage(QWidget):
         sc = entry["scene"]
         for it in list(sc.items()):
             try:
-                if it.data(0) == "lane-draw":
+                if it.data(0) in ("lane-draw", "lane-edit"):
                     sc.removeItem(it)
             except Exception:
                 pass
+        self._lane_edit_path_item = None
         pts = self._lane_points
-        if len(pts) >= 2:
+        is_edit = self._lane_mode == "edit"
+        tag = "lane-edit" if is_edit else "lane-draw"
+        if not is_edit and len(pts) >= 2:
             path = QPainterPath()
             path.moveTo(pts[0][0], pts[0][1])
             for x, y in pts[1:]:
@@ -2096,28 +2235,89 @@ class BuildingMapPage(QWidget):
             line.setZValue(23)
             line.setData(0, "lane-draw")
             sc.addItem(line)
+        if is_edit:
+            # خط مسیر جدا نگه داشته می‌شود تا با درگ دستگیره فقط خط
+            # به‌روز شود و درگ قطع نشود (2.0.33-beta)
+            self._redraw_lane_edit_path()
         for i, (x, y) in enumerate(pts, 1):
-            badge = QGraphicsEllipseItem(-13, -13, 26, 26)
-            badge.setPos(x, y)
-            badge.setPen(QPen(QColor("#fbbf24"), 2))
-            badge.setBrush(QBrush(QColor("#451a03")))
-            badge.setFlag(
-                QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
-            badge.setZValue(24)
-            badge.setData(0, "lane-draw")
-            sc.addItem(badge)
-            num = QGraphicsSimpleTextItem(str(i))
-            f = QFont()
-            f.setBold(True)
-            f.setPointSize(10)
-            num.setFont(f)
-            num.setBrush(QBrush(QColor("#fde68a")))
-            num.setPos(x - 5, y - 10)
-            num.setFlag(
-                QGraphicsSimpleTextItem.GraphicsItemFlag.ItemIgnoresTransformations)
-            num.setZValue(25)
-            num.setData(0, "lane-draw")
-            sc.addItem(num)
+            if is_edit:
+                badge = _LanePointHandle(i - 1, self._on_lane_handle_moved)
+                badge.setPos(x, y)
+                badge.setPen(QPen(QColor("#fbbf24"), 2))
+                badge.setBrush(QBrush(QColor("#451a03")))
+                badge.setZValue(24)
+                badge.setData(0, "lane-edit")
+                sc.addItem(badge)
+                # شماره‌ی نقطه فرزند دستگیره است تا با درگ جابه‌جا شود
+                num = QGraphicsSimpleTextItem(str(i), badge)
+                f = QFont()
+                f.setBold(True)
+                f.setPointSize(10)
+                num.setFont(f)
+                num.setBrush(QBrush(QColor("#fde68a")))
+                num.setPos(-5, -10)
+                num.setZValue(1)
+            else:
+                badge = QGraphicsEllipseItem(-13, -13, 26, 26)
+                badge.setPos(x, y)
+                badge.setPen(QPen(QColor("#fbbf24"), 2))
+                badge.setBrush(QBrush(QColor("#451a03")))
+                badge.setFlag(
+                    QGraphicsEllipseItem.GraphicsItemFlag.ItemIgnoresTransformations)
+                badge.setZValue(24)
+                badge.setData(0, "lane-draw")
+                sc.addItem(badge)
+                num = QGraphicsSimpleTextItem(str(i))
+                f = QFont()
+                f.setBold(True)
+                f.setPointSize(10)
+                num.setFont(f)
+                num.setBrush(QBrush(QColor("#fde68a")))
+                num.setPos(x - 5, y - 10)
+                num.setFlag(
+                    QGraphicsSimpleTextItem.GraphicsItemFlag.ItemIgnoresTransformations)
+                num.setZValue(25)
+                num.setData(0, tag)
+                sc.addItem(num)
+
+    def _redraw_lane_edit_path(self):
+        """به‌روزرسانی فقط خط مسیر در حالت ویرایش؛ دستگیره‌ها دست نمی‌خورند
+        تا درگ نقطه قطع نشود (2.0.33-beta)."""
+        entry = self.scenes.get(self.current_floor)
+        pts = self._lane_points
+        if not entry or len(pts) < 2:
+            if self._lane_edit_path_item is not None:
+                try:
+                    entry["scene"].removeItem(self._lane_edit_path_item)
+                except Exception:
+                    pass
+            self._lane_edit_path_item = None
+            return
+        sc = entry["scene"]
+        path = QPainterPath()
+        path.moveTo(pts[0][0], pts[0][1])
+        for x, y in pts[1:]:
+            path.lineTo(x, y)
+        item = self._lane_edit_path_item
+        if item is None:
+            item = QGraphicsPathItem()
+            pen = QPen(QColor("#fbbf24"), 0)
+            pen.setCosmetic(True)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            item.setPen(pen)
+            item.setZValue(23)
+            item.setData(0, "lane-edit")
+            sc.addItem(item)
+            self._lane_edit_path_item = item
+        item.setPath(path)
+
+    def _on_lane_handle_moved(self, index, x, y):
+        """جابه‌جایی دستگیره‌ی نقطه در حالت ویرایش (2.0.33-beta)."""
+        if self._lane_mode != "edit":
+            return
+        if 0 <= index < len(self._lane_points):
+            self._lane_points[index] = (x, y)
+            self._redraw_lane_edit_path()
 
     def _confirm_lane_points(self):
         ok, msg = validate_lane_points(self._lane_points)
@@ -2268,6 +2468,11 @@ class BuildingMapPage(QWidget):
         self._cancel_lane_mode()
         self._reload_lane_list(select_id=lid)
         self._show_lane(lid)
+        # (2.0.33-beta) پوشش زنده بعد از ذخیره‌ی مسیر به‌روز می‌شود
+        try:
+            self._refresh_coverage_live()
+        except Exception:
+            pass
         QMessageBox.information(
             self, "ذخیره شد",
             f"مسیر «{name}» با {len(cams_xy)} دوربین ذخیره و به پلاک‌خوان اضافه شد.")
@@ -2417,6 +2622,101 @@ class BuildingMapPage(QWidget):
             num.setData(0, "lane-geo")
             sc.addItem(num)
 
+    # -- ویرایش مسیر رسم‌شده (2.0.33-beta) --
+    def _start_lane_edit(self):
+        """ویرایش مسیر رسم‌شده‌ی انتخاب‌شده از لیست."""
+        item = self.lane_list.currentItem()
+        if item is None:
+            QMessageBox.information(self, "ویرایش مسیر",
+                                    "اول یک مسیر را از لیست انتخاب کنید.")
+            return
+        lid = item.data(Qt.ItemDataRole.UserRole)
+        try:
+            lane = plate_store.get_lanes().get(lid) or {}
+        except Exception:
+            lane = {}
+        pts = lane.get("points") or []
+        fid = (lane.get("floor_id") or "").strip()
+        if len(pts) < 2 or not fid:
+            QMessageBox.information(
+                self, "ویرایش مسیر",
+                "این مسیر روی نقشه رسم نشده و قابل ویرایش نیست.")
+            return
+        if fid != (self.current_floor or ""):
+            # اول به طبقه‌ی مسیر می‌رویم؛ ویرایش بعد از فعال‌سازی شروع می‌شود
+            self._pending_lane_edit = lid
+            self._select_floor(fid)
+            return
+        self._begin_lane_edit(lid, lane)
+
+    def _begin_lane_edit(self, lane_id, lane):
+        """شروع واقعی حالت ویرایش روی طبقه‌ی فعلی."""
+        self._stop_placing()
+        self._cancel_lane_mode(silent=True)
+        self._lane_edit_id = lane_id
+        self._lane_mode = "edit"
+        self._lane_points = [(float(p[0]), float(p[1]))
+                             for p in (lane.get("points") or [])]
+        self.view.lane_drawing = True
+        self.view.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+        self._redraw_lane_preview()
+        self._update_lane_bar()
+
+    def _save_lane_edit(self):
+        """ذخیره‌ی تغییرات ویرایش روی همان مسیر (بدون ساخت مسیر جدید)."""
+        lid = self._lane_edit_id
+        if not lid or self._lane_mode != "edit":
+            return
+        if len(self._lane_points) < 2:
+            QMessageBox.warning(self, "ویرایش مسیر",
+                                "مسیر باید حداقل ۲ نقطه داشته باشد.")
+            return
+        try:
+            lanes = plate_store.get_lanes()
+        except Exception:
+            lanes = {}
+        lane = lanes.get(lid)
+        if lane is None:
+            QMessageBox.warning(self, "ویرایش مسیر",
+                                "این مسیر دیگر وجود ندارد.")
+            return
+        # ترتیب دوربین‌ها را از روی نقطه‌های جدید بازمحاسبه می‌کنیم؛
+        # نقش (ورود/خروج) دوربین‌هایی که هنوز نزدیک‌اند حفظ می‌شود
+        old_cams = lane.get("cameras") or []
+        if old_cams:
+            floor_id = ((lane.get("floor_id") or "").strip()
+                        or self.current_floor)
+            near = self._lane_cameras_near(
+                [(p[0], p[1]) for p in self._lane_points], floor_id,
+                max_dist_m=5.0)
+            order = self._order_cameras_along(
+                self._lane_points, [c[0] for c in near], self._to_meter)
+            old_role = {c.get("camera_id"): c.get("role", "in")
+                        for c in old_cams if isinstance(c, dict)}
+            cameras = [{"camera_id": cid, "order": idx,
+                        "role": old_role.get(cid, "in")}
+                       for idx, cid in enumerate(order, 1)]
+        else:
+            cameras = []
+        lane["points"] = [[float(x), float(y)]
+                          for x, y in self._lane_points]
+        lane["cameras"] = cameras
+        lanes[lid] = lane
+        try:
+            plate_store.set_lanes(lanes)
+        except Exception as e:
+            QMessageBox.warning(self, "ویرایش مسیر",
+                                f"ذخیره ناموفق بود:\n{e}")
+            return
+        self._cancel_lane_mode(silent=True)
+        self._reload_lane_list()
+        # پوشش زنده با هندسه‌ی جدید به‌روز می‌شود
+        try:
+            self._refresh_coverage_live()
+        except Exception:
+            pass
+        QMessageBox.information(self, "ویرایش مسیر", "تغییرات مسیر ذخیره شد ✅")
+
     def _delete_lane(self):
         item = self.lane_list.currentItem()
         if item is None:
@@ -2453,66 +2753,13 @@ class BuildingMapPage(QWidget):
             self._lane_selected_id = None
         self._clear_lane_geo()
         self._reload_lane_list()
-
-    # ================= شبیه‌سازی / پوشش / هیت‌مپ (2.0.18-beta) ==============
-
-    def _lane_camera_positions(self, lane, fid):
-        """موقعیت صحنه‌ی دوربین‌های یک مسیر: ({id: (x,y)}, {id: name})."""
-        entry = self._build_scene(fid)
-        tm = (entry or {}).get("to_meter") or 1.0
-        xy, names = {}, {}
-        for c in (lane.get("cameras") or []):
-            cid = str(c.get("camera_id"))
-            try:
-                for _fl, dev in self.store.devices_by_camera(cid):
-                    if _fl.get("id") == fid:
-                        xy[cid] = device_scene_xy(dev, tm)
-                        names[cid] = dev.get("name") or cid
-                        break
-            except Exception:
-                continue
-        return xy, names
-
-    def _start_lane_sim(self):
-        """شبیه‌سازی حرکت خودرو روی مسیر انتخاب‌شده."""
-        item = self.lane_list.currentItem()
-        if item is None:
-            QMessageBox.information(self, "شبیه‌سازی",
-                                    "اول یک مسیر را از لیست انتخاب کنید.")
-            return
-        lid = item.data(Qt.ItemDataRole.UserRole)
+        # (2.0.33-beta) پوشش زنده بعد از حذف مسیر به‌روز می‌شود
         try:
-            lane = plate_store.get_lanes().get(lid) or {}
+            self._refresh_coverage_live()
         except Exception:
-            lane = {}
-        pts = lane.get("points") or []
-        if len(pts) < 2:
-            QMessageBox.information(self, "شبیه‌سازی",
-                                    "این مسیر نقطه‌ی کافی برای شبیه‌سازی ندارد.")
-            return
-        fid = (lane.get("floor_id") or "").strip()
-        # (2.0.23-beta) نقاط مسیر با واحد صحنه‌ی زمان رسم ذخیره شده‌اند؛
-        # اگر نقشه بعداً با مقیاس متفاوت جایگزین شده باشد، به مقیاس جاری
-        # تبدیل می‌شوند تا با موقعیت دوربین‌ها هم‌خوان باشند.
-        entry = self._build_scene(fid) if fid else None
-        cur_tm = (entry or {}).get("to_meter") or 1.0
-        lane_tm = float(lane.get("to_meter") or 1.0)
-        if lane_tm != cur_tm:
-            ratio = lane_tm / cur_tm
-            lane = dict(lane,
-                        points=[[float(x) * ratio, float(y) * ratio]
-                                for x, y in pts],
-                        to_meter=cur_tm)
-            pts = lane["points"]
-        xy, names = self._lane_camera_positions(lane, fid)
-        try:
-            from lane_simulator import LaneSimDialog
-        except Exception as e:
-            QMessageBox.warning(self, "خطا",
-                                f"باز کردن شبیه‌ساز ناموفق بود:\n{e}")
-            return
-        dlg = LaneSimDialog(lane, xy, names, self)
-        dlg.exec()
+            pass
+
+    # ============================ پوشش / هیت‌مپ ============================
 
     def _clear_geo_tag(self, tag):
         for entry in self.scenes.values():

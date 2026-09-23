@@ -102,13 +102,11 @@ from plate_store import PlateStore, normalize_plate_text
 
 fresh = PlateStore(db_path=os.path.join(TMP, "fresh.db"))
 lanes = fresh.get_lanes()
-check("default lane1 going", lanes.get("lane1", {}).get("allowed") == "going" and
-      lanes["lane1"]["name"] == "مسیر ۱")
-check("default lane2 return", lanes.get("lane2", {}).get("allowed") == "return" and
-      lanes["lane2"]["name"] == "مسیر ۲")
-# ماندگاری پیش‌فرض‌ها
+# (2.0.33-beta به دستور کاربر) مسیر پیش‌فرضی ساخته نمی‌شود
+check("no default lanes", lanes == {})
+# ماندگاری: دیتابیس خالی، خالی می‌ماند
 again = PlateStore(db_path=os.path.join(TMP, "fresh.db"))
-check("defaults persisted", set(again.get_lanes()) == {"lane1", "lane2"})
+check("empty persisted", again.get_lanes() == {})
 check("no reentry_grace_seconds", not hasattr(fresh, "reentry_grace_seconds"))
 
 lane_geo = {"name": "مسیر A", "allowed": "going", "floor_id": "f1",

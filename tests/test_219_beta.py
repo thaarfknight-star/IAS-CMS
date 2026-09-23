@@ -17,6 +17,11 @@ fr.face_encodings = lambda *a, **k: []
 fr.face_locations = lambda *a, **k: []
 sys.modules["face_recognition"] = fr
 
+_cv2 = types.ModuleType("cv2")
+_cv2.resize = lambda *a, **k: a[0] if a else None
+_cv2.imwrite = lambda *a, **k: True
+sys.modules["cv2"] = _cv2
+
 passed = []
 failed = []
 
@@ -93,14 +98,16 @@ inner = scrolls[0].widget()
 check("map left panel is RTL",
       inner.layoutDirection() == Qt.LayoutDirection.RightToLeft)
 
-# هر سه دکمه‌ی ابزار مسیر باید داخل یک QVBoxLayout باشند (عمودی)
-for attr, text in (("lane_sim_btn", "▶️ شبیه‌سازی"),
-                   ("coverage_btn", "📡 پوشش"),
+# هر دو دکمه‌ی ابزار مسیر باید داخل یک QVBoxLayout باشند (عمودی)
+# (2.0.33-beta: شبیه‌سازی حذف شد)
+for attr, text in (("coverage_btn", "📡 پوشش"),
                    ("heatmap_btn", "🔥 هیت‌مپ")):
     btn = getattr(page, attr, None)
     check(f"map tool button {attr} exists with text",
           btn is not None and btn.text() == text)
-btns = {page.lane_sim_btn, page.coverage_btn, page.heatmap_btn}
+check("lane_sim_btn removed", getattr(page, "lane_sim_btn", None) is None)
+check("no _start_lane_sim", not hasattr(page, "_start_lane_sim"))
+btns = {page.coverage_btn, page.heatmap_btn}
 stacked = False
 for lay in page.findChildren(QVBoxLayout):
     widgets = {lay.itemAt(i).widget()

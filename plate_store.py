@@ -822,10 +822,10 @@ class PlateStore:
     def get_lanes(self):
         """تعریف مسیرها: {lane_id: {"name", "allowed", ...}}.
 
-        (2.0.17-beta) اگر دیتابیس خالی باشد، دو مسیر پیش‌فرض ساخته و ذخیره
-        می‌شود: «مسیر ۱» فقط رفت و «مسیر ۲» فقط برگشت.
-        رکورد مسیر رسم‌شده روی نقشه این کلیدها را هم دارد:
-        floor_id, points ([[x,y],...] به واحد صحنه), to_meter,
+        (2.0.33-beta به دستور کاربر) مسیر پیش‌فرضی ساخته نمی‌شود؛ اگر
+        چیزی ذخیره نشده باشد دیکشنری خالی برمی‌گردد. رکورد مسیر
+        رسم‌شده روی نقشه این کلیدها را هم دارد: floor_id,
+        points ([[x,y],...] به واحد صحنه), to_meter,
         cameras ([{"camera_id", "order"}] مرتب‌شده از ابتدای مسیر).
         """
         try:
@@ -835,15 +835,6 @@ class PlateStore:
                 lanes = {}
         except Exception:
             lanes = {}
-        if not lanes:
-            lanes = {
-                "lane1": {"name": "مسیر ۱", "allowed": "going"},
-                "lane2": {"name": "مسیر ۲", "allowed": "return"},
-            }
-            try:
-                self.set_lanes(lanes)
-            except Exception:
-                pass
         return lanes
 
     def set_lanes(self, lanes):

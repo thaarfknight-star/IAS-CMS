@@ -6,7 +6,8 @@
 ۴) plate_direction: هوک لیست سیاه/سفید -> تخلف + بوق.
 ۵) map_coverage: analyze_coverage + fallback استخراج درها بدون ezdxf.
 ۶) رنگ هیت‌مپ: سبز -> زرد -> قرمز.
-۷) اسموک آفسکرین: LaneSimDialog، PlateStatsDialog، تب لیست تحت‌نظر.
+۷) اسموک آفسکرین: PlateStatsDialog، تب لیست تحت‌نظر.
+(شبیه‌ساز مسیر در 2.0.33-beta به دستور کاربر حذف شد.)
 """
 import os
 import sys
@@ -270,32 +271,6 @@ check("heat clamp", BuildingMapPage._heat_color(5.0) == c1 and
       BuildingMapPage._heat_color(-1.0) == c0)
 
 # ============================================ ۷) اسموک آفسکرین ==
-from lane_simulator import LaneSimDialog
-
-lane = {"name": "مسیر تست", "allowed": "going", "floor_id": "f1",
-        "points": [[0, 0], [100, 0]], "to_meter": 1.0,
-        "cameras": [{"camera_id": "c1", "order": 0},
-                    {"camera_id": "c2", "order": 1}]}
-xy = {"c1": (20, 0), "c2": (80, 0)}
-dlg = LaneSimDialog(lane, xy, {"c1": "دوربین ۱", "c2": "دوربین ۲"})
-check("sim dialog builds", dlg is not None)
-dlg._advance(25.0)
-check("sim dot moves", abs(dlg._dist - 25.0) < 1e-9)
-check("sim cam1 passed", dlg._cams[0]["passed"] is True)
-check("sim cam2 not passed", dlg._cams[1]["passed"] is False)
-dlg._advance(60.0)
-check("sim cam2 passed", dlg._cams[1]["passed"] is True)
-check("sim log lines", "دوربین ۲" in dlg.log.toPlainText())
-dlg._reset()
-check("sim reset", abs(dlg._dist) < 1e-9 and
-      all(not c["passed"] for c in dlg._cams))
-# جهت برگشت: از انتها شروع می‌کند
-lane_r = dict(lane, allowed="return")
-dlg2 = LaneSimDialog(lane_r, xy)
-check("sim return starts at end", abs(dlg2._dist - 100.0) < 1e-9)
-dlg.close()
-dlg2.close()
-
 from plate_stats_dialog import PlateStatsDialog, BarChart
 
 stats = PlateStatsDialog(store)
