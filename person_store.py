@@ -70,7 +70,13 @@ class PersonStore:
         self.snap_dir = os.path.join(os.path.dirname(self.db_path), "snapshots")
         os.makedirs(self.snap_dir, exist_ok=True)
         self._lock = threading.Lock()
+        try:
+            from db_maintenance import tune_connection
+        except Exception:
+            tune_connection = None
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        if tune_connection is not None:
+            tune_connection(self._conn)
         self._conn.row_factory = sqlite3.Row
         self._ensure_schema()
         # بستن حضورهای بازمانده از اجرای قبلی (مثلاً با کرش/بستن ناگهانی):

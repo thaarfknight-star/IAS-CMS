@@ -121,7 +121,13 @@ class ReportStore:
         # فراخوانی یک اتصال کوتاه‌عمر جدید باز/بسته می‌کند (سربار SQLite
         # برای این حجم رویداد ناچیز است) تا نیازی به قفل سراسری بین
         # تردهای مختلف نباشد.
-        return sqlite3.connect(self.db_path, check_same_thread=False)
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        try:
+            from db_maintenance import tune_connection
+            tune_connection(conn)
+        except Exception:
+            pass
+        return conn
 
     def _init_db(self):
         try:

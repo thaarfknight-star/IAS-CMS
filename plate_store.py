@@ -254,6 +254,11 @@ class PlateStore:
         os.makedirs(self.snapshot_dir, exist_ok=True)
         self.db_path = db_path or os.path.join(base, "plates.db")
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        try:
+            from db_maintenance import tune_connection
+            tune_connection(self._conn)
+        except Exception:
+            pass
         self._conn.row_factory = sqlite3.Row
         self._create_tables()
         self._plates_cache = None  # کش لیست پلاک‌های فعال برای تطبیق سریع در ترد تشخیص

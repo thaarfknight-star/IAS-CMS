@@ -1376,6 +1376,13 @@ class CameraStreamThread(QThread):
         import time as _time
         frame_counter = 0
         fail_streak = 0
+        # (2.0.35-beta - پایداری تحویل) نگهبان سبک حافظه: جلوگیری از رشد
+        # تدریجی مصرف RAM در پخش طولانی (مهم برای سیستم ۴GB کارفرما).
+        try:
+            from db_maintenance import MemoryGuard
+            _mem_guard = MemoryGuard(every_frames=600)
+        except Exception:
+            _mem_guard = None
         last_ok_ts = _time.monotonic()
         self._stats_window_start = last_ok_ts
         self._stats_frames = 0
@@ -1394,6 +1401,8 @@ class CameraStreamThread(QThread):
 
             frame_counter += 1
             fail_streak = 0
+            if _mem_guard is not None:
+                _mem_guard.note_frame()
             last_ok_ts = _time.monotonic()
             self._note_frame(frame)
 

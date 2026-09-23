@@ -4447,6 +4447,14 @@ if __name__ == "__main__":
         migrate_legacy_data()
     except Exception:
         pass
+    # (2.0.35-beta - پایداری تحویل) بکاپ روزانه‌ی خودکار دیتابیس‌ها؛
+    # فقط یک‌بار در روز و فقط ۷ بکاپ آخر نگه داشته می‌شود.
+    try:
+        from app_paths import get_data_dir
+        from db_maintenance import run_startup_maintenance
+        run_startup_maintenance(get_data_dir())
+    except Exception:
+        pass
     # (2.0.15-beta - پایداری) تور امنیت سراسری: هر استثنای مهارنشده در
     # ترد اصلی (اسلات‌ها/هندلرهای رویداد) یا تردهای پس‌زمینه، به‌جای بستن
     # ناگهانی برنامه («Close Program») در فایل crash.log ثبت می‌شود و
