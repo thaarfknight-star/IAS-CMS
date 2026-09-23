@@ -51,8 +51,12 @@ def test_no_custom_installer_page():
 
 def test_persian_language():
     src = _installer_part(_read())
-    assert '!insertmacro MUI_LANGUAGE "Persian"' in src, \
+    # نام رسمی زبان فارسی در NSIS «Farsi» است؛ «Persian» فایل nlf ندارد
+    # و بیلد را می‌شکاند (رفع‌شده در 2.0.37-beta).
+    assert '!insertmacro MUI_LANGUAGE "Farsi"' in src, \
         "زبان فارسی باید فعال باشد"
+    assert '"Persian"' not in src, \
+        "نباید به Persian ارجاع داده شود (چنین فایل زبانی در NSIS نیست)"
 
 
 def test_app_running_check_on_dir_leave():

@@ -394,7 +394,7 @@ FunctionEnd
 !define MUI_FINISHPAGE_RUN_TEXT "اجرای ${APP_NAME}"
 !insertmacro MUI_PAGE_FINISH
 
-!insertmacro MUI_LANGUAGE "Persian"
+!insertmacro MUI_LANGUAGE "Farsi"
 
 ; --- سکشن نصب واقعی (کپی فایل‌ها + میان‌برها + رجیستری) ---
 Section "نصب"
