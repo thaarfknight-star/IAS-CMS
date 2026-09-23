@@ -49,18 +49,20 @@ def test_estimated_size_order_after_files_and_uninstaller():
     pos_files = src.find('installer\\files.nsi')
     pos_uninst = src.find("WriteUninstaller")
     pos_est = src.find('"EstimatedSize"')
-    pos_ok = src.find('StrCpy $R9 "ok"')
-    assert pos_files != -1 and pos_uninst != -1 and pos_est != -1 and pos_ok != -1
-    assert pos_files < pos_uninst < pos_est < pos_ok, \
-        "ترتیب باید باشد: کپی فایل‌ها < ساخت uninstaller < ثبت EstimatedSize < پایان موفق"
+    assert pos_files != -1 and pos_uninst != -1 and pos_est != -1
+    assert pos_files < pos_uninst < pos_est, \
+        "ترتیب باید باشد: کپی فایل‌ها < ساخت uninstaller < ثبت EstimatedSize"
 
 
-def test_estimated_size_inside_do_install():
+def test_estimated_size_inside_install_section():
+    # (2.0.36-beta) نصب واقعی از Function DoInstall به Section "نصب" در
+    # صفحات استاندارد MUI منتقل شد.
     src = _read(NSI)
-    do_install = src.find("Function DoInstall")
-    end = src.find("FunctionEnd", do_install)
+    sec = src.find('Section "نصب"')
+    end = src.find("SectionEnd", sec)
     pos_est = src.find('"EstimatedSize"')
-    assert do_install < pos_est < end, "ثبت EstimatedSize باید داخل Function DoInstall باشد"
+    assert sec != -1 and sec < pos_est < end, \
+        'ثبت EstimatedSize باید داخل Section "نصب" باشد'
 
 
 def test_version_txt_is_225():
