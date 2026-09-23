@@ -214,6 +214,10 @@ class VideoDisplayLabel(QLabel):
     هم موقعیت محدوده‌ها درست بماند."""
 
     region_drawn = pyqtSignal(list)  # لیستی از (x,y) نرمال‌شده‌ی 0..1، حداقل ۳ نقطه
+    # (2.0.38-beta) هر تغییر در نقاطِ «در حال رسم» (افزودن نقطه، لغو با
+    # کلیک راست، بستن چندضلعی) — تا نوار ابزار (تایید/لغو رسم) زنده به‌روز
+    # شود و دکمه‌ی «لغو رسم» حتی قبل از بسته‌شدن چندضلعی دیده شود.
+    draw_progress_changed = pyqtSignal()
 
     # فاصله‌ی (به پیکسلِ لیبل) که کلیک نزدیک نقطه‌ی اول را «بستن محدوده»
     # حساب می‌کنیم - نه یک نقطه‌ی تازه.
@@ -268,6 +272,7 @@ class VideoDisplayLabel(QLabel):
         self._draw_points = []
         self._hover_norm = None
         self.update()
+        self.draw_progress_changed.emit()
 
     def set_zoom_crop_norm(self, crop):
         """کراپِ نمایشیِ جاری (x0, y0, w, h نرمالِ کل فریم) یا None برای کل فریم."""
@@ -391,6 +396,7 @@ class VideoDisplayLabel(QLabel):
             self._draw_points = []
             self._hover_norm = None
             self.update()
+            self.draw_progress_changed.emit()
             self.region_drawn.emit(points)
 
     def mousePressEvent(self, event):
@@ -401,6 +407,7 @@ class VideoDisplayLabel(QLabel):
                 self._draw_points = []
                 self._hover_norm = None
                 self.update()
+                self.draw_progress_changed.emit()
                 return
             if event.button() == Qt.MouseButton.LeftButton:
                 norm = self._widget_to_norm(event.position())
@@ -422,6 +429,7 @@ class VideoDisplayLabel(QLabel):
                         return
                 self._draw_points.append(norm)
                 self.update()
+                self.draw_progress_changed.emit()
                 return
         # رفع درخواست «بتونه اندازه و شکل محدوده تغییر بده»: وقتی در حالت
         # رسمِ فعال (کلیک‌های متوالی) نیستیم ولی یک محدوده‌ی در انتظار/در
@@ -799,6 +807,10 @@ class CameraSlotWidget(QWidget):
         # داده‌شده به خانه را ملاک قرار می‌دهد.
         self.video_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.video_label.region_drawn.connect(self._on_region_drawn)
+        # (2.0.38-beta) پیشرفت رسمِ نقطه‌به‌نقطه هم نوار ابزار را به‌روز
+        # می‌کند تا «لغو رسم» حین رسم هم دیده/فعال شود.
+        self.video_label.draw_progress_changed.connect(
+            self.tripwire_changed.emit)
         # برای زوم با اسکرول و پن (Shift+درگ / درگ با دکمه‌ی وسط) روی تصویر،
         # رویدادهای لیبل نمایش از همین‌جا رهگیری می‌شوند - رجوع کنید به eventFilter.
         self.video_label.installEventFilter(self)
@@ -838,6 +850,23 @@ class CameraSlotWidget(QWidget):
 
     def has_pending_region(self) -> bool:
         return self.pending_points is not None
+
+    def has_draw_points(self) -> bool:
+        """(2.0.38-beta) آیا نقطه‌ای «در حال رسم» (هنوز بسته‌نشده) هست؟"""
+        try:
+            return bool(self.video_label._draw_points)
+        except Exception:
+            return False
+
+    def cancel_draw_points(self):
+        """(2.0.38-beta) لغو نقاطِ در حال رسم (قبل از بسته‌شدن چندضلعی)."""
+        try:
+            self.video_label._draw_points = []
+            self.video_label._hover_norm = None
+            self.video_label.update()
+            self.video_label.draw_progress_changed.emit()
+        except Exception:
+            pass
 
     def has_any_region(self) -> bool:
         return bool(self.regions) or self.pending_points is not None
@@ -2930,10 +2959,14 @@ class MainWindow(QMainWindow):
         # رفع درخواست «قابلیت ادیت‌کردن»: در حالت ویرایشِ یک محدوده‌ی
         # قبلاً تایید‌شده، این دکمه فقط ویرایش را لغو می‌کند (خودِ محدوده با
         # شکل/اندازه‌ی قبلی دست‌نخورده می‌ماند) - نه اینکه محدوده حذف شود.
+        # (2.0.38-beta) اگر چندضلعی هنوز بسته نشده و فقط نقطه‌هایی «در حال
+        # رسم»‌اند، همان نقاطِ نیمه‌کاره لغو می‌شوند.
         if slot.is_editing_region():
             slot.cancel_region_edit()
-        else:
+        elif slot.has_pending_region():
             slot.cancel_pending_region()
+        else:
+            slot.cancel_draw_points()
         self.draw_line_btn.blockSignals(True)
         self.draw_line_btn.setChecked(False)
         self.draw_line_btn.blockSignals(False)
@@ -3092,8 +3125,7 @@ class MainWindow(QMainWindow):
         has_pending = slot.has_pending_region() if slot is not None else False
         has_confirmed = bool(slot.regions) if slot is not None else False
         is_editing = slot.is_editing_region() if slot is not None else False
-        self.confirm_line_btn.setEnabled(bool(has_pending))
-        self.redraw_line_btn.setEnabled(bool(has_pending))
+        # (فعال/غیرفعال دکمه‌های تایید/لغو در انتهای همین تابع تنظیم می‌شود)
         self.manage_regions_btn.setEnabled(bool(has_confirmed))
         # (2.0.12-beta به دستور کاربر): دکمه‌های مربوط به رسم فقط وقتی دیده
         # می‌شوند که لازم باشند (رجوع کنید به انتهای همین تابع)؛ بقیه‌ی
@@ -3132,13 +3164,22 @@ class MainWindow(QMainWindow):
         # باشد. ردیف، سطر دوم نوار ابزار است (_NoMinWidthRow) و ظاهر/مخفی
         # شدنش اندازه‌ی پنجره و کادرها را عوض نمی‌کند.
         in_draw_mode = bool(slot.is_draw_mode()) if slot is not None else False
+        # (2.0.38-beta) «لغو رسم» علاوه بر محدوده‌ی در انتظار/در حال ویرایش،
+        # وقتی هم که نقطه‌هایی «در حال رسم»‌اند (هنوز چندضلعی بسته نشده)
+        # دیده و فعال می‌شود — تا کاربر هیچ‌وقت با رسمِ نیمه‌کاره‌ی
+        # بی‌دکمه مواجه نشود. «تایید و نام‌گذاری» همچنان فقط برای محدوده‌ی
+        # بسته‌شده (در انتظار) یا در حال ویرایش است.
+        has_drawing = bool(slot.has_draw_points()) if slot is not None else False
         show_types = bool(in_draw_mode and not has_pending and not is_editing)
         show_confirm = bool(has_pending or is_editing)
+        show_cancel = bool(has_pending or is_editing or (in_draw_mode and has_drawing))
         self.auto_region_btn.setVisible(show_types)
         self.ai_floor_btn.setVisible(show_types)
         self.confirm_line_btn.setVisible(show_confirm)
-        self.redraw_line_btn.setVisible(show_confirm)
-        self.region_draw_row.setVisible(bool(show_types or show_confirm))
+        self.confirm_line_btn.setEnabled(bool(has_pending or is_editing))
+        self.redraw_line_btn.setVisible(show_cancel)
+        self.redraw_line_btn.setEnabled(bool(has_pending or is_editing or has_drawing))
+        self.region_draw_row.setVisible(bool(show_types or show_confirm or show_cancel))
 
     # ------------------------------------------------------- camera list ---
 

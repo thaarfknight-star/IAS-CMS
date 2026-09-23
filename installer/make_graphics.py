@@ -382,6 +382,26 @@ def main():
         if args.preview_png:
             img.save(os.path.join(args.outdir, name + ".png"), "PNG")
 
+    # (2.0.38-beta) تصاویر استاندارد MUI2 از روی لوگوی برنامه:
+    # welcome_logo.bmp (164×314) برای صفحه‌ی خوش‌آمد و header_logo.bmp
+    # (150×57) برای هدر صفحات — جایگزین تصویر پیش‌فرض NSIS.
+    if os.path.exists(logo_shield):
+        shield = Image.open(logo_shield).convert("RGBA")
+        welcome = Image.new("RGB", (164, 314), (255, 255, 255))
+        sw = 120
+        sh = int(sw * shield.height / shield.width)
+        s = shield.resize((sw, sh), Image.LANCZOS)
+        welcome.paste(s, ((164 - sw) // 2, 60), s)
+        welcome.save(os.path.join(args.outdir, "welcome_logo.bmp"), "BMP")
+        header = Image.new("RGB", (150, 57), (255, 255, 255))
+        hw = 44
+        hh = int(hw * shield.height / shield.width)
+        h = shield.resize((hw, hh), Image.LANCZOS)
+        header.paste(h, ((150 - hw) // 2, (57 - hh) // 2), h)
+        header.save(os.path.join(args.outdir, "header_logo.bmp"), "BMP")
+        print("wrote", os.path.join(args.outdir, "welcome_logo.bmp"), "(164, 314)")
+        print("wrote", os.path.join(args.outdir, "header_logo.bmp"), "(150, 57)")
+
 
 if __name__ == "__main__":
     main()

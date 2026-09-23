@@ -735,10 +735,12 @@ class BuildingMapPage(QWidget):
         ltoolbox = QVBoxLayout()
         ltoolbox.setSpacing(4)
         self.coverage_btn = QPushButton("📡 پوشش")
+        self.coverage_btn.setCheckable(True)
         self.coverage_btn.setToolTip(
             "تحلیل زنده‌ی پوشش دوربین روی نقاط مسیر: کدام نقاط مسیر "
-            "بدون دوربین‌اند و هر دوربین کدام نقاط را می‌بیند")
-        self.coverage_btn.clicked.connect(self._analyze_coverage)
+            "بدون دوربین‌اند و هر دوربین کدام نقاط را می‌بیند؛ "
+            "با زدنِ دوباره خاموش می‌شود")
+        self.coverage_btn.clicked.connect(self._on_coverage_toggled)
         self.heatmap_btn = QPushButton("🔥 هیت‌مپ")
         self.heatmap_btn.setToolTip(
             "نمایش پرترددترین مسیرها با رنگ روی نقشه")
@@ -1186,6 +1188,10 @@ class BuildingMapPage(QWidget):
         # (2.0.21-beta).
         self._coverage_live = None
         self._clear_geo_tag("coverage-geo")
+        try:
+            self.coverage_btn.setChecked(False)
+        except Exception:
+            pass
         if hasattr(self, "coverage_report"):
             self.coverage_report.setPlainText(
                 "برای تحلیل پوشش، دکمه‌ی «📡 پوشش» را بزنید.\n"
@@ -1371,6 +1377,10 @@ class BuildingMapPage(QWidget):
         ریلیز در _on_device_moved انجام می‌شود). برای سبک ماندن، حداکثر
         هر ۸۰ میلی‌ثانیه یک‌بار رفرش می‌شود.
         """
+        # (2.0.38-beta) حین رفرشِ پوشش، جابه‌جایی‌های داخلی نادیده گرفته
+        # می‌شوند (گارد بازگشتی).
+        if getattr(self, "_in_coverage_refresh", False):
+            return
         try:
             import time as _time
             now = _time.monotonic()
@@ -2805,9 +2815,21 @@ class BuildingMapPage(QWidget):
 
     # ============================ پوشش / هیت‌مپ ============================
 
-    def _clear_geo_tag(self, tag):
-        for entry in self.scenes.values():
-            for it in list(entry["scene"].items()):
+    def _clear_geo_tag(self, tag, floor_id=None):
+        # (2.0.38-beta) floor_id اختیاری: وقتی داده شود فقط همان طبقه
+        # پیمایش می‌شود. قبلاً هر رفرشِ پوششِ زنده (هر ~۸۰ms حین درگ)
+        # همه‌ی آیتم‌های «همه‌ی» طبقه‌ها را می‌گشت که روی نقشه‌های بزرگ
+        # (هزاران آیتم DXF) برنامه را کند می‌کرد.
+        if floor_id:
+            entries = [self.scenes.get(floor_id)] if self.scenes.get(floor_id) else []
+        else:
+            entries = list(self.scenes.values())
+        for entry in entries:
+            try:
+                items = list(entry["scene"].items())
+            except Exception:
+                continue
+            for it in items:
                 try:
                     if it.data(0) == tag:
                         entry["scene"].removeItem(it)
@@ -2821,21 +2843,51 @@ class BuildingMapPage(QWidget):
         که در قطاع دید هیچ دوربینی نباشد «بدون پوشش» است. نتیجه در پنل
         «گزارش پوشش زنده» نوشته می‌شود و از این به بعد با هر جابه‌جایی یا
         تغییر دوربین (موقعیت/زاویه/پهنا/برد) خودکار و در لحظه به‌روز می‌شود.
+
+        خروجی: True اگر تحلیل فعال شد، False اگر نشد (2.0.38-beta).
         """
         fid = self.current_floor
         if not fid:
             QMessageBox.information(self, "تحلیل پوشش",
                                     "اول یک طبقه را انتخاب کنید.")
-            return
+            return False
         lanes = self._floor_lanes(fid)
         if not lanes:
             QMessageBox.information(
                 self, "تحلیل پوشش",
                 "برای این طبقه مسیری رسم نشده است.\n"
                 "اول با «✏️ رسم مسیر جدید» یک مسیر پلاک‌خوان رسم کنید.")
-            return
+            return False
         self._coverage_live = {"floor_id": fid}
         self._refresh_coverage_live()
+        return True
+
+    def _on_coverage_toggled(self, checked):
+        """(2.0.38-beta) دکمه‌ی «📡 پوشش» حالا خاموش/روشن‌شونده است: با
+        زدنِ دوباره، تحلیل پوشش متوقف و نقاط از روی نقشه پاک می‌شوند."""
+        if checked:
+            if not self._analyze_coverage():
+                try:
+                    self.coverage_btn.setChecked(False)
+                except Exception:
+                    pass
+        else:
+            self._clear_coverage()
+
+    def _clear_coverage(self):
+        """(2.0.38-beta) توقف تحلیل پوشش زنده و پاک‌سازی نقاط/گزارش."""
+        self._coverage_live = None
+        self._clear_geo_tag("coverage-geo", self.current_floor)
+        try:
+            if hasattr(self, "coverage_report"):
+                self.coverage_report.setPlainText(
+                    "تحلیل پوشش خاموش است؛ برای نمایش دوباره «📡 پوشش» را بزنید.")
+        except Exception:
+            pass
+        try:
+            self.coverage_btn.setChecked(False)
+        except Exception:
+            pass
 
     def _floor_lanes(self, fid):
         """مسیرهای رسم‌شده‌ی یک طبقه (حداقل ۲ نقطه)."""
@@ -2864,6 +2916,10 @@ class BuildingMapPage(QWidget):
         cam_override: دیکشنری اختیاری {dev_id: (x, y)} به واحد صحنه —
         برای نمایش زنده‌ی حین درگ، بدون دست‌کاری دیتابیس (2.0.37-beta).
         """
+        # (2.0.38-beta) گارد بازگشتی: حین اجرای همین رفرش، itemChange
+        # تجهیزها (مثلاً از _build_scene) نباید رفرشِ تودرتو راه بیندازد.
+        if getattr(self, "_in_coverage_refresh", False):
+            return
         live = getattr(self, "_coverage_live", None)
         if not live or live.get("floor_id") != self.current_floor:
             return
@@ -2878,7 +2934,11 @@ class BuildingMapPage(QWidget):
         lanes = self._floor_lanes(fid)
         if not lanes:
             self._coverage_live = None
-            self._clear_geo_tag("coverage-geo")
+            self._clear_geo_tag("coverage-geo", fid)
+            try:
+                self.coverage_btn.setChecked(False)
+            except Exception:
+                pass
             if hasattr(self, "coverage_report"):
                 self.coverage_report.setPlainText(
                     "مسیری برای این طبقه باقی نمانده؛ تحلیل پوشش متوقف شد.")
@@ -2925,7 +2985,11 @@ class BuildingMapPage(QWidget):
         for lane_res, lane_c in zip(result.get("lanes", []), lanes_conv):
             lane_res["waypoints"] = analyze_waypoint_coverage(
                 lane_c.get("points"), cam_secs)
-        self._draw_lane_coverage(result)
+        self._in_coverage_refresh = True
+        try:
+            self._draw_lane_coverage(result)
+        finally:
+            self._in_coverage_refresh = False
         self._render_coverage_report(result, DEFAULT_SAMPLE_STEP_M)
 
     def _draw_lane_coverage(self, result):
@@ -2938,7 +3002,7 @@ class BuildingMapPage(QWidget):
           دوربین، قرمز = خارج از دید. همه‌ی نقاط رسم‌شده همیشه نمایش
           داده می‌شوند.
         """
-        self._clear_geo_tag("coverage-geo")
+        self._clear_geo_tag("coverage-geo", self.current_floor)
         entry = self._build_scene(self.current_floor)
         if not entry:
             return

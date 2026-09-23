@@ -3,7 +3,8 @@
 
 - installer.nsi در حالت نصب باید MUI2 را include کند و از صفحات استاندارد
   WELCOME / DIRECTORY / INSTFILES / FINISH استفاده کند (نه Page custom).
-- زبان فارسی (Persian) باید فعال باشد.
+- زبان فارسی (Farsi — نه Persian که فایل nlf ندارد) و انگلیسی باید فعال باشند
+  و دیالوگ انتخاب زبان (MUI_LANGDLL_DISPLAY) در .onInit بیاید.
 - بررسی «برنامه در حال اجراست؟» باید هنگام ترک صفحه‌ی پوشه انجام شود.
 - صفحه‌ی پایان باید تیک «اجرای برنامه» داشته باشد.
 - حذف‌کننده‌ی مستقل (UNINSTALLER_ONLY) نباید دست بخورد: دکمه‌ی قرمز
@@ -96,7 +97,7 @@ def test_uninstaller_kept_intact():
 
 def test_install_section_has_files_and_shortcuts():
     src = _installer_part(_read())
-    sec = src.find('Section "نصب"')
+    sec = src.find('Section "$(SEC_INSTALL)"')
     assert sec != -1
     body = src[sec:src.find("SectionEnd", sec)]
     assert "installer\\files.nsi" in body, "کپی فایل‌ها باید داخل سکشن نصب باشد"
