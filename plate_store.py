@@ -26,6 +26,13 @@ import time
 import uuid
 from datetime import datetime
 
+import i18n
+
+
+def _L(fa, en):
+    """پیام کوتاه دوزبانه (فارسی پیش‌فرض، انگلیسی اگر زبان en باشد)."""
+    return en if i18n.get_lang() == "en" else fa
+
 
 # --------------------------------------------------------------------------
 # نرمال‌سازی متن پلاک
@@ -120,23 +127,59 @@ VEHICLE_TYPES = [
     "موتورسیکلت", "تشریفاتی", "سایر",
 ]
 
+# (2.0.39-beta) معادل انگلیسی؛ در دیتابیس همیشه فارسی ذخیره می‌شود و این
+# فقط برای نمایش در کمبوباکس است (itemData=مقدار فارسی).
+VEHICLE_TYPES_EN = [
+    "Passenger car", "Pickup", "Light truck", "Truck", "Trailer truck",
+    "Bus", "Minibus", "Motorcycle", "Ceremonial", "Other",
+]
+
 VEHICLE_COLORS = [
     "سفید", "مشکی", "نقره‌ای", "خاکستری", "قرمز", "آبی", "سرمه‌ای", "سبز",
     "زرد", "نارنجی", "قهوه‌ای", "بژ", "سایر",
 ]
+
+VEHICLE_COLORS_EN = [
+    "White", "Black", "Silver", "Gray", "Red", "Blue", "Navy", "Green",
+    "Yellow", "Orange", "Brown", "Beige", "Other",
+]
+
+
+def vehicle_type_label(fa_value):
+    """برچسب نمایشی نوع خودرو به زبان فعلی (ورودی: مقدار فارسی دیتابیس)."""
+    if i18n.get_lang() == "en":
+        try:
+            return VEHICLE_TYPES_EN[VEHICLE_TYPES.index(fa_value)]
+        except ValueError:
+            return fa_value
+    return fa_value
+
+
+def vehicle_color_label(fa_value):
+    """برچسب نمایشی رنگ خودرو به زبان فعلی (ورودی: مقدار فارسی دیتابیس)."""
+    if i18n.get_lang() == "en":
+        try:
+            return VEHICLE_COLORS_EN[VEHICLE_COLORS.index(fa_value)]
+        except ValueError:
+            return fa_value
+    return fa_value
 
 
 def validate_iranian_plate(d1, letter, d2, code):
     """اعتبارسنجی بخش‌های پلاک ایرانی. خروجی: (معتبر؟, پیام خطا, کانونیکال)."""
     import re
     if not re.match(r"^[0-9۰-۹٠-٩]{2}$", d1 or ""):
-        return False, "دو رقم اول پلاک باید دقیقاً ۲ رقم باشد.", ""
+        return False, _L("دو رقم اول پلاک باید دقیقاً ۲ رقم باشد.",
+                         "The first two digits must be exactly 2 digits."), ""
     if not letter or letter not in IRANIAN_PLATE_LETTERS:
-        return False, "حرف پلاک معتبر نیست.", ""
+        return False, _L("حرف پلاک معتبر نیست.",
+                         "The plate letter is not valid."), ""
     if not re.match(r"^[0-9۰-۹٠-٩]{3}$", d2 or ""):
-        return False, "سه رقم میانی پلاک باید دقیقاً ۳ رقم باشد.", ""
+        return False, _L("سه رقم میانی پلاک باید دقیقاً ۳ رقم باشد.",
+                         "The middle three digits must be exactly 3 digits."), ""
     if not re.match(r"^[0-9۰-۹٠-٩]{2}$", code or ""):
-        return False, "کد ایران (دو رقم آخر) باید دقیقاً ۲ رقم باشد.", ""
+        return False, _L("کد ایران (دو رقم آخر) باید دقیقاً ۲ رقم باشد.",
+                         "The Iran code (last two digits) must be exactly 2 digits."), ""
     canonical = normalize_plate_text(d1 + letter + d2 + code)
     return True, "", canonical
 
@@ -165,6 +208,13 @@ PLATE_KIND_LABELS = {
     "other": "سایر",
 }
 
+# (2.0.39-beta) معادل انگلیسی برچسب‌های نوع پلاک.
+PLATE_KIND_LABELS_EN = {
+    "car": "Car",
+    "motorcycle": "Motorcycle",
+    "other": "Other",
+}
+
 
 def detect_plate_kind(canonical):
     """تشخیص نوع پلاک از روی شکل متن کانونیکال.
@@ -179,8 +229,9 @@ def detect_plate_kind(canonical):
 
 
 def plate_kind_label(kind):
-    """برچسب فارسی نوع پلاک."""
-    return PLATE_KIND_LABELS.get(kind or "other", "سایر")
+    """برچسب نوع پلاک به زبان فعلی برنامه."""
+    labels = PLATE_KIND_LABELS_EN if i18n.get_lang() == "en" else PLATE_KIND_LABELS
+    return labels.get(kind or "other", labels["other"])
 
 
 def validate_motorcycle_plate(d_top, d_bottom, letter):
@@ -188,11 +239,14 @@ def validate_motorcycle_plate(d_top, d_bottom, letter):
     (۳ رقم بالا + ۱ رقم پایین + حرف). خروجی: (معتبر؟, پیام خطا, کانونیکال)."""
     import re
     if not re.match(r"^[0-9۰-۹٠-٩]{3}$", d_top or ""):
-        return False, "سه رقم بالای پلاک موتور باید دقیقاً ۳ رقم باشد.", ""
+        return False, _L("سه رقم بالای پلاک موتور باید دقیقاً ۳ رقم باشد.",
+                         "The top three motorcycle digits must be exactly 3 digits."), ""
     if not re.match(r"^[0-9۰-۹٠-٩]{1}$", d_bottom or ""):
-        return False, "رقم پایین پلاک موتور باید دقیقاً ۱ رقم باشد.", ""
+        return False, _L("رقم پایین پلاک موتور باید دقیقاً ۱ رقم باشد.",
+                         "The bottom motorcycle digit must be exactly 1 digit."), ""
     if not letter or letter not in IRANIAN_PLATE_LETTERS:
-        return False, "حرف پلاک معتبر نیست.", ""
+        return False, _L("حرف پلاک معتبر نیست.",
+                         "The plate letter is not valid."), ""
     canonical = normalize_plate_text(d_top + d_bottom + letter)
     return True, "", canonical
 
@@ -821,10 +875,44 @@ class PlateStore:
         "watchlist_white": "⭐ پلاک در لیست سفید",
     }
 
+    # (2.0.39-beta) معادل‌های انگلیسی برچسب‌های نمایشی (کلیدهای دیتابیس
+    # بدون تغییر می‌مانند).
+    VIOLATION_LABELS_EN = {
+        "exit_without_entry": "Exit without recorded entry",
+        "reentry_without_exit": "Re-entry without prior exit",
+        "wrong_way": "Driving against lane direction",
+        "watchlist_black": "⛔ Plate on blacklist",
+        "watchlist_white": "⭐ Plate on whitelist",
+    }
+
     WATCHLIST_LABELS = {"black": "⛔ لیست سیاه", "white": "⭐ لیست سفید"}
+
+    WATCHLIST_LABELS_EN = {"black": "⛔ Blacklist", "white": "⭐ Whitelist"}
 
     CROSSING_LABELS = {"entry": "ورود", "exit": "خروج"}
     TRAVEL_LABELS = {"going": "رفت", "return": "برگشت"}
+
+    # (2.0.39-beta) معادل‌های انگلیسی.
+    CROSSING_LABELS_EN = {"entry": "Entry", "exit": "Exit"}
+    TRAVEL_LABELS_EN = {"going": "Outbound", "return": "Inbound"}
+
+    def _labels_for(self, fa_attr, en_attr):
+        """دیکشنری برچسب نمایشی به زبان فعلی."""
+        if i18n.get_lang() == "en":
+            return getattr(self, en_attr, None) or getattr(self, fa_attr)
+        return getattr(self, fa_attr)
+
+    def violation_label(self, vtype):
+        return self._labels_for("VIOLATION_LABELS", "VIOLATION_LABELS_EN").get(vtype, "")
+
+    def watchlist_label(self, kind):
+        return self._labels_for("WATCHLIST_LABELS", "WATCHLIST_LABELS_EN").get(kind, "")
+
+    def crossing_label(self, crossing):
+        return self._labels_for("CROSSING_LABELS", "CROSSING_LABELS_EN").get(crossing, "")
+
+    def travel_label(self, travel):
+        return self._labels_for("TRAVEL_LABELS", "TRAVEL_LABELS_EN").get(travel, "")
 
     def get_lanes(self):
         """تعریف مسیرها: {lane_id: {"name", "allowed", ...}}.
@@ -1152,7 +1240,7 @@ class PlateStore:
             for r in rows:
                 w.writerow([
                     r.get("date_j", ""), r.get("time_g", ""),
-                    self.VIOLATION_LABELS.get(r.get("violation_type"), ""),
+                    self.violation_label(r.get("violation_type")),
                     r.get("plate_display", ""), r.get("owner_name", ""),
                     r.get("camera_name", ""), r.get("lane_id", ""),
                     r.get("detail", ""),

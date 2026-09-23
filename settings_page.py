@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 
 import app_settings
+import i18n
 from theme import apply_theme
 
 
@@ -79,20 +80,23 @@ class SettingsPage(QWidget):
         self.on_apply_update = on_apply_update
         self.on_sound_changed = on_sound_changed
         self.on_password_save_changed = on_password_save_changed
-        self._lang = app_settings.get_language()
         self._build()
 
     def _t(self, key):
-        return STRINGS[key].get(self._lang, STRINGS[key]["fa"])
+        # (2.0.39-beta) از زیرساخت مشترک i18n استفاده می‌شود؛ زبان از
+        # app_settings خوانده می‌شود (در _on_lang_changed قبل از بازسازی
+        # ذخیره شده است).
+        return i18n.t(STRINGS, key)
 
     # ------------------------------------------------------------------
     # ساختار صفحه: یک QScrollArea تمام‌صفحه که محتوایش (تیتر + گروه‌ها) با
     # ارتفاع طبیعی چیده شده؛ اگر از نما بلندتر شد اسکرول عمودی می‌خورد.
     # ------------------------------------------------------------------
     def _build(self):
-        # جهت راست‌به‌چپ برای کل صفحه: بدون این، ترتیب ایموجی و متن فارسی
-        # در چک‌باکس‌ها و عنوان گروه‌ها به‌هم می‌ریزد (مشاهده‌شده روی ویندوز).
-        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        # جهت چیدمان بر اساس زبان فعلی (فارسی=راست‌به‌چپ)؛ بدون این، ترتیب
+        # ایموجی و متن فارسی در چک‌باکس‌ها و عنوان گروه‌ها به‌هم می‌ریزد
+        # (مشاهده‌شده روی ویندوز).
+        i18n.apply_direction(self)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -298,7 +302,6 @@ class SettingsPage(QWidget):
     def _on_lang_changed(self, index):
         lang = self.lang_combo.itemData(index)
         app_settings.set_language(lang)
-        self._lang = lang
         # بازسازی متن‌های همین صفحه با زبان جدید
         self._rebuild_texts()
 
