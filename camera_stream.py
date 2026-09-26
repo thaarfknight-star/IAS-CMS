@@ -584,6 +584,12 @@ class CameraStreamThread(QThread):
         self.process_every_n = max(1, process_every_n)
         self._run_flag = True
         self._last_results = []
+        # کش باکس چهره‌های آخرین دور تشخیص چهره (قالب top,right,bottom,left)؛
+        # فقط وقتی به‌روز می‌شود که تشخیص چهره واقعاً اجرا شده باشد. برای
+        # فیلتر «باکس عریض» PersonDetector لازم است (حذف خطای موتور/خودروی
+        # پارک‌شده که مدل مستقیماً «شخص» تشخیص می‌دهد). مقدار None یعنی چهره
+        # هنوز اجرا نشده و فیلتر عریض غیرفعال می‌ماند (رفتار قبلی).
+        self._face_boxes_cache = None
         # نتیجه‌ی خام PersonDetector (کادر کل بدن، فارغ از حالت/چهره) روی
         # آخرین فریم پردازش‌شده؛ رجوع کنید به توضیح بالای فایل.
         self._last_person_boxes = []
@@ -1026,7 +1032,9 @@ class CameraStreamThread(QThread):
             # هشدار محدوده حتی وقتی تشخیص چهره خراب است هم کار کند.
             # در همین ترد پس‌زمینه‌ی تشخیص (نه ترد اصلی خواندن فریم) اجرا
             # می‌شود تا حلقه‌ی اصلی هرگز منتظرش نماند.
-            self._last_person_boxes = _pd.detect(frame) if _pd is not None else []
+            self._last_person_boxes = _pd.detect(
+                frame, face_boxes=self._face_boxes_cache) \
+                if _pd is not None else []
             self._person_detector_available = bool(_pd is not None and _pd.available)
             if not self._detector_status_emitted:
                 self._detector_status_emitted = True
@@ -1074,6 +1082,7 @@ class CameraStreamThread(QThread):
             # اولین نوسان لحظه‌ای تشخیص.
             if _do_face_plate:
                 self._last_results = self._face_tracker.update(results)
+                self._face_boxes_cache = [r["box"] for r in self._last_results]
 
             # --- ردیابی اشخاص بین دوربین‌ها (اختیاری، با کمک چهره) ---
             # دقیقاً همان الگوی تشخیص شخص/آتش: در همین ترد پس‌زمینه‌ی تشخیص

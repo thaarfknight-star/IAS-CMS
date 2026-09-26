@@ -113,6 +113,27 @@ def _box_iou(a, b):
     return (inter / union) if union > 0 else 0.0
 
 
+def _plausible_person_box(box, face_boxes):
+    """فیلتر هندسی «باکس عریض»: باکس آدم واقعی معمولاً از عرضش کشیده‌تر
+    است. وقتی خود مدل یک موتور/خودروی پارک‌شده را مستقیماً «شخص» (کلاس ۰)
+    تشخیص می‌دهد، هیچ باکس وسیله‌ی نقلیه‌ای برای فیلتر IoU وجود ندارد و
+    این تنها راه حذف آن است. باکسی که واضحاً عریض‌تر از قدش باشد فقط وقتی
+    نگه داشته می‌شود که مرکز یک چهره داخلش باشد (مثل فرد نشسته‌ی رو به
+    دوربین)؛ در غیر این صورت (مثل موتور از بغل که چهره‌ای ندارد) حذف
+    می‌شود. قالب باکس: (top, right, bottom, left)."""
+    top, right, bottom, left = box
+    w = max(0, right - left)
+    h = max(0, bottom - top)
+    if w <= 1.25 * h:
+        return True
+    for fb in face_boxes:
+        cx = (fb[3] + fb[1]) / 2.0
+        cy = (fb[0] + fb[2]) / 2.0
+        if left <= cx <= right and top <= cy <= bottom:
+            return True
+    return False
+
+
 class PersonDetector:
     _MODEL_FILENAME = "yolov8n.pt"
 
@@ -168,12 +189,17 @@ class PersonDetector:
                     f"وزن مدل لازم است. خطا: {e}"
                 )
 
-    def detect(self, frame):
+    def detect(self, frame, face_boxes=None):
         """لیستی از باکس‌های افراد در frame را برمی‌گرداند - با همان قالب
         (top, right, bottom, left) که در بقیه‌ی پروژه (FaceEngine) استفاده
         می‌شود، تا camera_stream.py بتواند این نتایج را کنار نتایج چهره،
         بدون تغییر قالب، رسم و شمارش کند. اگر مدل در دسترس نباشد، لیست
-        خالی برمی‌گرداند (بدون خطا)."""
+        خالی برمی‌گرداند (بدون خطا).
+
+        face_boxes: لیستی از باکس‌های چهره‌ی آخرین دور تشخیص چهره (همان
+        قالب)، یا None اگر تشخیص چهره اصلاً اجرا نشده است. برای حذف خطای
+        «موتور/خودرو پارک‌شده = شخص» (وقتی مدل خودش وسیله را کلاس ۰
+        می‌دهد) لازم است؛ اگر None باشد رفتار قبلی حفظ می‌شود."""
         if not self.available:
             return []
         with self._lock:
@@ -182,10 +208,12 @@ class PersonDetector:
                     frame,
                     imgsz=self.imgsz,
                     conf=self.conf_threshold,
-                    # شخص + دوچرخه/موتورسیکلت: مدل گاهی موتور پارک‌شده را
-                    # «شخص» تشخیص می‌دهد؛ باکس‌های وسیله‌نقلیه فقط برای
-                    # حذف این خطا گرفته می‌شوند و در خروجی نیستند.
-                    classes=[0, 1, 3],
+                    # شخص + همه‌ی کلاس‌های وسیله‌ی نقلیه‌ی COCO (دوچرخه=۱،
+                    # خودرو=۲، موتورسیکلت=۳، اتوبوس=۵، کامیون=۷): مدل گاهی
+                    # وسیله‌ی پارک‌شده را «شخص» تشخیص می‌دهد؛ باکس‌های
+                    # وسیله‌نقلیه فقط برای حذف این خطا گرفته می‌شوند و در
+                    # خروجی نیستند.
+                    classes=[0, 1, 2, 3, 5, 7],
                     verbose=False,
                 )
             except Exception as e:
@@ -208,11 +236,17 @@ class PersonDetector:
                     persons.append(box)
                 else:
                     vehicles.append(box)
-        # باکس «شخص»‌ی که هم‌پوشانی زیاد با دوچرخه/موتور دارد، خطای مدل
+        # باکس «شخص»‌ی که هم‌پوشانی زیاد با وسیله‌ی نقلیه دارد، خطای مدل
         # است (مثل موتور پارک‌شده) و حذف می‌شود. عابر کنار موتور چون
         # هم‌پوشانی کمی دارد، نگه داشته می‌شود.
         boxes = [p for p in persons
                  if not any(_box_iou(p, v) > 0.45 for v in vehicles)]
+        # وقتی خود مدل وسیله را مستقیماً «شخص» تشخیص داده (باکس وسیله‌ای
+        # برای فیلتر بالا وجود ندارد)، باکس‌های واضحاً عریض فقط با مدرک
+        # چهره نگه داشته می‌شوند.
+        if face_boxes is not None:
+            boxes = [b for b in boxes
+                     if _plausible_person_box(b, face_boxes)]
         return boxes
 
     def draw_boxes(self, frame, boxes):
