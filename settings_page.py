@@ -188,7 +188,7 @@ class SettingsPage(QWidget):
                          "سیستم است؛ کاربر عادی به آن دسترسی ندارد.")
         admhint.setStyleSheet("color: #888; font-size: 11px;")
         admhint.setWordWrap(True)
-        admlay.addWidget(adhint)
+        admlay.addWidget(admhint)
         adm_group.setLayout(admlay)
         return adm_group
 
