@@ -1414,6 +1414,15 @@ class CameraSlotWidget(QWidget):
             state = (stats or {}).get("state", "")
             fps = (stats or {}).get("fps", 0)
             kbps = (stats or {}).get("kbps", 0)
+            # (2.0.52-beta) تغذیه‌ی مانیتور سراسری پهنای باند
+            try:
+                cam = getattr(self, "cam", None) or {}
+                if cam.get("id"):
+                    from bandwidth import get_monitor
+                    get_monitor().update(cam.get("id"), kbps,
+                                         cam.get("name") or cam.get("ip") or "")
+            except Exception:
+                pass
             if state == "weak":
                 self.net_label.setText(f"📶 ضعیف ({fps} فریم/ث)")
                 self.net_label.setStyleSheet(
@@ -3605,6 +3614,50 @@ class MainWindow(QMainWindow):
             self.camera_store.remove_nvr(nvr_id, cascade=True)
             self.reload_camera_list()
 
+    def edit_nvr_playback_template(self, nvr_id):
+        """(2.0.52-beta) تنظیم قالب دلخواه آدرس RTSP «پخش بازبینی» برای NVRهایی
+        که قالب‌های استاندارد Hikvision/Dahua را پشتیبانی نمی‌کنند."""
+        nvr = self.camera_store.get_nvr(nvr_id)
+        if not nvr:
+            return
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, \
+            QDialogButtonBox
+        from PyQt6.QtCore import Qt
+        dlg = QDialog(self)
+        dlg.setWindowTitle("⚙ قالب آدرس پخش بازبینی")
+        dlg.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        dlg.resize(560, 260)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel(f"NVR: {nvr.get('name') or nvr.get('ip')}"))
+        help_lbl = QLabel(
+            "اگر پخش بازبینی (از صفحه‌ی گزارش‌ها) با خطا مواجه می‌شود، الگوی "
+            "دقیق آدرس دستگاه‌تان را اینجا وارد کنید. متغیرهای مجاز:\n"
+            "{ip} آدرس NVR، {port} پورت RTSP، {user} نام کاربری، {pass} رمز، "
+            "{channel} شماره کانال،\n"
+            "{start} و {end} زمان شروع/پایان (قالب Hikvision)، "
+            "{start_dahua} و {end_dahua} (قالب Dahua).\n\n"
+            "مثال Hikvision:\n"
+            "rtsp://{ip}:{port}/Streaming/tracks/{channel}01?starttime={start}&endtime={end}\n\n"
+            "خالی بگذارید تا فقط قالب‌های استاندارد امتحان شوند.")
+        help_lbl.setWordWrap(True)
+        help_lbl.setStyleSheet("color: #aaaaaa; font-size: 11px;")
+        lay.addWidget(help_lbl)
+        edit = QLineEdit()
+        edit.setText(nvr.get("playback_template") or "")
+        edit.setPlaceholderText("rtsp://{ip}:{port}/...")
+        lay.addWidget(edit)
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btns.button(QDialogButtonBox.StandardButton.Ok).setText("ذخیره")
+        btns.button(QDialogButtonBox.StandardButton.Cancel).setText("انصراف")
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+        if dlg.exec():
+            self.camera_store.update_nvr(nvr_id, playback_template=edit.text().strip())
+            QMessageBox.information(self, "ذخیره شد",
+                                    "قالب آدرس پخش بازبینی ذخیره شد.")
+
     def open_nvr_storage(self, nvr_id):
         """رفع درخواست: وضعیت هارددیسک NVR و جست‌وجوی بازه‌های واقعاً
         ضبط‌شده روی آن را نشان می‌دهد (رجوع کنید به nvr_storage_dialog.py /
@@ -3779,11 +3832,17 @@ class MainWindow(QMainWindow):
             # API وب رسمی سازنده (رجوع کنید به nvr_storage_api.py).
             storage_action = QAction("🗄 هارد و ضبط‌های NVR", self)
             storage_action.triggered.connect(lambda: self.open_nvr_storage(data["id"]))
+            # (2.0.52-beta) قالب دلخواه آدرس پخش بازبینی: برای NVRهایی که
+            # قالب استاندارد Hikvision/Dahua را پشتیبانی نمی‌کنند.
+            playback_tpl_action = QAction("⚙ قالب آدرس پخش بازبینی", self)
+            playback_tpl_action.triggered.connect(
+                lambda: self.edit_nvr_playback_template(data["id"]))
             delete_action = QAction("حذف NVR و همه کانال‌ها", self)
             delete_action.triggered.connect(lambda: self.delete_nvr(data["id"]))
             menu.addAction(rescan_action)
             menu.addAction(webview_action)
             menu.addAction(storage_action)
+            menu.addAction(playback_tpl_action)
             menu.addAction(delete_action)
         menu.exec(self.camera_list.mapToGlobal(pos))
 

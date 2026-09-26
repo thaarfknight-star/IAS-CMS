@@ -6,7 +6,7 @@ from PyQt6.QtGui import QPixmap, QImageReader
 from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QTextEdit,
     QTableWidget, QTableWidgetItem, QPushButton, QMessageBox, QDialogButtonBox,
-    QHeaderView, QLabel, QFileDialog, QComboBox
+    QHeaderView, QLabel, QFileDialog, QComboBox, QScrollArea, QGridLayout,
 )
 
 from image_viewer_dialog import ImageViewerDialog  # 👁 دیدن تصویر (دابل‌کلیک روی عکس)
@@ -210,6 +210,78 @@ class PersonFormDialog(QDialog):
         }
 
 
+class FaceGalleryDialog(QDialog):
+    """(2.0.52-beta) گالری «🖼 دیدن تصاویر»: نمایش همه‌ی عکس‌های چهره‌های
+    ثبت‌شده به‌صورت شبکه‌ای؛ کلیک روی هر عکس → نمایش بزرگ (ImageViewerDialog)."""
+
+    def __init__(self, face_engine, parent=None):
+        super().__init__(parent)
+        self.face_engine = face_engine
+        self.setWindowTitle("🖼 تصاویر چهره‌ها")
+        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        self.resize(680, 480)
+
+        layout = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        grid = QGridLayout(container)
+        grid.setSpacing(12)
+
+        people = face_engine.list_people()
+        cols = 4
+        for idx, person in enumerate(people):
+            name = person.get("name") or "بدون نام"
+            group = person.get("work_group") or ""
+            photo = person.get("photo") or ""
+
+            cell = QVBoxLayout()
+            pic_label = QLabel()
+            pic_label.setFixedSize(140, 140)
+            pic_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            pic_label.setStyleSheet(
+                "border: 1px solid #555; border-radius: 8px; background: #222;")
+            pix = QPixmap(photo) if photo else QPixmap()
+            if not pix.isNull():
+                pic_label.setPixmap(pix.scaled(
+                    136, 136, Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation))
+            else:
+                pic_label.setText("بدون عکس")
+            pic_label.setCursor(Qt.CursorShape.PointingHandCursor)
+            if photo:
+                pic_label.mousePressEvent = (
+                    lambda _e, p=photo: ImageViewerDialog(p, parent=self).exec())
+            cell.addWidget(pic_label, alignment=Qt.AlignmentFlag.AlignCenter)
+
+            name_label = QLabel(name)
+            name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            name_label.setStyleSheet("font-weight: bold;")
+            name_label.setWordWrap(True)
+            cell.addWidget(name_label)
+            if group:
+                group_label = QLabel(group)
+                group_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                group_label.setStyleSheet("color: #888; font-size: 11px;")
+                cell.addWidget(group_label)
+
+            cell_widget = QWidget()
+            cell_widget.setLayout(cell)
+            grid.addWidget(cell_widget, idx // cols, idx % cols)
+
+        if not people:
+            empty = QLabel("هنوز چهره‌ای ثبت نشده است.")
+            empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            grid.addWidget(empty, 0, 0)
+
+        scroll.setWidget(container)
+        layout.addWidget(scroll)
+
+        close_btn = QPushButton("بستن")
+        close_btn.clicked.connect(self.reject)
+        layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
+
 class FaceLibraryPage(QWidget):
     """مدیریت Face Library: افزودن از تصویر زنده، ویرایش، حذف - به‌عنوان یک
     صفحه‌ی جداگانه داخل QStackedWidget پنجره‌ی اصلی (قابل دسترسی از هدر
@@ -222,8 +294,16 @@ class FaceLibraryPage(QWidget):
         self.face_engine = face_engine
         self.get_current_frame_callback = get_current_frame_callback
 
+        # (2.0.52-beta) بالای پنل: گزینه‌ی «🖼 دیدن تصاویر» برای دیدن عکس چهره‌ها
+        title_row = QHBoxLayout()
         title = QLabel("👤 Face Library - مدیریت چهره‌ها")
         title.setStyleSheet("font-size: 16px; font-weight: bold; padding: 4px;")
+        title_row.addWidget(title)
+        title_row.addStretch()
+        gallery_btn = QPushButton("🖼 دیدن تصاویر")
+        gallery_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        gallery_btn.clicked.connect(self.open_gallery)
+        title_row.addWidget(gallery_btn)
 
         # فیلتر دسته‌بندی بر اساس گروه کاری
         filter_row = QHBoxLayout()
@@ -259,7 +339,7 @@ class FaceLibraryPage(QWidget):
         btn_row.addStretch()
 
         layout = QVBoxLayout()
-        layout.addWidget(title)
+        layout.addLayout(title_row)
         layout.addLayout(filter_row)
         layout.addWidget(self.table, 1)
         layout.addLayout(btn_row)
@@ -284,6 +364,10 @@ class FaceLibraryPage(QWidget):
     def refresh(self):
         """هر بار که صفحه از هدر باز می‌شود صدا زده می‌شود تا جدول تازه باشد."""
         self.refresh_table()
+
+    def open_gallery(self):
+        """(2.0.52-beta) باز کردن گالری «🖼 دیدن تصاویر» بالای پنل چهره."""
+        FaceGalleryDialog(self.face_engine, parent=self).exec()
 
     def refresh_table(self):
         self._reload_group_filter()

@@ -99,6 +99,21 @@ class AddNVRDialog(QDialog):
         layout = QVBoxLayout()
         layout.addLayout(form)
         layout.addWidget(self.scan_btn)
+        # (2.0.52-beta) افزودن مستقیم کانال‌ها از روی NVR بدون اسکن شبکه/RTSP:
+        # با الگوی استریم اصلی برند انتخاب‌شده، N کانال فوراً به لیست اضافه
+        # می‌شوند تا کاربر تیک بزند و تأیید کند.
+        direct_row = QHBoxLayout()
+        direct_row.addWidget(QLabel("افزودن مستقیم:"))
+        self.direct_spin = QSpinBox()
+        self.direct_spin.setRange(1, 128)
+        self.direct_spin.setValue(16)
+        self.direct_spin.setSuffix(" کانال")
+        direct_row.addWidget(self.direct_spin)
+        self.direct_btn = QPushButton("➕ افزودن مستقیم کانال‌ها (بدون اسکن)")
+        self.direct_btn.clicked.connect(self._on_direct_add)
+        direct_row.addWidget(self.direct_btn)
+        direct_row.addStretch()
+        layout.addLayout(direct_row)
         layout.addWidget(self.status_label)
         layout.addWidget(QLabel("کانال‌های شناسایی‌شده (تیک بزنید تا اضافه شوند):"))
         layout.addWidget(self.channels_list)
@@ -130,6 +145,27 @@ class AddNVRDialog(QDialog):
         except Exception:
             pass
         return None
+
+    def _on_direct_add(self):
+        """(2.0.52-beta) افزودن مستقیم N کانال از روی NVR بدون هیچ اسکنی؛
+        مسیر هر کانال از روی الگوی «استریم اصلی» برند انتخاب‌شده ساخته می‌شود
+        و آیتم‌ها تیک‌خورده به لیست اضافه می‌شوند تا جریان عادی تأیید
+        (handle_accept) بدون تغییر کار کند."""
+        from nvr_scanner import CHANNEL_TEMPLATES, _format_templates
+        n = self.direct_spin.value()
+        brand = self.brand_combo.currentData()
+        templates = CHANNEL_TEMPLATES.get(brand) or CHANNEL_TEMPLATES["generic"]
+        main_template = templates[0]  # اولین الگو = استریم اصلی
+        # جایگزینی نتایج قبلی (اسکن یا افزودن مستقیم قبلی) تا لیست تکراری نشود
+        self.channels_list.clear()
+        self.found_channels = []
+        for ch in range(1, n + 1):
+            path = _format_templates([main_template], ch)[0]
+            self._on_channel_found(ch, f"کانال {ch}", path)
+        self.status_label.setText(
+            f"✅ {n} کانال مستقیماً با الگوی برند «{self.brand_combo.currentText()}» "
+            f"اضافه شد (بدون اسکن)؛ تیک بزنید و «افزودن» را بزنید.")
+        self._update_done_status()
 
     def start_scan(self):
         if self.scan_thread is not None and self.scan_thread.isRunning():

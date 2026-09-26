@@ -235,7 +235,8 @@ class CameraStore:
 
     # --------------------------------------------------------------- nvrs --
 
-    def add_nvr(self, name, ip, rtsp_port, onvif_port, user, pwd, brand="", camera_brand=""):
+    def add_nvr(self, name, ip, rtsp_port, onvif_port, user, pwd, brand="",
+                camera_brand="", playback_template=""):
         nvr = {
             "id": str(uuid.uuid4()),
             "name": name or ip,
@@ -249,6 +250,9 @@ class CameraStore:
             # می‌شود تا هنگام «بازخوانی کانال‌ها» دوباره به‌صورت پیش‌فرض همان
             # انتخاب قبلی در دیالوگ بیاید (رجوع کنید به nvr_scanner.py).
             "camera_brand": camera_brand,
+            # (2.0.52-beta) قالب دلخواه آدرس RTSP «پخش بازبینی» این NVR
+            # (رجوع کنید به nvr_playback._custom_template_url).
+            "playback_template": playback_template or "",
         }
         self.nvrs.append(nvr)
         self.save_nvrs()

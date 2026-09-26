@@ -49,27 +49,47 @@ class _PlaybackThread(QThread):
     finished_playing = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, candidates, parent=None):
+    def __init__(self, nvr, channel, start_dt, end_dt, candidates, parent=None):
         super().__init__(parent)
+        self._nvr = nvr
+        self._channel = channel
+        self._start_dt = start_dt
+        # (2.0.52-beta) آدرس‌های Replay ممکن است تا لبه‌ی زنده ادامه پیدا
+        # کنند؛ بعد از این مدت (طول بازه + کمی حاشیه) حتماً توقف کن.
+        try:
+            self._max_seconds = max(10.0, (end_dt - start_dt).total_seconds() + 10.0)
+        except Exception:
+            self._max_seconds = 300.0
         self._candidates = candidates  # [(برچسب, آدرس), ...]
         self._stop_flag = False
+        self._tried_labels = []
 
     def stop(self):
         self._stop_flag = True
 
     def run(self):
-        for label, url in self._candidates:
+        import time as _time
+        from nvr_playback import try_onvif_replay_url
+        # (2.0.52-beta) اول: ONVIF Replay استاندارد (مستقل از برند)؛ بعد قالب‌ها
+        onvif_hit = try_onvif_replay_url(self._nvr, self._channel, self._start_dt,
+                                         timeout=10)
+        candidates = ([onvif_hit] if onvif_hit else []) + list(self._candidates)
+        for label, url in candidates:
             if self._stop_flag:
                 return
+            self._tried_labels.append(label)
             cap = open_capture(url, PLAYBACK_FFMPEG_OPTS)
             try:
                 if not cap.isOpened():
                     continue
                 got_any_frame = False
+                t0 = _time.monotonic()
                 # چند تلاش اول ممکن است قبل از رسیدن به اولین کی‌فریم بایگانی
                 # شکست بخورد (دقیقاً همان دلیل PROBE_READ_ATTEMPTS در rtsp_utils).
                 empty_reads = 0
                 while not self._stop_flag:
+                    if _time.monotonic() - t0 > self._max_seconds:
+                        break  # بازه تمام شد (مخصوص استریم‌های Replay تا لبه‌ی زنده)
                     ret, frame = cap.read()
                     if not ret or frame is None:
                         empty_reads += 1
@@ -89,10 +109,16 @@ class _PlaybackThread(QThread):
             finally:
                 cap.release()
         if not self._stop_flag:
+            tried = "، ".join(self._tried_labels) if self._tried_labels else "هیچ"
             self.error.emit(
-                "امکان پخش این بازه از NVR وجود نداشت. دلایل ممکن: در این بازه‌ی "
-                "زمانی چیزی روی هارد NVR ضبط نشده، یا NVR این آدرس‌های استاندارد "
-                "پخش بازبینی را پشتیبانی نمی‌کند."
+                "امکان پخش این بازه از NVR وجود نداشت.\n"
+                f"روش‌های امتحان‌شده: {tried}.\n\n"
+                "دلایل ممکن:\n"
+                "• در این بازه‌ی زمانی چیزی روی هارد NVR ضبط نشده است؛\n"
+                "• آدرس پخش بازبینی این دستگاه با قالب‌های استاندارد فرق دارد.\n\n"
+                "راه‌حل: روی NVR در لیست دوربین‌ها راست‌کلیک کنید ← «⚙ قالب آدرس "
+                "پخش بازبینی» و الگوی دقیق دستگاه‌تان را وارد کنید (از دفترچه‌ی "
+                "راهنما یا پنل وب NVR)."
             )
 
 
@@ -127,7 +153,8 @@ class NVRPlaybackDialog(QDialog):
         layout.addLayout(btn_row)
 
         candidates = build_playback_urls(nvr, channel, start_dt, end_dt)
-        self._thread = _PlaybackThread(candidates, self)
+        self._thread = _PlaybackThread(nvr, channel, start_dt, end_dt,
+                                       candidates, self)
         self._thread.frame_ready.connect(self._on_frame)
         self._thread.connected.connect(self._on_connected)
         self._thread.finished_playing.connect(self._on_finished)

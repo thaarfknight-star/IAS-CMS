@@ -14,7 +14,7 @@
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QLabel, QComboBox,
-    QPushButton, QMessageBox, QCheckBox, QScrollArea, QFrame,
+    QPushButton, QMessageBox, QCheckBox, QScrollArea, QFrame, QDoubleSpinBox,
 )
 from PyQt6.QtCore import Qt
 
@@ -64,6 +64,7 @@ class SettingsPage(QWidget):
         layout.addWidget(self._build_sound_group())
         layout.addWidget(self._build_security_group())
         layout.addWidget(self._build_license_group())
+        layout.addWidget(self._build_bandwidth_group())
         layout.addWidget(self._build_update_group())
         layout.addWidget(self._build_uninstall_group())
 
@@ -196,6 +197,62 @@ class SettingsPage(QWidget):
         lic_group.setLayout(liclay)
         self._refresh_license_status()
         return lic_group
+
+    def _build_bandwidth_group(self):
+        # --- مدیریت پهنای باند (2.0.52-beta): سقف کلی + سهم برابر ---
+        from bandwidth import load_bw_settings, save_bw_settings
+        bw_group = QGroupBox("📊 مدیریت پهنای باند")
+        blay = QVBoxLayout()
+        blay.setSpacing(10)
+
+        cfg = load_bw_settings()
+        self.bw_enabled_chk = QCheckBox("فعال‌سازی مدیریت پهنای باند (سهم برابر برای همه‌ی دوربین‌ها)")
+        self.bw_enabled_chk.setChecked(cfg["enabled"])
+        self.bw_enabled_chk.stateChanged.connect(self._on_bw_settings_changed)
+        blay.addWidget(self.bw_enabled_chk)
+
+        cap_row = QHBoxLayout()
+        cap_row.addWidget(QLabel("سقف کلی پهنای باند (مگابیت/ثانیه):"))
+        self.bw_cap_spin = QDoubleSpinBox()
+        self.bw_cap_spin.setRange(0, 1000)
+        self.bw_cap_spin.setDecimals(1)
+        self.bw_cap_spin.setSingleStep(5)
+        self.bw_cap_spin.setValue(cfg["total_mbps"])
+        self.bw_cap_spin.setSpecialValueText("نامحدود")
+        self.bw_cap_spin.setMinimumWidth(120)
+        self.bw_cap_spin.valueChanged.connect(self._on_bw_settings_changed)
+        cap_row.addWidget(self.bw_cap_spin)
+        cap_row.addWidget(QLabel("(۰ = نامحدود؛ فقط نمایش)"))
+        cap_row.addStretch()
+        blay.addLayout(cap_row)
+
+        live_row = QHBoxLayout()
+        live_row.setContentsMargins(2, 4, 2, 4)
+        self.bw_live_btn = self._action_button("📊 مشاهده‌ی زنده‌ی پهنای باند", "#1565c0")
+        self.bw_live_btn.clicked.connect(self._on_bw_live_view)
+        live_row.addWidget(self.bw_live_btn)
+        bhint = QLabel("سهم برابر هر دوربین = سقف کلی ÷ تعداد دوربین‌های فعال. "
+                       "با «اعمال سهم برابر» بیت‌ریت انکدر دوربین‌های مستقیم از طریق "
+                       "ONVIF تنظیم می‌شود.")
+        bhint.setWordWrap(True)
+        live_row.addWidget(bhint, 1)
+        blay.addLayout(live_row)
+
+        bw_group.setLayout(blay)
+        return bw_group
+
+    def _on_bw_settings_changed(self, *args):
+        from bandwidth import save_bw_settings
+        save_bw_settings(self.bw_enabled_chk.isChecked(),
+                         self.bw_cap_spin.value())
+
+    def _on_bw_live_view(self):
+        from bandwidth import load_bw_settings, get_monitor
+        from bandwidth_dialog import BandwidthDialog
+        cfg = load_bw_settings()
+        dlg = BandwidthDialog(get_monitor(), self.camera_store,
+                              total_mbps=cfg["total_mbps"], parent=self)
+        dlg.exec()
 
     def _refresh_license_status(self):
         try:
