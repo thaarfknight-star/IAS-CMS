@@ -200,6 +200,14 @@ QTabBar::tab:selected {{
     background: {ACCENT};
     color: white;
 }}
+QStatusBar {{
+    background-color: {BG_PANEL};
+    color: {TEXT_MUTED};
+    border-top: 1px solid {BORDER};
+}}
+QStatusBar::item {{
+    border: none;
+}}
 """
 
 
@@ -234,6 +242,10 @@ L_HOVER = "#e8eef3"
 
 LIGHT_STYLESHEET = f"""
 QMainWindow, QWidget {{
+    background-color: {L_BG_DEEP};
+    color: {L_TEXT};
+}}
+QLabel {{
     color: {L_TEXT};
     background: transparent;
 }}
@@ -388,6 +400,14 @@ QCheckBox, QRadioButton {{
 }}
 QLabel {{
     color: {L_TEXT};
+}}
+QStatusBar {{
+    background-color: {L_BG_PANEL};
+    color: {L_TEXT_MUTED};
+    border-top: 1px solid {L_BORDER};
+}}
+QStatusBar::item {{
+    border: none;
 }}
 """
 
