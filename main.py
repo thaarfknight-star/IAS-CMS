@@ -48,7 +48,7 @@ try:
     from nvr_webview_dialog import NVRWebViewDialog, _WEBENGINE_AVAILABLE
 except ImportError:
     NVRWebViewDialog, _WEBENGINE_AVAILABLE = None, False
-from face_library_dialog import FaceLibraryPage, FaceGalleryDialog
+from face_library_dialog import FaceLibraryPage, DetectedFacesDialog
 from report_store import report_store
 from reports_dialog import ReportsPage
 # رفع درخواست «سیستم پلاک‌خوان»: صفحه‌ی جدا (مثل Face Library) با دو تب
@@ -4232,9 +4232,28 @@ class MainWindow(QMainWindow):
         open_manual(getattr(self, "_current_page_key", "home"), parent=self)
 
     def open_face_gallery(self):
-        """(2.0.53-beta) باز کردن گالری «🖼 دیدن تصاویر» از بالای پنل تشخیص
-        چهره در صفحه‌ی اصلی."""
-        FaceGalleryDialog(self.face_engine, parent=self).exec()
+        """(2.0.54-beta) گالری «🖼 دیدن تصاویر» بالای پنل تشخیص چهره:
+        چهره‌های تشخیص‌داده‌شده (تاریخچه‌ی همین پنل) به‌صورت شبکه‌ای با
+        تصویر بزرگ‌تر؛ کلیک روی هر عکس → نمایش بزرگ."""
+        events = []
+        for i in range(self.face_panel_list.count()):
+            item = self.face_panel_list.item(i)
+            data = item.data(Qt.ItemDataRole.UserRole) or {}
+            pix = None
+            try:
+                icon = item.icon()
+                if not icon.isNull():
+                    pix = icon.pixmap(320, 320)
+            except Exception:
+                pix = None
+            events.append({
+                "pixmap": pix,
+                "camera": data.get("camera", ""),
+                "time": data.get("time", ""),
+                "name": data.get("name", ""),
+                "known": bool(data.get("known")),
+            })
+        DetectedFacesDialog(events, parent=self).exec()
 
     def on_face_event(self, cam, person, crop_frame):
         """برای هر چهره‌ای که هر یک از دوربین‌ها ببیند (شناخته‌شده یا
@@ -4262,6 +4281,14 @@ class MainWindow(QMainWindow):
         if pixmap is not None:
             item.setIcon(QIcon(pixmap))
         item.setForeground(Qt.GlobalColor.green if person else Qt.GlobalColor.red)
+        # (2.0.54-beta) داده‌ی ساخت‌یافته‌ی رویداد برای گالری «دیدن تصاویر»
+        # (DetectedFacesDialog)؛ متن نمایشی آیتم برای parse کردن مناسب نیست.
+        item.setData(Qt.ItemDataRole.UserRole, {
+            "camera": camera_name,
+            "time": timestamp,
+            "name": person.get("name", "") if person else "",
+            "known": bool(person),
+        })
 
         # رفع درخواست: علاوه بر نمایش موقت در همین پنل، ثبت دائمی (با
         # ساعت/تاریخ کامل و همین تصویر برش‌خورده) روی سیستم (report_store.py).

@@ -51,13 +51,68 @@ def test_gallery_button_in_face_panel_not_face_page():
     # دکمه در پنل تشخیص چهره‌ی صفحه‌ی اصلی ساخته شده
     assert "دیدن تصاویر" in src
     assert "def open_face_gallery" in src
-    assert "FaceGalleryDialog" in src
-    # و دکمه از صفحه‌ی «چهره‌ها» برداشته شده (کلاس FaceGalleryDialog سر جایش است)
+    assert "DetectedFacesDialog" in src
+    assert "FaceGalleryDialog" not in src
+    # و دکمه از صفحه‌ی «چهره‌ها» برداشته شده
     with open(os.path.join(REPO, "face_library_dialog.py"),
               encoding="utf-8") as f:
         face_src = f.read()
     assert "gallery_btn" not in face_src
     assert "def open_gallery" not in face_src
+    assert "class FaceGalleryDialog" not in face_src
+    assert "class DetectedFacesDialog" in face_src
+
+
+def test_on_face_event_attaches_structured_data():
+    """on_face_event باید داده‌ی ساخت‌یافته (camera/time/name/known) را با
+    setData روی آیتم بگذارد تا گالری «دیدن تصاویر» از آن بخواند."""
+    src = _main_source()
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "on_face_event":
+            calls = [n for n in ast.walk(node) if isinstance(n, ast.Call)]
+            setdata = [c for c in calls
+                       if isinstance(c.func, ast.Attribute)
+                       and c.func.attr == "setData"]
+            assert setdata, "on_face_event باید setData صدا بزند"
+            # کلیدهای دیکشنری داده
+            dicts = [n for n in ast.walk(node) if isinstance(n, ast.Dict)]
+            keys = set()
+            for d in dicts:
+                for k in d.keys:
+                    if isinstance(k, ast.Constant):
+                        keys.add(k.value)
+            assert {"camera", "time", "name", "known"} <= keys
+            return
+    pytest.fail("on_face_event پیدا نشد")
+
+
+def test_detected_faces_dialog_renders():
+    """رندر آفسکرین گالری چهره‌های تشخیص‌داده‌شده با ایونت فیک."""
+    import sys as _sys
+    from unittest.mock import MagicMock as _MM
+    _sys.modules.setdefault("cv2", _MM(name="cv2"))
+    _sys.modules.setdefault("numpy", _MM(name="numpy"))
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    sys.path.insert(0, REPO)
+    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtGui import QPixmap, QColor
+    app = QApplication.instance() or QApplication([])
+    from face_library_dialog import DetectedFacesDialog
+
+    pix = QPixmap(80, 80)
+    pix.fill(QColor("#336699"))
+    events = [
+        {"pixmap": pix, "camera": "دوربین ۱", "time": "15:40:01",
+         "name": "علی", "known": True},
+        {"pixmap": pix, "camera": "دوربین ۲", "time": "15:41:22",
+         "name": "", "known": False},
+        {"pixmap": None, "camera": "", "time": "", "name": "", "known": False},
+    ]
+    dlg = DetectedFacesDialog(events)
+    assert dlg.windowTitle().startswith("🖼")
+    # حالت خالی نباید کرش بدهد
+    DetectedFacesDialog([])
 
 
 def test_open_help_wired():

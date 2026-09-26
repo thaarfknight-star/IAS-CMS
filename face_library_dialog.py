@@ -210,16 +210,20 @@ class PersonFormDialog(QDialog):
         }
 
 
-class FaceGalleryDialog(QDialog):
-    """(2.0.52-beta) گالری «🖼 دیدن تصاویر»: نمایش همه‌ی عکس‌های چهره‌های
-    ثبت‌شده به‌صورت شبکه‌ای؛ کلیک روی هر عکس → نمایش بزرگ (ImageViewerDialog)."""
+class DetectedFacesDialog(QDialog):
+    """(2.0.54-beta) گالری «🖼 دیدن تصاویر»: چهره‌های تشخیص‌داده‌شده
+    (تاریخچه‌ی پنل «تشخیص چهره» در صفحه‌ی اصلی) به‌صورت شبکه‌ای با
+    نام/دوربین/ساعت؛ کلیک روی هر عکس → نمایش بزرگ.
 
-    def __init__(self, face_engine, parent=None):
+    events: لیستی از دیکشنری‌ها با کلیدهای
+      {pixmap: QPixmap, camera: str, time: str, name: str, known: bool}
+    """
+
+    def __init__(self, events, parent=None):
         super().__init__(parent)
-        self.face_engine = face_engine
-        self.setWindowTitle("🖼 تصاویر چهره‌ها")
+        self.setWindowTitle("🖼 چهره‌های تشخیص‌داده‌شده")
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self.resize(680, 480)
+        self.resize(720, 520)
 
         layout = QVBoxLayout(self)
         scroll = QScrollArea()
@@ -228,12 +232,13 @@ class FaceGalleryDialog(QDialog):
         grid = QGridLayout(container)
         grid.setSpacing(12)
 
-        people = face_engine.list_people()
         cols = 4
-        for idx, person in enumerate(people):
-            name = person.get("name") or "بدون نام"
-            group = person.get("work_group") or ""
-            photo = person.get("photo") or ""
+        for idx, ev in enumerate(events):
+            pix = ev.get("pixmap")
+            known = bool(ev.get("known"))
+            name = ev.get("name") or ("تعریف شده ✅" if known else "تعریف نشده ⚠")
+            sub = " — ".join(p for p in (ev.get("camera") or "",
+                                         ev.get("time") or "") if p)
 
             cell = QVBoxLayout()
             pic_label = QLabel()
@@ -241,36 +246,36 @@ class FaceGalleryDialog(QDialog):
             pic_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             pic_label.setStyleSheet(
                 "border: 1px solid #555; border-radius: 8px; background: #222;")
-            pix = QPixmap(photo) if photo else QPixmap()
-            if not pix.isNull():
+            if pix is not None and not pix.isNull():
                 pic_label.setPixmap(pix.scaled(
                     136, 136, Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation))
+                pic_label.setCursor(Qt.CursorShape.PointingHandCursor)
+                pic_label.mousePressEvent = (
+                    lambda _e, p=pix, t=name: self._show_large(p, t))
             else:
                 pic_label.setText("بدون عکس")
-            pic_label.setCursor(Qt.CursorShape.PointingHandCursor)
-            if photo:
-                pic_label.mousePressEvent = (
-                    lambda _e, p=photo: ImageViewerDialog(p, parent=self).exec())
             cell.addWidget(pic_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
             name_label = QLabel(name)
             name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            name_label.setStyleSheet("font-weight: bold;")
+            name_label.setStyleSheet(
+                "font-weight: bold; color: #7CFC9A;" if known
+                else "font-weight: bold; color: #FF9A9A;")
             name_label.setWordWrap(True)
             cell.addWidget(name_label)
-            if group:
-                group_label = QLabel(group)
-                group_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                group_label.setStyleSheet("color: #888; font-size: 11px;")
-                cell.addWidget(group_label)
+            if sub:
+                sub_label = QLabel(sub)
+                sub_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                sub_label.setStyleSheet("color: #888; font-size: 11px;")
+                cell.addWidget(sub_label)
 
             cell_widget = QWidget()
             cell_widget.setLayout(cell)
             grid.addWidget(cell_widget, idx // cols, idx % cols)
 
-        if not people:
-            empty = QLabel("هنوز چهره‌ای ثبت نشده است.")
+        if not events:
+            empty = QLabel("هنوز چهره‌ای تشخیص داده نشده است.")
             empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
             grid.addWidget(empty, 0, 0)
 
@@ -280,6 +285,25 @@ class FaceGalleryDialog(QDialog):
         close_btn = QPushButton("بستن")
         close_btn.clicked.connect(self.reject)
         layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
+    def _show_large(self, pixmap, title):
+        """نمایش بزرگ یک چهره‌ی تشخیص‌داده‌شده."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"👁 {title}")
+        dlg.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+        dlg.resize(420, 470)
+        lay = QVBoxLayout(dlg)
+        lbl = QLabel()
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl.setStyleSheet("background:#111; border-radius:6px;")
+        lbl.setPixmap(pixmap.scaled(
+            380, 380, Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation))
+        lay.addWidget(lbl, 1)
+        btn = QPushButton("بستن")
+        btn.clicked.connect(dlg.accept)
+        lay.addWidget(btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        dlg.exec()
 
 
 class FaceLibraryPage(QWidget):
