@@ -817,7 +817,7 @@ class PlateStore:
         "exit_without_entry": "خروج بدون ورود ثبت‌شده",
         "reentry_without_exit": "ورود مجدد بدون خروج قبلی",
         "wrong_way": "تردد خلاف جهت مجاز مسیر",
-        "watchlist_black": "⛔ پلاک در لیست سیاه",
+        "watchlist_black": "⛔ ورود غیرمجاز",
         "watchlist_white": "⭐ پلاک در لیست سفید",
     }
 
@@ -1100,6 +1100,13 @@ class PlateStore:
             q += " ORDER BY ts DESC LIMIT ?"
             vals.append(int(limit))
             return [dict(r) for r in self._conn.execute(q, vals).fetchall()]
+
+    def get_violation(self, vid):
+        """خواندن یک تخلف با id؛ None اگر یافت نشود."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM plate_violations WHERE id=?", (vid,)).fetchone()
+            return dict(row) if row else None
 
     def acknowledge_violation(self, vid, acknowledged=True):
         with self._lock:

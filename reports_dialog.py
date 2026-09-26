@@ -12,10 +12,11 @@ from PyQt6.QtGui import QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QDateEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog,
-    QMessageBox, QTabWidget, QCheckBox,
+    QMessageBox, QTabWidget, QCheckBox, QLineEdit,
 )
 
 from report_store import EVENT_TYPE_LABELS_FA
+from plate_store import plate_store
 from nvr_playback_dialog import NVRPlaybackDialog
 
 # چند ثانیه قبل/بعد از لحظه‌ی ثبت‌شده‌ی هر رویداد که برای پخش بازبینی از NVR
@@ -132,8 +133,101 @@ class ReportsPage(QWidget):
         self.viol_summary = QLabel("")
         viol_layout.addWidget(self.viol_summary)
 
+        # --- تب «تخلفات پلاک»: تخلفات ثبت‌شده‌ی پلاک‌خوان
+        # (plate_store.plate_violations) — از جمله «⛔ ورود غیرمجاز» برای
+        # پلاک‌های لیست سیاه. با همان بازه‌ی تاریخی بالای صفحه.
+        pviol_tab = QWidget()
+        pviol_layout = QVBoxLayout(pviol_tab)
+        pviol_layout.setContentsMargins(0, 6, 0, 0)
+        self.tabs.addTab(pviol_tab, "🚨 تخلفات پلاک")
+        pviol_filter = QHBoxLayout()
+        pviol_filter.addWidget(QLabel("نوع تخلف:"))
+        self.pviol_type_combo = QComboBox()
+        self.pviol_type_combo.addItem("همه", None)
+        for vt, lbl in plate_store.VIOLATION_LABELS.items():
+            self.pviol_type_combo.addItem(lbl, vt)
+        self.pviol_type_combo.currentIndexChanged.connect(
+            self.run_plate_violation_search)
+        pviol_filter.addWidget(self.pviol_type_combo)
+        self.pviol_unacked = QCheckBox("فقط بررسی‌نشده‌ها")
+        self.pviol_unacked.setChecked(False)
+        self.pviol_unacked.toggled.connect(self.run_plate_violation_search)
+        pviol_filter.addWidget(self.pviol_unacked)
+        pviol_filter.addWidget(QLabel("جست‌وجو:"))
+        self.pviol_search = QLineEdit()
+        self.pviol_search.setPlaceholderText("پلاک یا نام مالک...")
+        self.pviol_search.returnPressed.connect(self.run_plate_violation_search)
+        pviol_filter.addWidget(self.pviol_search)
+        pviol_search_btn = QPushButton("🔍 اعمال")
+        pviol_search_btn.clicked.connect(self.run_plate_violation_search)
+        pviol_filter.addWidget(pviol_search_btn)
+        pviol_refresh = QPushButton("🔄 به‌روزرسانی")
+        pviol_refresh.clicked.connect(self.run_plate_violation_search)
+        pviol_filter.addWidget(pviol_refresh)
+        pviol_filter.addStretch()
+        pviol_layout.addLayout(pviol_filter)
+        self.pviol_table = QTableWidget(0, 9)
+        self.pviol_table.setHorizontalHeaderLabels([
+            "تاریخ (شمسی)", "ساعت", "نوع تخلف", "پلاک", "مالک",
+            "دوربین", "جزئیات", "وضعیت", "تصویر",
+        ])
+        self.pviol_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch)
+        self.pviol_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.pviol_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows)
+        pviol_layout.addWidget(self.pviol_table)
+        self.pviol_summary = QLabel("")
+        pviol_layout.addWidget(self.pviol_summary)
+
         self.run_search()
         self.run_violation_search()
+        self.run_plate_violation_search()
+
+    def run_plate_violation_search(self):
+        """پر کردن تب «تخلفات پلاک» از plate_store.plate_violations با
+        همان بازه‌ی تاریخی بالای صفحه."""
+        df = self.from_date.date().toString("yyyy-MM-dd")
+        dt = self.to_date.date().toString("yyyy-MM-dd")
+        vtype = self.pviol_type_combo.currentData()
+        acked = False if self.pviol_unacked.isChecked() else None
+        search = self.pviol_search.text().strip()
+        try:
+            rows = plate_store.list_violations(
+                date_from=df, date_to=dt, violation_type=vtype,
+                search=search, acknowledged=acked)
+        except Exception as e:
+            self.pviol_summary.setText(f"خطا در جست‌وجو: {e}")
+            return
+        self.pviol_table.setRowCount(0)
+        n_unacked = 0
+        for r in rows:
+            row = self.pviol_table.rowCount()
+            self.pviol_table.insertRow(row)
+            vtype_lbl = plate_store.VIOLATION_LABELS.get(
+                r.get("violation_type"), r.get("violation_type") or "")
+            acked_lbl = ("✅ بررسی‌شده" if r.get("acknowledged")
+                         else "⚠️ بررسی‌نشده")
+            if not r.get("acknowledged"):
+                n_unacked += 1
+            vals = [r.get("date_j", ""), r.get("time_g", ""), vtype_lbl,
+                    r.get("plate_display", ""), r.get("owner_name", ""),
+                    r.get("camera_name", ""), r.get("detail", ""), acked_lbl]
+            for c, v in enumerate(vals):
+                item = QTableWidgetItem(str(v))
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.pviol_table.setItem(row, c, item)
+            img_item = QTableWidgetItem("")
+            sp = r.get("snapshot_path") or ""
+            if sp:
+                pixmap = QPixmap(sp)
+                if not pixmap.isNull():
+                    img_item.setIcon(QIcon(pixmap.scaledToHeight(
+                        48, Qt.TransformationMode.SmoothTransformation)))
+                img_item.setToolTip(sp)
+            self.pviol_table.setItem(row, 8, img_item)
+        self.pviol_summary.setText(
+            f"مجموع: {len(rows)} تخلف — بررسی‌نشده: {n_unacked}")
 
     def refresh(self):
         """هر بار که صفحه از هدر باز می‌شود صدا زده می‌شود: لیست دوربین‌ها
@@ -142,6 +236,7 @@ class ReportsPage(QWidget):
         self._reload_camera_combo()
         self.run_search()
         self.run_violation_search()
+        self.run_plate_violation_search()
 
     def run_violation_search(self):
         """پر کردن تب «تخلفات طبقاتی» از person_store.floor_violations با

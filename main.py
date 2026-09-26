@@ -1925,7 +1925,7 @@ class CameraGridWidget(QWidget):
         self.on_face_event = on_face_event
         # رفع درخواست: با ورود شخصی به یکی از محدوده‌های هشدار هر خانه، این
         # callback (در MainWindow) به هر خانه‌ی تازه‌ساخته‌شده هم پاس داده
-        # می‌شود تا رویداد در پنل تشخیص چهره هم ثبت شود.
+        # می‌شود تا رویداد در پنل رویدادها هم ثبت شود.
         self.on_region_alert = on_region_alert
         # رفع درخواست «سیستم تشخیص دود و اعلام حریق»: مشابه on_region_alert،
         # به هر خانه‌ی تازه‌ساخته‌شده پاس داده می‌شود.
@@ -2693,25 +2693,29 @@ class MainWindow(QMainWindow):
         grid_column.addWidget(grid_scroll, 1)
 
         # ------------------------------------------------ ستون راست: پنل
-        # تشخیص چهره. رفع درخواست: پنل قبلی «رویدادهای شناسایی چهره» که در
-        # پایین پنجره و به‌صورت یک لیست متنی ساده بود حذف شد؛ به‌جای آن این
-        # پنل، سمت راست تصویر دوربین‌ها قرار گرفته و برای هر چهره‌ای که هر
-        # کدام از دوربین‌ها می‌بیند (چه شناخته‌شده چه تعریف‌نشده)، یک ردیف با
-        # تصویر برش‌خورده‌ی همان چهره و برچسب «تعریف شده» یا «تعریف نشده»
-        # ثبت می‌کند.
-        face_panel_group = QGroupBox("پنل تشخیص چهره")
-        face_panel_layout = QVBoxLayout()
-        # (2.0.53-beta) به دستور کاربر: دکمه‌ی «🖼 دیدن تصاویر» بالای همین پنل
-        # (منتقل شد از صفحه‌ی «چهره‌ها»)
+        # رویدادها (2.0.56-beta به دستور کاربر: تبدیل «پنل تشخیص چهره» به
+        # «پنل رویدادها»). این پنل رویدادهای مهم سیستم را نشان می‌دهد:
+        # تخلفات پلاک‌خوان (از جمله «⛔ ورود غیرمجاز» برای پلاک‌های لیست
+        # سیاه) و هشدارهای «ورود به محدوده». رویدادهای شناسایی چهره دیگر
+        # این‌جا نمایش داده نمی‌شوند (در صفحه‌ی «چهره‌ها» و گزارش‌ها هستند)
+        # ولی برای گالری «دیدن تصاویر» در حافظه نگه داشته می‌شوند.
+        events_panel_group = QGroupBox("🚨 پنل رویدادها")
+        events_panel_layout = QVBoxLayout()
+        # دکمه‌ی «🖼 دیدن تصاویر»: گالری چهره‌های تشخیص‌داده‌شده (تاریخچه‌ی
+        # همین نشست، از حافظه — نه از لیست پنل).
         gallery_btn = QPushButton("🖼 دیدن تصاویر")
         gallery_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         gallery_btn.clicked.connect(self.open_face_gallery)
-        face_panel_layout.addWidget(gallery_btn)
-        self.face_panel_list = QListWidget()
-        self.face_panel_list.setIconSize(QSize(64, 64))
-        self.face_panel_list.setWordWrap(True)
-        face_panel_layout.addWidget(self.face_panel_list)
-        face_panel_group.setLayout(face_panel_layout)
+        events_panel_layout.addWidget(gallery_btn)
+        self.events_panel_list = QListWidget()
+        self.events_panel_list.setIconSize(QSize(64, 64))
+        self.events_panel_list.setWordWrap(True)
+        events_panel_layout.addWidget(self.events_panel_list)
+        events_panel_group.setLayout(events_panel_layout)
+        # تاریخچه‌ی چهره‌های این نشست برای گالری + شناسه‌ی تخلفات پلاکی که
+        # قبلاً در پنل نمایش داده شده‌اند (جلوگیری از تکرار).
+        self._recent_face_events = []
+        self._shown_violation_ids = set()
 
         # پنل «هشدارهای حریق و دود» - رفع درخواست «سیستم تشخیص دود و اعلام
         # حریق»: هم رویدادهای تشخیص تصویری (fire_smoke_detector.py روی هر
@@ -2746,15 +2750,15 @@ class MainWindow(QMainWindow):
         # اولیه‌ی مشخص (۶۰٪/۴۰٪) دارد، هم کاربر می‌تواند با کشیدن لبه‌ی بین
         # دو پنل، اندازه‌ی هرکدام را دستی تنظیم کند، و هم حداقل ارتفاعی
         # (setMinimumHeight) دارند که هیچ‌کدام کاملاً جمع نشوند.
-        face_panel_group.setMinimumHeight(120)
+        events_panel_group.setMinimumHeight(120)
         fire_panel_group.setMinimumHeight(120)
         self.right_splitter = QSplitter(Qt.Orientation.Vertical)
-        self.right_splitter.addWidget(face_panel_group)
+        self.right_splitter.addWidget(events_panel_group)
         self.right_splitter.addWidget(fire_panel_group)
         self.right_splitter.setStretchFactor(0, 3)
         self.right_splitter.setStretchFactor(1, 2)
 
-        # رفع درخواست: عرض پنل سمت راست (پنل تشخیص چهره) باید دقیقاً هم‌اندازه‌ی
+        # رفع درخواست: عرض پنل سمت راست (پنل رویدادها) باید دقیقاً هم‌اندازه‌ی
         # پنل سمت چپ باشد تا فضای بیشتری به تصویر دوربین‌ها در وسط برسد. قبلاً
         # با addLayout/addWidget + ضریب کشش (stretch factor) این کار انجام
         # می‌شد، اما چون QVBoxLayout سمت چپ و QGroupBox سمت راست حداقل‌اندازه‌ی
@@ -3147,7 +3151,7 @@ class MainWindow(QMainWindow):
     def on_region_alert(self, cam, number, name):
         """رفع درخواست: با ورود شخصی به یکی از محدوده‌های هشدار هر دوربین
         (از CameraSlotWidget._on_region_entered)، یک ردیف متنی قرمز هم در
-        پنل تشخیص چهره (سمت راست) ثبت می‌شود تا سابقه‌ی هشدارها هم در دسترس
+        پنل رویدادها (سمت راست) ثبت می‌شود تا سابقه‌ی هشدارها هم در دسترس
         باشد. ``cam``: کل دیکشنری دوربین (نه فقط اسم) تا nvr_id/channel هم
         برای لینک «پخش ویدیوی NVR» در دیالوگ گزارش‌ها ذخیره شود."""
         # گیت لایسنس: اگر قابلیت «هشدار ورود به محدوده» فعال نباشد،
@@ -3164,13 +3168,13 @@ class MainWindow(QMainWindow):
         text = f"[{timestamp}] {camera_name}\n⚠ ورود به محدوده {label}"
         item = QListWidgetItem(text)
         item.setForeground(QColor("#e74c3c"))
-        self.face_panel_list.insertItem(0, item)
+        self.events_panel_list.insertItem(0, item)
         # رفع درخواست: علاوه بر نمایش موقت در همین پنل، ثبت دائمی روی سیستم
         # (report_store.py) - قابل جست‌وجو/خروجی از دیالوگ «گزارش‌ها».
         report_store.log_region_alert(camera_name, number, name,
                                        nvr_id=cam.get("nvr_id"), channel=cam.get("channel"))
-        while self.face_panel_list.count() > 300:
-            self.face_panel_list.takeItem(self.face_panel_list.count() - 1)
+        while self.events_panel_list.count() > 300:
+            self.events_panel_list.takeItem(self.events_panel_list.count() - 1)
 
     def on_fire_event(self, cam, kind: str, crop_frame, confidence: float):
         """رفع درخواست «سیستم تشخیص دود و اعلام حریق»: با هر تشخیص تصویری
@@ -4232,34 +4236,36 @@ class MainWindow(QMainWindow):
         open_manual(getattr(self, "_current_page_key", "home"), parent=self)
 
     def open_face_gallery(self):
-        """(2.0.54-beta) گالری «🖼 دیدن تصاویر» بالای پنل تشخیص چهره:
-        چهره‌های تشخیص‌داده‌شده (تاریخچه‌ی همین پنل) به‌صورت شبکه‌ای با
-        تصویر بزرگ‌تر؛ کلیک روی هر عکس → نمایش بزرگ."""
+        """گالری «🖼 دیدن تصاویر» بالای پنل رویدادها: چهره‌های
+        تشخیص‌داده‌شده‌ی همین نشست (از حافظه) به‌صورت شبکه‌ای با تصویر
+        بزرگ‌تر؛ کلیک روی هر عکس → نمایش بزرگ."""
         events = []
-        for i in range(self.face_panel_list.count()):
-            item = self.face_panel_list.item(i)
-            data = item.data(Qt.ItemDataRole.UserRole) or {}
-            pix = None
+        for ev in list(getattr(self, "_recent_face_events", []) or []):
+            pix = ev.get("pixmap")
             try:
-                icon = item.icon()
-                if not icon.isNull():
-                    pix = icon.pixmap(320, 320)
+                if pix is not None and not pix.isNull():
+                    pix = pix.scaled(320, 320,
+                                     Qt.AspectRatioMode.KeepAspectRatio,
+                                     Qt.TransformationMode.SmoothTransformation)
+                else:
+                    pix = None
             except Exception:
                 pix = None
             events.append({
                 "pixmap": pix,
-                "camera": data.get("camera", ""),
-                "time": data.get("time", ""),
-                "name": data.get("name", ""),
-                "known": bool(data.get("known")),
+                "camera": ev.get("camera", ""),
+                "time": ev.get("time", ""),
+                "name": ev.get("name", ""),
+                "known": bool(ev.get("known")),
             })
         DetectedFacesDialog(events, parent=self).exec()
 
     def on_face_event(self, cam, person, crop_frame):
         """برای هر چهره‌ای که هر یک از دوربین‌ها ببیند (شناخته‌شده یا
-        تعریف‌نشده) فراخوانی می‌شود و یک ردیف جدید - با تصویر برش‌خورده‌ی
-        همان چهره - در بالای پنل تشخیص چهره (سمت راست تصویر دوربین‌ها) اضافه
-        می‌کند. ``cam``: کل دیکشنری دوربین (نه فقط اسم) تا nvr_id/channel هم
+        تعریف‌نشده) فراخوانی می‌شود. (2.0.56-beta) چهره‌ها دیگر در «پنل
+        رویدادها» نمایش داده نمی‌شوند؛ فقط برای گالری «دیدن تصاویر» در
+        حافظه نگه داشته و مثل قبل به‌صورت دائمی در گزارش‌ها ثبت می‌شوند.
+        ``cam``: کل دیکشنری دوربین (نه فقط اسم) تا nvr_id/channel هم
         برای لینک «پخش ویدیوی NVR» در دیالوگ گزارش‌ها ذخیره شود."""
         # گیت لایسنس: اگر قابلیت چهره‌خوان فعال نباشد، چهره‌ای شناسایی
         # و ثبت نمی‌شود.
@@ -4271,34 +4277,23 @@ class MainWindow(QMainWindow):
             pass
         camera_name = cam.get("name", "")
         timestamp = time.strftime("%H:%M:%S")
-        if person:
-            text = f"[{timestamp}] {camera_name}\n{person.get('name', '')} — تعریف شده ✅"
-        else:
-            text = f"[{timestamp}] {camera_name}\n⚠ تعریف نشده"
-
-        item = QListWidgetItem(text)
         pixmap = _bgr_to_pixmap(crop_frame) if crop_frame is not None else None
-        if pixmap is not None:
-            item.setIcon(QIcon(pixmap))
-        item.setForeground(Qt.GlobalColor.green if person else Qt.GlobalColor.red)
-        # (2.0.54-beta) داده‌ی ساخت‌یافته‌ی رویداد برای گالری «دیدن تصاویر»
-        # (DetectedFacesDialog)؛ متن نمایشی آیتم برای parse کردن مناسب نیست.
-        item.setData(Qt.ItemDataRole.UserRole, {
+        # تاریخچه‌ی همین نشست برای گالری «دیدن تصاویر».
+        self._recent_face_events.insert(0, {
+            "pixmap": pixmap,
             "camera": camera_name,
             "time": timestamp,
             "name": person.get("name", "") if person else "",
             "known": bool(person),
         })
+        # جلوگیری از رشد بی‌حد حافظه در نشست‌های طولانی.
+        while len(self._recent_face_events) > 300:
+            self._recent_face_events.pop()
 
-        # رفع درخواست: علاوه بر نمایش موقت در همین پنل، ثبت دائمی (با
-        # ساعت/تاریخ کامل و همین تصویر برش‌خورده) روی سیستم (report_store.py).
+        # ثبت دائمی (با ساعت/تاریخ کامل و همین تصویر برش‌خورده) روی سیستم
+        # (report_store.py).
         report_store.log_face_event(camera_name, person, crop_frame,
                                      nvr_id=cam.get("nvr_id"), channel=cam.get("channel"))
-
-        self.face_panel_list.insertItem(0, item)
-        # جلوگیری از رشد بی‌حد پنل در نشست‌های طولانی.
-        while self.face_panel_list.count() > 300:
-            self.face_panel_list.takeItem(self.face_panel_list.count() - 1)
 
     # ------------------------------------------------------ plate reader ---
 
@@ -4325,7 +4320,16 @@ class MainWindow(QMainWindow):
             try:
                 engine = getattr(self, "plate_direction", None)
                 if engine is not None:
-                    engine.process(cam, data, event)
+                    result = engine.process(cam, data, event)
+                    # (2.0.56-beta) هر تخلف ثبت‌شده (از جمله «⛔ ورود
+                    # غیرمجاز» برای پلاک لیست سیاه) در «پنل رویدادها» هم
+                    # نمایش داده می‌شود.
+                    try:
+                        vids = (result or {}).get("violations") or []
+                    except Exception:
+                        vids = []
+                    for vid in vids:
+                        self._push_plate_violation_to_events(vid)
                 # لینک دوربین/مسیر روی رویداد عبور (برای گزارش‌ها)
                 try:
                     with plate_store._lock:
@@ -4356,6 +4360,46 @@ class MainWindow(QMainWindow):
                 pass
         except Exception as e:
             print(f"خطا در ثبت رویداد پلاک: {e}")
+
+    def _push_plate_violation_to_events(self, vid):
+        """(2.0.56-beta) نمایش یک تخلف پلاک در «پنل رویدادها»: ردیف قرمز با
+        نوع تخلف (مثل «⛔ ورود غیرمجاز» برای پلاک لیست سیاه)، شماره‌ی پلاک،
+        دوربین و تصویر لحظه‌ی تخلف در صورت وجود."""
+        try:
+            if not vid or vid in self._shown_violation_ids:
+                return
+            self._shown_violation_ids.add(vid)
+            # جلوگیری از رشد بی‌حد مجموعه‌ی شناسه‌ها در نشست‌های طولانی.
+            if len(self._shown_violation_ids) > 2000:
+                self._shown_violation_ids.clear()
+                self._shown_violation_ids.add(vid)
+            v = plate_store.get_violation(vid)
+            if not v:
+                return
+            vtype = v.get("violation_type") or ""
+            vlabel = plate_store.VIOLATION_LABELS.get(vtype, vtype)
+            timestamp = time.strftime("%H:%M:%S")
+            plate_display = v.get("plate_display") or v.get("plate_text") or ""
+            camera_name = v.get("camera_name") or ""
+            text = f"[{timestamp}] {vlabel}\nپلاک: {plate_display}"
+            if camera_name:
+                text += f" | {camera_name}"
+            item = QListWidgetItem(text)
+            sp = v.get("snapshot_path") or ""
+            if sp:
+                try:
+                    pixmap = QPixmap(sp)
+                    if not pixmap.isNull():
+                        item.setIcon(QIcon(pixmap))
+                except Exception:
+                    pass
+            item.setForeground(QColor("#c0392b"))
+            self.events_panel_list.insertItem(0, item)
+            # جلوگیری از رشد بی‌حد پنل در نشست‌های طولانی.
+            while self.events_panel_list.count() > 300:
+                self.events_panel_list.takeItem(self.events_panel_list.count() - 1)
+        except Exception as e:
+            print(f"خطا در نمایش تخلف پلاک در پنل رویدادها: {e}")
 
     def _get_plate_live_diag(self):
         """جمع‌آوری شمارنده‌های تشخیصی پلاک‌خوان همه‌ی دوربین‌های باز برای
