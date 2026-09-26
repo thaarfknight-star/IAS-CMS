@@ -4284,6 +4284,44 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"خطا در اعمال پلاک‌خوان روی دوربین باز: {e}")
 
+    def reapply_live_feature_flags(self):
+        """بازنویسی وضعیت موتورهای دوربین‌های باز از روی رکورد تازه‌ی
+        camera_store (بعد از آپلود لایسنس جدید و enforce_quotas).
+
+        اگر لایسنس جدید تیک قابلیتی (پلاک‌خوان/حریق/ردیابی اشخاص) را از روی
+        دوربینی برداشته باشد، موتورِ در حال اجرای آن دوربین هم همین‌جا
+        خاموش می‌شود؛ وگرنه استریم باز با موتور قبلی به کارش ادامه می‌داد.
+        """
+        try:
+            grid = getattr(self, "camera_grid", None)
+            store = getattr(self, "camera_store", None)
+            if grid is None or store is None:
+                return
+            for slot in grid.slots:
+                cam = getattr(slot, "cam", None)
+                if not isinstance(cam, dict):
+                    continue
+                try:
+                    fresh = store.get_camera(cam.get("id"))
+                except Exception:
+                    fresh = None
+                if not isinstance(fresh, dict):
+                    fresh = cam
+                try:
+                    slot.set_plate_detection(bool(fresh.get("plate_detection")))
+                except Exception:
+                    pass
+                try:
+                    slot.set_fire_detection(bool(fresh.get("fire_detection")))
+                except Exception:
+                    pass
+                try:
+                    slot.set_person_tracking(bool(fresh.get("person_tracking")))
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"خطا در بازنویسی قابلیت‌های دوربین‌های باز: {e}")
+
     def on_person_event(self, cam, data):
         """برای هر رویداد ردیابی اشخاص که یکی از دوربین‌های فعالِ ردیابی
         ببیند فراخوانی می‌شود. data دیکشنری {"type": "candidate" /

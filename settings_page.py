@@ -183,6 +183,10 @@ class SettingsPage(QWidget):
                                                "#2e7d32")
         self.license_btn.clicked.connect(self._on_license_upload)
         licrow.addWidget(self.license_btn)
+        self.license_view_btn = self._action_button("👁 مشاهده‌ی لایسنس",
+                                                    "#1565c0")
+        self.license_view_btn.clicked.connect(self._on_license_view)
+        licrow.addWidget(self.license_view_btn)
         lichint = QLabel("فایل لایسنس (.lic) را که از فروشنده گرفته‌اید انتخاب "
                          "کنید؛ فقط همین فایل پذیرفته می‌شود و قابلیت‌های مجاز "
                          "بلافاصله فعال می‌شوند.")
@@ -210,6 +214,21 @@ class SettingsPage(QWidget):
                     "(نمایش تصویر همه‌ی دوربین‌ها؛ فقط شمارش افراد فعال است).")
         except Exception:
             pass
+
+    def _on_license_view(self):
+        """نمایش دیالوگ «مدیریت لایسنس»: سهمیه‌ها + کپی شناسه‌ی سخت‌افزاری."""
+        try:
+            from license import open_license_dialog
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "خطا",
+                                f"بارگذاری ماژول لایسنس ناموفق بود:\n{e}")
+            return
+        try:
+            open_license_dialog(self, getattr(self, "camera_store", None))
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "خطا", f"نمایش لایسنس ناموفق بود:\n{e}")
 
     def _on_license_upload(self):
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
@@ -253,6 +272,14 @@ class SettingsPage(QWidget):
             cam_store = getattr(self, "camera_store", None)
             if cam_store is not None:
                 enforce_lines = enforce_quotas(cam_store) or []
+        except Exception:
+            pass
+        # تازه‌سازی موتورهای دوربین‌های باز: اگر تیک قابلیتی برداشته شده،
+        # موتور در حال اجرای آن دوربین هم خاموش می‌شود (نه فقط رکورد ذخیره‌شده)
+        try:
+            win = self.window()
+            if hasattr(win, "reapply_live_feature_flags"):
+                win.reapply_live_feature_flags()
         except Exception:
             pass
         # پنجره‌ی اطلاعیه: چه قابلیت‌هایی باز شد + اقدامات خودکار
