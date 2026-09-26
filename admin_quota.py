@@ -281,3 +281,82 @@ def prompt_admin_password(parent=None, attempts=3):
         except Exception:
             pass
     return False
+
+
+# ----------------------------------------------------------------------------
+# اعمال سقف‌ها: اگر تعداد دوربین‌هایی که قابلیتی را دارند از سقف لایسنس فعلی
+# بیشتر شده باشد (مثلاً لایسنس جدید سقف کمتری دارد)، تیک آن قابلیت از روی
+# دوربین‌های اضافی برداشته می‌شود تا مصرف دقیقاً به سقف برسد.
+# ----------------------------------------------------------------------------
+
+def enforce_quotas(camera_store):
+    """اعمال سقف‌های لایسنس فعلی روی دوربین‌ها.
+
+    برمی‌گرداند: لیست خطوط فارسی گزارش (خالی یعنی همه‌چیز در سقف است).
+
+    - برای plate/fire/person_tracking: تیک قابلیت از روی دوربین‌های اضافی
+      (بعد از سقف، به ترتیب لیست دوربین‌ها) برداشته و ذخیره می‌شود.
+    - اگر سهمیه‌ای در لایسنس کلاً غیرفعال باشد (صفر واقعی)، تیک آن از روی
+      همه‌ی دوربین‌ها برداشته می‌شود.
+    - برای «تعداد کل دوربین‌ها» حذف خودکار انجام نمی‌شود (از دست رفتن
+      اطلاعات دوربین)؛ فقط هشدار داده می‌شود تا کاربر دستی حذف کند.
+    - بدون لایسنس معتبر کاری انجام نمی‌شود (حالت محدود را گیت‌های زمان
+      اجرا مدیریت می‌کنند).
+    """
+    lines = []
+    if not _license_valid():
+        return lines
+    try:
+        from license import is_quota_enabled, effective_quotas
+        quotas = effective_quotas()
+    except Exception:
+        return lines
+    try:
+        cams = camera_store.get_cameras() or []
+    except Exception:
+        return lines
+
+    for key, title, flag in QUOTA_DEFS:
+        try:
+            enabled = bool(is_quota_enabled(key))
+        except Exception:
+            enabled = True
+        try:
+            limit = max(0, int((quotas or {}).get(key, 0)))
+        except Exception:
+            limit = 0
+
+        if key == "cameras":
+            if enabled and limit > 0 and len(cams) > limit:
+                lines.append(
+                    f"⛔ تعداد دوربین‌ها ({len(cams)}) از سقف لایسنس ({limit}) "
+                    f"بیشتر است — {len(cams) - limit} دوربین اضافی را حذف کنید "
+                    "تا برنامه از حالت محدود خارج شود.")
+            continue
+        if not flag:
+            continue
+        if enabled and limit <= 0:
+            continue  # نامحدود
+        # سهمیه‌ی غیرفعال (صفر واقعی) = سقف مؤثر صفر
+        eff_limit = limit if enabled else 0
+        using = [c for c in cams
+                 if isinstance(c, dict) and bool(c.get(flag))]
+        if len(using) <= eff_limit:
+            continue
+        excess = using[eff_limit:]
+        for c in excess:
+            try:
+                camera_store.update_camera(c.get("id"), **{flag: False})
+            except Exception:
+                pass
+        names = "، ".join(str(c.get("name") or c.get("ip") or "؟")
+                          for c in excess)
+        if enabled:
+            reason = f"سقف لایسنس جدید: {limit}"
+        else:
+            reason = "این قابلیت در لایسنس جدید غیرفعال است"
+        lines.append(
+            f"⚠️ «{title}» از روی {len(excess)} دوربین برداشته شد "
+            f"({reason}): {names} — برای فعال‌سازی دوباره، تیک قابلیت را "
+            "در تنظیمات دوربین بزنید.")
+    return lines

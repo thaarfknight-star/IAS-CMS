@@ -245,10 +245,21 @@ class SettingsPage(QWidget):
                 win.refresh_license_state()
         except Exception:
             pass
-        # پنجره‌ی اطلاعیه: چه قابلیت‌هایی باز شد
+        # اعمال سقف‌های لایسنس جدید: اگر سقف قابلیتی کم شده، تیک آن از روی
+        # دوربین‌های اضافی برداشته می‌شود و به کاربر اطلاع داده می‌شود
+        enforce_lines = []
         try:
-            show_license_announcement(self, old_state, new_state)
-        except Exception as e:
+            from admin_quota import enforce_quotas
+            cam_store = getattr(self, "camera_store", None)
+            if cam_store is not None:
+                enforce_lines = enforce_quotas(cam_store) or []
+        except Exception:
+            pass
+        # پنجره‌ی اطلاعیه: چه قابلیت‌هایی باز شد + اقدامات خودکار
+        try:
+            show_license_announcement(self, old_state, new_state,
+                                      extra_lines=enforce_lines)
+        except Exception:
             QMessageBox.information(self, "انجام شد",
                                     "لایسنس با موفقیت نصب و فعال شد. ✅")
 

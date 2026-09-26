@@ -484,8 +484,12 @@ def describe_license_changes(old_state, new_state) -> list:
     return lines
 
 
-def show_license_announcement(parent, old_state, new_state):
-    """پنجره‌ی اطلاعیه بعد از آپلود لایسنس: چه قابلیت‌هایی باز/بسته شد."""
+def show_license_announcement(parent, old_state, new_state, extra_lines=None):
+    """پنجره‌ی اطلاعیه بعد از آپلود لایسنس: چه قابلیت‌هایی باز/بسته شد.
+
+    extra_lines: خطوط گزارش اقدامات خودکار (مثلاً حذف قابلیت از دوربین‌های
+    اضافی چون سقف لایسنس کم شده) که زیر تغییرات نشان داده می‌شود.
+    """
     from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QPushButton)
     from PyQt6.QtCore import Qt
     changes = describe_license_changes(old_state, new_state)
@@ -516,6 +520,12 @@ def show_license_announcement(parent, old_state, new_state):
         lay.addWidget(body)
     else:
         lay.addWidget(QLabel("تغییری در قابلیت‌ها نسبت به قبل ایجاد نشد."))
+    if extra_lines:
+        lay.addWidget(QLabel("<b>اقدامات خودکار روی دوربین‌ها:</b>"))
+        ebody = QLabel("<br>".join(extra_lines))
+        ebody.setWordWrap(True)
+        ebody.setStyleSheet("font-size: 13px;")
+        lay.addWidget(ebody)
     lay.addWidget(QLabel(
         "<span style='color:#888; font-size:11px;'>قابلیت‌های مجاز هم‌اکنون "
         "فعال‌اند؛ نیازی به بستن و باز کردن برنامه نیست.</span>"))

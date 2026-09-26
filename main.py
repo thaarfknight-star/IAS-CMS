@@ -2307,6 +2307,24 @@ class MainWindow(QMainWindow):
                     f"{_lic_err}\n\nبرنامه در حالت محدود اجرا می‌شود "
                     "(نمایش تصویر همه‌ی دوربین‌ها؛ فقط شمارش افراد فعال است).\n"
                     "از صفحه‌ی تنظیمات، فایل لایسنس (.lic) را بارگذاری کنید.")
+            else:
+                # اگر فایل لایسنس بیرون از برنامه عوض شده و سقفی کم شده،
+                # تیک قابلیت از روی دوربین‌های اضافی برداشته می‌شود
+                try:
+                    from admin_quota import enforce_quotas
+                    from PyQt6.QtWidgets import QMessageBox
+                    cam_store = getattr(self, "camera_store", None)
+                    lines = enforce_quotas(cam_store) if cam_store else []
+                    if lines:
+                        QMessageBox.warning(
+                            self, "سقف لایسنس تغییر کرد",
+                            "سقف برخی قابلیت‌ها در لایسنس فعلی کمتر از مصرف "
+                            "فعلی است؛ به‌صورت خودکار اصلاح شد:\n\n"
+                            + "\n".join(lines)
+                            + "\n\nبرای فعال‌سازی دوباره، تیک قابلیت را در "
+                            "تنظیمات دوربین بزنید.")
+                except Exception:
+                    pass
         except Exception:
             pass
         self._maybe_show_update_notice()
