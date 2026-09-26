@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""تست‌های 2.0.53-beta:
+"""تست‌های 2.0.53-beta و 2.0.55-beta:
   ۱) انتقال دکمه‌ی «دیدن تصاویر» از صفحه‌ی چهره‌ها به پنل «تشخیص چهره»
      در صفحه‌ی اصلی (به دستور کاربر)
   ۲) کاتالوگ PDF راهنما + دکمه‌ی «راهنما» در هدر و نگاشت صفحه‌ها
+  ۳) (2.0.55) آموزش کامل ۳۲ صفحه‌ای + نگاشت جدید صفحه‌های راهنما
 """
 import ast
 import os
@@ -21,16 +22,17 @@ def test_help_pages_mapping():
     from app_help import HELP_PAGES
     assert set(HELP_PAGES) == {"home", "fire", "face", "reports", "plate",
                                "person", "map", "settings"}
-    # صفحه‌های ۲ تا ۹، بدون تکرار
-    assert sorted(HELP_PAGES.values()) == [2, 3, 4, 5, 6, 7, 8, 9]
+    # نگاشت 2.0.55: شروع هر بخش در آموزش ۳۲ صفحه‌ای، بدون تکرار
+    assert HELP_PAGES == {"home": 6, "fire": 10, "face": 12, "reports": 15,
+                          "plate": 18, "person": 22, "map": 25, "settings": 27}
 
 
-def test_manual_pdf_exists_and_has_10_pages():
+def test_manual_pdf_exists_and_has_32_pages():
     from pypdf import PdfReader
     from app_help import manual_path
     path = manual_path()
     assert os.path.exists(path), f"PDF راهنما پیدا نشد: {path}"
-    assert len(PdfReader(path).pages) == 10
+    assert len(PdfReader(path).pages) == 32
 
 
 def test_manual_pdf_bundled_in_assets():
