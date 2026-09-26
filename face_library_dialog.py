@@ -294,16 +294,13 @@ class FaceLibraryPage(QWidget):
         self.face_engine = face_engine
         self.get_current_frame_callback = get_current_frame_callback
 
-        # (2.0.52-beta) بالای پنل: گزینه‌ی «🖼 دیدن تصاویر» برای دیدن عکس چهره‌ها
+        # بالای پنل: فقط عنوان (دکمه‌ی «🖼 دیدن تصاویر» به دستور کاربر به
+        # پنل «تشخیص چهره» در صفحه‌ی اصلی منتقل شد)
         title_row = QHBoxLayout()
         title = QLabel("👤 Face Library - مدیریت چهره‌ها")
         title.setStyleSheet("font-size: 16px; font-weight: bold; padding: 4px;")
         title_row.addWidget(title)
         title_row.addStretch()
-        gallery_btn = QPushButton("🖼 دیدن تصاویر")
-        gallery_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        gallery_btn.clicked.connect(self.open_gallery)
-        title_row.addWidget(gallery_btn)
 
         # فیلتر دسته‌بندی بر اساس گروه کاری
         filter_row = QHBoxLayout()
@@ -364,10 +361,6 @@ class FaceLibraryPage(QWidget):
     def refresh(self):
         """هر بار که صفحه از هدر باز می‌شود صدا زده می‌شود تا جدول تازه باشد."""
         self.refresh_table()
-
-    def open_gallery(self):
-        """(2.0.52-beta) باز کردن گالری «🖼 دیدن تصاویر» بالای پنل چهره."""
-        FaceGalleryDialog(self.face_engine, parent=self).exec()
 
     def refresh_table(self):
         self._reload_group_filter()

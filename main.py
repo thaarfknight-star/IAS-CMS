@@ -48,7 +48,7 @@ try:
     from nvr_webview_dialog import NVRWebViewDialog, _WEBENGINE_AVAILABLE
 except ImportError:
     NVRWebViewDialog, _WEBENGINE_AVAILABLE = None, False
-from face_library_dialog import FaceLibraryPage
+from face_library_dialog import FaceLibraryPage, FaceGalleryDialog
 from report_store import report_store
 from reports_dialog import ReportsPage
 # رفع درخواست «سیستم پلاک‌خوان»: صفحه‌ی جدا (مثل Face Library) با دو تب
@@ -2701,6 +2701,12 @@ class MainWindow(QMainWindow):
         # ثبت می‌کند.
         face_panel_group = QGroupBox("پنل تشخیص چهره")
         face_panel_layout = QVBoxLayout()
+        # (2.0.53-beta) به دستور کاربر: دکمه‌ی «🖼 دیدن تصاویر» بالای همین پنل
+        # (منتقل شد از صفحه‌ی «چهره‌ها»)
+        gallery_btn = QPushButton("🖼 دیدن تصاویر")
+        gallery_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        gallery_btn.clicked.connect(self.open_face_gallery)
+        face_panel_layout.addWidget(gallery_btn)
         self.face_panel_list = QListWidget()
         self.face_panel_list.setIconSize(QSize(64, 64))
         self.face_panel_list.setWordWrap(True)
@@ -4132,6 +4138,16 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(lambda _checked=False, _key=key: self.show_page(_key))
             header_layout.addWidget(btn)
             self.nav_buttons[key] = btn
+        # (2.0.53-beta) دکمه‌ی «راهنما»: در همه‌ی صفحه‌ها دیده می‌شود و
+        # کاتالوگ PDF راهنما را روی صفحه‌ی مربوط به همان صفحه‌ی فعلی باز
+        # می‌کند (رجوع کنید به app_help.py).
+        help_btn = QPushButton("❓ راهنما")
+        help_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        help_btn.setStyleSheet(
+            "QPushButton{padding: 6px 14px; border-radius: 6px; font-size: 12px;}"
+        )
+        help_btn.clicked.connect(self.open_help)
+        header_layout.addWidget(help_btn)
         # نشان نسخه
         ver_label = QLabel(f"v{self.app_version}")
         ver_label.setStyleSheet(
@@ -4159,6 +4175,9 @@ class MainWindow(QMainWindow):
     def show_page(self, key):
         """تغییر صفحه‌ی فعال از طریق هدر؛ هر صفحه هنگام نمایش، داده‌هایش را
         با متد refresh خودش تازه می‌کند."""
+        # (2.0.53-beta) کلید صفحه‌ی فعلی برای دکمه‌ی «راهنما» نگه داشته
+        # می‌شود تا PDF روی صفحه‌ی مربوط به همین صفحه باز شود.
+        self._current_page_key = key
         index = {"home": 0, "fire": 1, "face": 2, "reports": 3, "plate": 4,
                  "person": 5, "map": 6, "settings": 7}[key]
         if key == "map" and self.map_page is None:
@@ -4205,6 +4224,17 @@ class MainWindow(QMainWindow):
             self.map_page.show_person_path(person_id)
         else:
             self.map_page.show_all_person_paths()
+
+    def open_help(self):
+        """(2.0.53-beta) باز کردن کاتالوگ PDF «راهنمای کاربری» روی صفحه‌ی
+        مربوط به صفحه‌ی فعلی برنامه (دکمه‌ی «❓ راهنما» در هدر)."""
+        from app_help import open_manual
+        open_manual(getattr(self, "_current_page_key", "home"), parent=self)
+
+    def open_face_gallery(self):
+        """(2.0.53-beta) باز کردن گالری «🖼 دیدن تصاویر» از بالای پنل تشخیص
+        چهره در صفحه‌ی اصلی."""
+        FaceGalleryDialog(self.face_engine, parent=self).exec()
 
     def on_face_event(self, cam, person, crop_frame):
         """برای هر چهره‌ای که هر یک از دوربین‌ها ببیند (شناخته‌شده یا
