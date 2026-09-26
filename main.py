@@ -2191,6 +2191,33 @@ class MainWindow(QMainWindow):
         from updater import get_app_version
         self.app_version = get_app_version()
         self.setWindowTitle(f"{APP_NAME_FA} | {APP_NAME_EN} v{self.app_version}")
+        # بررسی لایسنس در شروع برنامه (license.py) — بدون لایسنس معتبر،
+        # حالت محدود فعال می‌شود (حداکثر ۱ دوربین، بدون قابلیت هوشمند).
+        try:
+            from license import load_license
+            self.license_state = load_license()
+        except Exception:
+            from license import LicenseState
+            self.license_state = LicenseState(error="خطا در بررسی لایسنس.")
+        if self.license_state.valid:
+            _lic_cust = self.license_state.customer or ""
+            self.setWindowTitle(
+                f"{APP_NAME_FA} | {APP_NAME_EN} v{self.app_version} — 🔑 {_lic_cust}")
+        else:
+            self.setWindowTitle(
+                f"{APP_NAME_FA} | {APP_NAME_EN} v{self.app_version} — ⛔ حالت محدود")
+            try:
+                from PyQt6.QtCore import QTimer
+                from PyQt6.QtWidgets import QMessageBox
+                _lic_err = self.license_state.error or "فایل لایسنس یافت نشد."
+                QTimer.singleShot(900, lambda: QMessageBox.warning(
+                    self, "لایسنس معتبر نیست",
+                    f"{_lic_err}\n\nبرنامه در حالت محدود اجرا می‌شود "
+                    "(حداکثر ۱ دوربین، بدون قابلیت‌های هوشمند).\n"
+                    "از صفحه‌ی تنظیمات ← ورود ادمین، فایل لایسنس (.lic) را "
+                    "بارگذاری کنید."))
+            except Exception:
+                pass
         # آیکون پنجره: سپر لوگوی شرکت (هم در اجرای عادی، هم داخل exe).
         _logo_icon = QIcon(LOGO_SHIELD)
         if not _logo_icon.isNull():

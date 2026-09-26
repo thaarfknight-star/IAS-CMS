@@ -1,17 +1,10 @@
 # -*- coding: utf-8 -*-
-"""admin_quota.py — محیط ادمین و سهمیه‌ی قابلیت‌ها.
+"""admin_quota.py — گیت رمز ادمین + اعمال سهمیه‌های لایسنس.
 
-دو بخش دارد:
-
-۱) **سهمیه‌ی قابلیت‌ها (feature quotas):** برای هر نصبِ برنامه می‌توان
-   تعیین کرد هر قابلیت حداکثر روی چند دوربین فعال شود (مثلاً ۲ دوربین
-   پلاک‌خوان، ۴ دوربین تشخیص حریق). سهمیه‌ها در app_settings.json با کلید
-   `feature_quotas` ذخیره می‌شوند؛ مقدار ۰ یعنی «نامحدود» (پیش‌فرض همه‌ی
-   سهمیه‌ها نامحدود است تا نصب‌های فعلی چیزی از دست ندهند).
-
-۲) **محیط ادمین:** بخش «سهمیه‌ها» فقط از یک محیط جداگانه (دیالوگ ادمین)
-   قابل تغییر است که با رمز ادمین باز می‌شود. خودِ رمز هرگز به‌صورت متن
-   ساده در کد نیست؛ فقط هش SHA-256 آن با یک salt ثابت نگه داشته می‌شود.
+سهمیه‌ها از فایل لایسنس امضاشده (license.py) خوانده می‌شوند؛ این ماژول فقط
+گیت دسترسی ادمین و منطق مسدودسازی فعال‌سازی را نگه می‌دارد.
+تعیین سهمیه فقط با «مدیریت لایسنس IAS» (نرم‌افزار جدای فروشنده) انجام
+می‌شود و در برنامه‌ی اصلی قابل تغییر نیست.
 
 نقاط اعمال سهمیه (جلوگیری از فعال‌سازی بیش از سقف):
 - plate_library_dialog.py — تیک «پلاک‌خوان» هر دوربین
@@ -19,16 +12,14 @@
 - person_track_dialog.py — تیک «ردیابی اشخاص» هر دوربین
 - main.py — افزودن دوربین/کانال NVR جدید (سهمیه‌ی کل دوربین‌ها)
 
-رفتار هنگام کم کردن سهمیه از مصرف فعلی: دوربین‌هایی که قبلاً فعال‌اند
+رفتار بدون لایسنس معتبر (حالت محدود): حداکثر ۱ دوربین و هیچ‌یک از
+قابلیت‌های هوشمند فعال نمی‌شوند.
+
+رفتار هنگام کم بودن سهمیه از مصرف فعلی: دوربین‌هایی که قبلاً فعال‌اند
 سر جایشان می‌مانند (grandfather)؛ فقط فعال‌سازی جدید مسدود می‌شود.
 """
 
 import hashlib
-
-try:
-    from PyQt6.QtWidgets import QDialog
-except Exception:  # محیط بدون PyQt (تست منطق خالص)
-    QDialog = object
 
 # ----------------------------------------------------------------------------
 # رمز ادمین: فقط هش نگه داشته می‌شود، نه خود رمز.
@@ -63,39 +54,30 @@ QUOTA_DEFS = [
 
 _QUOTA_KEY_BY_FEATURE = {key: key for key, _, _ in QUOTA_DEFS}
 
-QUOTA_SETTINGS_KEY = "feature_quotas"
-
 
 def get_quotas():
-    """دیکشنری سهمیه‌ها {کلید: عدد}؛ ۰ یعنی نامحدود. کلید ناموجود = ۰."""
-    quotas = {}
-    try:
-        from app_settings import load_settings
-        raw = load_settings().get(QUOTA_SETTINGS_KEY, {}) or {}
-        for key, _title, _flag in QUOTA_DEFS:
-            try:
-                quotas[key] = max(0, int(raw.get(key, 0)))
-            except Exception:
-                quotas[key] = 0
-    except Exception:
-        for key, _title, _flag in QUOTA_DEFS:
-            quotas[key] = 0
-    return quotas
+    """دیکشنری سهمیه‌ها {کلید: عدد} از لایسنس معتبر؛ ۰ یعنی نامحدود.
 
-
-def save_quotas(quotas):
-    """ذخیره‌ی سهمیه‌ها در app_settings.json."""
+    اگر لایسنس معتبر نباشد، سهمیه‌های حالت محدود برگردانده می‌شود
+    (۱ دوربین، بدون قابلیت هوشمند)."""
     try:
-        from app_settings import load_settings, save_settings
-        cfg = load_settings()
+        from license import effective_quotas
+        quotas = effective_quotas()
         clean = {}
         for key, _title, _flag in QUOTA_DEFS:
             try:
                 clean[key] = max(0, int(quotas.get(key, 0)))
             except Exception:
                 clean[key] = 0
-        cfg[QUOTA_SETTINGS_KEY] = clean
-        return bool(save_settings(cfg))
+        return clean
+    except Exception:
+        return {key: 0 for key, _t, _f in QUOTA_DEFS}
+
+
+def _license_valid():
+    try:
+        from license import load_license
+        return bool(load_license().valid)
     except Exception:
         return False
 
@@ -129,10 +111,19 @@ def check_quota(feature, camera_store, count=1, exclude_cam_id=None):
     """بررسی اینکه آیا می‌توان `count` واحد دیگر از سهمیه‌ی `feature` را
     فعال کرد یا نه.
 
-    برمی‌گرداند: (مجاز؟, مصرف فعلی, سقف). سقف ۰ یعنی نامحدود (همیشه مجاز).
+    برمی‌گرداند: (مجاز؟, مصرف فعلی, سقف). سقف ۰ یعنی نامحدود (همیشه مجاز)
+    — اما فقط وقتی لایسنس معتبر پشتش باشد. بدون لایسنس معتبر، حالت محدود:
+    حداکثر ۱ دوربین و هیچ قابلیت هوشمندی.
+
     exclude_cam_id: دوربینی که در شمارش مصرف لحاظ نشود (برای حالتی که
     همان دوربین همین حالا فعال است و دوباره تیک می‌خورد).
     """
+    if not _license_valid():
+        # حالت محدود — بدون لایسنس معتبر
+        if feature != "cameras":
+            return False, 0, 0
+        used = count_usage(camera_store, "cameras")
+        return (used + count) <= 1, used, 1
     quotas = get_quotas()
     quota = quotas.get(feature, 0)
     if quota <= 0:
@@ -161,10 +152,16 @@ def check_quota(feature, camera_store, count=1, exclude_cam_id=None):
 
 
 def quota_denied_message(feature, used, quota):
+    if not _license_valid():
+        return (
+            "لایسنس معتبر یافت نشد؛ برنامه در حالت محدود است.\n"
+            "برای فعال‌سازی این قابلیت، فایل لایسنس را از فروشنده بگیرید و "
+            "در صفحه‌ی تنظیمات ← ورود ادمین ← «بارگذاری فایل لایسنس» وارد کنید."
+        )
     return (
         f"سهمیه‌ی «{quota_title(feature)}» تکمیل است.\n"
         f"مصرف فعلی: {used} از {quota}\n\n"
-        f"برای افزایش سقف، وارد محیط ادمین شوید."
+        f"برای افزایش سقف با فروشنده‌ی نرم‌افزار در تماس باشید."
     )
 
 
@@ -227,70 +224,3 @@ def prompt_admin_password(parent=None, attempts=3):
         except Exception:
             pass
     return False
-
-
-class AdminQuotaDialog(QDialog):
-    """محیط جداگانه‌ی ادمین: تعیین سقف هر سهمیه + نمایش مصرف فعلی."""
-
-    def __init__(self, camera_store=None, parent=None):
-        from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
-                                     QSpinBox, QPushButton, QFormLayout,
-                                     QMessageBox)
-        super().__init__(parent)
-        self.camera_store = camera_store
-        self.setWindowTitle("🔐 محیط ادمین — سهمیه‌ی قابلیت‌ها")
-        self.setMinimumWidth(420)
-        self._spinboxes = {}
-
-        layout = QVBoxLayout(self)
-        info = QLabel(
-            "در این بخش تعیین می‌کنید هر قابلیت حداکثر روی چند دوربین فعال "
-            "شود.\nمقدار ۰ یعنی «نامحدود».")
-        info.setWordWrap(True)
-        layout.addWidget(info)
-
-        form = QFormLayout()
-        quotas = get_quotas()
-        for key, title, _flag in QUOTA_DEFS:
-            row = QHBoxLayout()
-            spin = QSpinBox()
-            spin.setRange(0, 9999)
-            spin.setValue(quotas.get(key, 0))
-            spin.setSpecialValueText("نامحدود")
-            row.addWidget(spin)
-            used = count_usage(camera_store, key) if camera_store else 0
-            usage_lbl = QLabel(f"مصرف فعلی: {used}")
-            usage_lbl.setObjectName("quota_usage_label")
-            row.addWidget(usage_lbl)
-            row.addStretch(1)
-            self._spinboxes[key] = spin
-            form.addRow(title + ":", row)
-        layout.addLayout(form)
-
-        note = QLabel(
-            "نکته: اگر سقف را کمتر از مصرف فعلی بگذارید، دوربین‌هایی که "
-            "قبلاً فعال‌اند غیرفعال نمی‌شوند؛ فقط فعال‌سازی جدید مسدود "
-            "می‌شود.")
-        note.setWordWrap(True)
-        layout.addWidget(note)
-
-        btn_row = QHBoxLayout()
-        btn_row.addStretch(1)
-        save_btn = QPushButton("💾 ذخیره")
-        save_btn.clicked.connect(self._on_save)
-        close_btn = QPushButton("بستن")
-        close_btn.clicked.connect(self.reject)
-        btn_row.addWidget(save_btn)
-        btn_row.addWidget(close_btn)
-        layout.addLayout(btn_row)
-
-    def _on_save(self):
-        from PyQt6.QtWidgets import QMessageBox
-        quotas = {k: s.value() for k, s in self._spinboxes.items()}
-        if save_quotas(quotas):
-            QMessageBox.information(self, "ذخیره شد",
-                                    "سهمیه‌ها با موفقیت ذخیره شدند.")
-            self.accept()
-        else:
-            QMessageBox.warning(self, "خطا",
-                                "ذخیره‌ی سهمیه‌ها ناموفق بود.")

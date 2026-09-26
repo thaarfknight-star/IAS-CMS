@@ -169,7 +169,7 @@ class SettingsPage(QWidget):
         return sec_group
 
     def _build_admin_group(self):
-        # --- محیط ادمین: ورود با رمز ادمین برای تعیین سهمیه‌ی قابلیت‌ها ---
+        # --- محیط ادمین: مدیریت لایسنس (مشاهده‌ی سهمیه‌ها + بارگذاری فایل لایسنس) ---
         adm_group = QGroupBox("👑 محیط ادمین")
         admlay = QVBoxLayout()
         admlay.setSpacing(10)
@@ -179,8 +179,8 @@ class SettingsPage(QWidget):
         self.admin_btn = self._action_button("🔐 ورود ادمین", "#7b2fbe")
         self.admin_btn.clicked.connect(self._on_admin_login)
         admrow.addWidget(self.admin_btn)
-        admlbl = QLabel("تعیین سهمیه‌ی هر قابلیت (تعداد دوربین پلاک‌خوان، "
-                        "تشخیص حریق، ردیابی اشخاص و سقف کل دوربین‌ها)")
+        admlbl = QLabel("مدیریت لایسنس: مشاهده‌ی وضعیت و سهمیه‌ها، "
+                        "کپی شناسه‌ی سخت‌افزاری و بارگذاری فایل لایسنس (.lic)")
         admlbl.setWordWrap(True)
         admrow.addWidget(admlbl, 1)
         admlay.addLayout(admrow)
@@ -194,14 +194,14 @@ class SettingsPage(QWidget):
 
     def _on_admin_login(self):
         try:
-            from admin_quota import prompt_admin_password, AdminQuotaDialog
+            from admin_quota import prompt_admin_password
+            from license import open_license_dialog
         except Exception as e:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "خطا", f"بارگذاری محیط ادمین ناموفق بود:\n{e}")
             return
         if prompt_admin_password(self):
-            dlg = AdminQuotaDialog(camera_store=self.camera_store, parent=self)
-            dlg.exec()
+            open_license_dialog(self, camera_store=self.camera_store)
 
     def _action_button(self, text, color):
         """دکمه‌ی اکشن تمام‌متن: اندازه‌ی طبیعی متن + بدون بریده‌شدن."""
