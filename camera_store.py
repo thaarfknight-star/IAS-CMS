@@ -193,6 +193,10 @@ class CameraStore:
                 return cam
         return None
 
+    def get_cameras(self):
+        """همه‌ی دوربین‌ها (مستقیم + کانال‌های NVR) — برای شمارش سهمیه‌ی لایسنس."""
+        return [c for c in self.cameras if isinstance(c, dict)]
+
     def get_camera_floor_id(self, cam_id):
         """floor_id دوربین (کنترل تردد طبقاتی)؛ «» یعنی تعریف نشده."""
         cam = self.get_camera(cam_id)
