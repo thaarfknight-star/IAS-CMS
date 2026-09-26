@@ -1,14 +1,16 @@
-"""Headless regression test for IAS-CMS 2.0.45-beta (full licensing).
+"""Headless regression test for IAS-CMS 2.0.46-beta (licensing v2).
 
 ۱) چرخه‌ی امضا/تأیید لایسنس با جفت‌کلید تازه (نه کلید واقعی فروشنده):
    ساخت payload، امضا، تأیید موفق.
-۲) دست‌کاری payload (تغییر سهمیه) → امضا باطل می‌شود.
+۲) دست‌کاری payload (تغییر سهمیه یا قابلیت) → امضا باطل می‌شود.
 ۳) لایسنس منقضی → نامعتبر.
 ۴) قفل سخت‌افزاری ناهماهنگ → نامعتبر.
-۵) بدون فایل لایسنس → حالت محدود (effective_quotas = سقف نمایشی).
-۶) check_quota در حالت محدود: قابلیت هوشمند مسدود، دوربین دوم مسدود.
+۵) بدون فایل لایسنس → حالت محدود (نمایش همه‌ی دوربین‌ها، فقط شمارش افراد).
+۶) check_quota در حالت محدود: قابلیت سهمیه‌ای مسدود، دوربین نامحدود.
 ۷) رگرسیون: verify_admin_password و quota_title و guard_feature_enable
    با لایسنس معتبر مثل قبل کار می‌کنند (سهمیه‌ی پر → مسدود).
+۸) قابلیت‌های روشن/خاموش: حالت محدود فقط شمارش افراد؛ لایسنس معتبر
+   طبق فیلد features؛ نبود features در لایسنس قدیمی یعنی همه فعال.
 """
 import json
 import os
@@ -40,7 +42,8 @@ import license_crypto as lc
 import license as licmod
 from license import (canonical_bytes, create_license_file, verify_license_data,
                      check_payload_validity, effective_quotas, LicenseState,
-                     DEMO_QUOTAS)
+                     DEMO_QUOTAS, effective_features, is_feature_enabled,
+                     FEATURE_ORDER, RESTRICTED_FEATURES)
 
 # --- جفت‌کلید تازه فقط برای تست (کلید واقعی فروشنده استفاده نمی‌شود) ---
 TEST_SK, TEST_PK = lc.generate_keypair()
@@ -55,6 +58,8 @@ def make_payload(**kw):
         "expires": None,
         "hwid": None,
         "quotas": {"cameras": 4, "plate": 2, "fire": 1, "person_tracking": 0},
+        "features": {"people_counting": True, "face_recognition": False,
+                     "zone_alerts": True},
     }
     p.update(kw)
     return p
@@ -75,6 +80,11 @@ tampered = json.loads(json.dumps(lic))
 tampered["payload"]["quotas"]["plate"] = 999
 p2, err2 = verify_license_data(tampered)
 check("tampered payload rejected", p2 is None and err2 is not None)
+
+tampered_f = json.loads(json.dumps(lic))
+tampered_f["payload"]["features"]["face_recognition"] = True
+pf2, errf2 = verify_license_data(tampered_f)
+check("tampered features rejected", pf2 is None and errf2 is not None)
 
 # امضای فایل دیگر روی payload این فایل
 other = sign(make_payload(customer="دیگر"))
@@ -119,12 +129,19 @@ with patch.object(licmod, "find_license_file", return_value=None):
     store = FakeStore([{"id": 1}])
     ok, used, quota = aq.check_quota("plate", store)
     check("restricted: plate blocked", not ok)
-    ok, used, quota = aq.check_quota("cameras", store)
-    check("restricted: 2nd camera blocked", not ok and quota == 1)
-    ok, used, quota = aq.check_quota("cameras", FakeStore([]))
-    check("restricted: 1st camera allowed", ok)
+    ok, used, quota = aq.check_quota("cameras", FakeStore(
+        [{"id": i} for i in range(50)]))
+    check("restricted: cameras unlimited (all shown)", ok and quota == 0)
     msg = aq.quota_denied_message("plate", 0, 0)
     check("restricted message mentions license", "لایسنس" in msg)
+    check("restricted features = only people counting",
+          licmod.effective_features() == RESTRICTED_FEATURES)
+    check("restricted: people_counting on",
+          licmod.is_feature_enabled("people_counting"))
+    check("restricted: face_recognition off",
+          not licmod.is_feature_enabled("face_recognition"))
+    check("restricted: zone_alerts off",
+          not licmod.is_feature_enabled("zone_alerts"))
 
 # ۷) رگرسیون با لایسنس معتبر (امضاشده با کلید تست)
 tmp = tempfile.mkdtemp()
@@ -150,6 +167,24 @@ with patch.object(licmod, "find_license_file", return_value=lic_path):
     check("unlimited quota (0) -> allowed", ok and quota == 0)
     msg = aq.quota_denied_message("plate", 2, 2)
     check("denied message has quota info", "2 از 2" in msg)
+    feats = licmod.effective_features()
+    check("features come from license",
+          feats == {"people_counting": True, "face_recognition": False,
+                    "zone_alerts": True})
+    check("license: face_recognition off",
+          not licmod.is_feature_enabled("face_recognition"))
+    check("license: zone_alerts on",
+          licmod.is_feature_enabled("zone_alerts"))
+    check("feature_denied_message names the feature",
+          "چهره‌خوان" in aq.feature_denied_message("face_recognition"))
+
+# ۸) لایسنس قدیمی بدون فیلد features → همه‌ی قابلیت‌ها فعال
+legacy = sign(make_payload())
+del legacy["payload"]["features"]
+# امضا باطل شده؛ پس مستقیم با LicenseState معتبرِ بدون features تست می‌کنیم
+st_legacy = LicenseState(valid=True)
+check("legacy license: all features on",
+      licmod.effective_features(st_legacy) == {k: True for k in FEATURE_ORDER})
 
 # رگرسیون رمز ادمین
 check("quota_title works", aq.quota_title("plate") == "دوربین پلاک‌خوان")

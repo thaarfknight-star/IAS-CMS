@@ -12,8 +12,9 @@
 - person_track_dialog.py — تیک «ردیابی اشخاص» هر دوربین
 - main.py — افزودن دوربین/کانال NVR جدید (سهمیه‌ی کل دوربین‌ها)
 
-رفتار بدون لایسنس معتبر (حالت محدود): حداکثر ۱ دوربین و هیچ‌یک از
-قابلیت‌های هوشمند فعال نمی‌شوند.
+رفتار بدون لایسنس معتبر (حالت محدود): تصویر همه‌ی دوربین‌ها نمایش داده
+می‌شود؛ فقط شمارش افراد فعال است و هیچ‌یک از قابلیت‌های سهمیه‌ای،
+چهره‌خوان یا هشدار ورود به محدوده فعال نمی‌شوند.
 
 رفتار هنگام کم بودن سهمیه از مصرف فعلی: دوربین‌هایی که قبلاً فعال‌اند
 سر جایشان می‌مانند (grandfather)؛ فقط فعال‌سازی جدید مسدود می‌شود.
@@ -59,7 +60,7 @@ def get_quotas():
     """دیکشنری سهمیه‌ها {کلید: عدد} از لایسنس معتبر؛ ۰ یعنی نامحدود.
 
     اگر لایسنس معتبر نباشد، سهمیه‌های حالت محدود برگردانده می‌شود
-    (۱ دوربین، بدون قابلیت هوشمند)."""
+    (دوربین نامحدود، بدون قابلیت سهمیه‌ای)."""
     try:
         from license import effective_quotas
         quotas = effective_quotas()
@@ -111,9 +112,9 @@ def check_quota(feature, camera_store, count=1, exclude_cam_id=None):
     """بررسی اینکه آیا می‌توان `count` واحد دیگر از سهمیه‌ی `feature` را
     فعال کرد یا نه.
 
-    برمی‌گرداند: (مجاز؟, مصرف فعلی, سقف). سقف ۰ یعنی نامحدود (همیشه مجاز)
-    — اما فقط وقتی لایسنس معتبر پشتش باشد. بدون لایسنس معتبر، حالت محدود:
-    حداکثر ۱ دوربین و هیچ قابلیت هوشمندی.
+    برمی‌گرداند: (مجاز؟, مصرف فعلی, سقف). سقف ۰ یعنی نامحدود (همیشه مجاز).
+    حالت محدود (بدون لایسنس معتبر): تصویر همه‌ی دوربین‌ها نمایش داده
+    می‌شود (سقف دوربین نامحدود) ولی هیچ قابلیت سهمیه‌ای فعال نمی‌شود.
 
     exclude_cam_id: دوربینی که در شمارش مصرف لحاظ نشود (برای حالتی که
     همان دوربین همین حالا فعال است و دوباره تیک می‌خورد).
@@ -123,7 +124,7 @@ def check_quota(feature, camera_store, count=1, exclude_cam_id=None):
         if feature != "cameras":
             return False, 0, 0
         used = count_usage(camera_store, "cameras")
-        return (used + count) <= 1, used, 1
+        return True, used, 0
     quotas = get_quotas()
     quota = quotas.get(feature, 0)
     if quota <= 0:
@@ -163,6 +164,48 @@ def quota_denied_message(feature, used, quota):
         f"مصرف فعلی: {used} از {quota}\n\n"
         f"برای افزایش سقف با فروشنده‌ی نرم‌افزار در تماس باشید."
     )
+
+
+def feature_denied_message(feature_name: str) -> str:
+    """پیام رد شدن یک قابلیت روشن/خاموش (حالت محدود یا لایسنس بدون آن قابلیت)."""
+    try:
+        from license import FEATURE_DEFS, is_feature_enabled
+        title = FEATURE_DEFS.get(feature_name, feature_name)
+    except Exception:
+        title = feature_name
+    try:
+        from license import load_license
+        if not load_license().valid:
+            return (
+                "لایسنس معتبر یافت نشد؛ برنامه در حالت محدود است.\n"
+                f"قابلیت «{title}» در حالت محدود فعال نیست.\n"
+                "برای فعال‌سازی آن، فایل لایسنس را از فروشنده بگیرید و "
+                "در صفحه‌ی تنظیمات ← ورود ادمین ← «بارگذاری فایل لایسنس» وارد کنید."
+            )
+    except Exception:
+        pass
+    return (
+        f"قابلیت «{title}» در لایسنس فعلی فعال نیست.\n"
+        "برای فعال‌سازی آن با فروشنده‌ی نرم‌افزار در تماس باشید."
+    )
+
+
+def require_feature(feature_name: str, parent=None) -> bool:
+    """گیت قابلیت‌های روشن/خاموش. True یعنی فعال است و می‌توان ادامه داد؛
+    False یعنی غیرفعال است و پیام هشدار نمایش داده شد."""
+    try:
+        from license import is_feature_enabled
+        if is_feature_enabled(feature_name):
+            return True
+    except Exception:
+        return True  # در صورت خطا، مزاحم کاربر نمی‌شویم
+    try:
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.warning(parent, "قابلیت غیرفعال",
+                            feature_denied_message(feature_name))
+    except Exception:
+        pass
+    return False
 
 
 # ----------------------------------------------------------------------------

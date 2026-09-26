@@ -2192,7 +2192,8 @@ class MainWindow(QMainWindow):
         self.app_version = get_app_version()
         self.setWindowTitle(f"{APP_NAME_FA} | {APP_NAME_EN} v{self.app_version}")
         # بررسی لایسنس در شروع برنامه (license.py) — بدون لایسنس معتبر،
-        # حالت محدود فعال می‌شود (حداکثر ۱ دوربین، بدون قابلیت هوشمند).
+        # حالت محدود فعال می‌شود (نمایش تصویر همه‌ی دوربین‌ها، فقط شمارش
+        # افراد؛ بدون پلاک‌خوان/حریق/ردیابی اشخاص/چهره‌خوان/هشدار محدوده).
         try:
             from license import load_license
             self.license_state = load_license()
@@ -2213,7 +2214,7 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(900, lambda: QMessageBox.warning(
                     self, "لایسنس معتبر نیست",
                     f"{_lic_err}\n\nبرنامه در حالت محدود اجرا می‌شود "
-                    "(حداکثر ۱ دوربین، بدون قابلیت‌های هوشمند).\n"
+                    "(نمایش تصویر همه‌ی دوربین‌ها؛ فقط شمارش افراد فعال است).\n"
                     "از صفحه‌ی تنظیمات ← ورود ادمین، فایل لایسنس (.lic) را "
                     "بارگذاری کنید."))
             except Exception:
@@ -2823,6 +2824,16 @@ class MainWindow(QMainWindow):
         افراد Real Time برای همه‌ی دوربین‌های باز هم‌زمان روشن/خاموش می‌شود؛
         وضعیت روی دوربین‌هایی که بعداً باز شوند هم اعمال می‌ماند (رجوع کنید
         به CameraGridWidget.set_people_counting_all)."""
+        if checked:
+            try:
+                from admin_quota import require_feature
+                if not require_feature("people_counting", self):
+                    self.people_toggle_btn.blockSignals(True)
+                    self.people_toggle_btn.setChecked(False)
+                    self.people_toggle_btn.blockSignals(False)
+                    return
+            except Exception:
+                pass
         self.camera_grid.set_people_counting_all(checked)
 
     # ----------------------------------------------------- محدوده‌ی هشدار --
@@ -2834,6 +2845,18 @@ class MainWindow(QMainWindow):
         return self.camera_grid.slots[idx]
 
     def _on_draw_line_toggled(self, checked):
+        # گیت لایسنس: رسم محدوده‌ی هشدار فقط وقتی مجاز است که قابلیت
+        # «هشدار ورود به محدوده» در لایسنس فعال باشد.
+        if checked:
+            try:
+                from admin_quota import require_feature
+                if not require_feature("zone_alerts", self):
+                    self.draw_line_btn.blockSignals(True)
+                    self.draw_line_btn.setChecked(False)
+                    self.draw_line_btn.blockSignals(False)
+                    return
+            except Exception:
+                pass
         slot = self._selected_slot()
         if slot is None or slot.cam is None:
             if checked:
@@ -3019,6 +3042,14 @@ class MainWindow(QMainWindow):
         پنل تشخیص چهره (سمت راست) ثبت می‌شود تا سابقه‌ی هشدارها هم در دسترس
         باشد. ``cam``: کل دیکشنری دوربین (نه فقط اسم) تا nvr_id/channel هم
         برای لینک «پخش ویدیوی NVR» در دیالوگ گزارش‌ها ذخیره شود."""
+        # گیت لایسنس: اگر قابلیت «هشدار ورود به محدوده» فعال نباشد،
+        # هشداری ثبت و پخش نمی‌شود.
+        try:
+            from license import is_feature_enabled
+            if not is_feature_enabled("zone_alerts"):
+                return
+        except Exception:
+            pass
         camera_name = cam.get("name", "")
         timestamp = time.strftime("%H:%M:%S")
         label = f"شماره {number}" + (f" / {name}" if name else "")
@@ -4027,6 +4058,14 @@ class MainWindow(QMainWindow):
         همان چهره - در بالای پنل تشخیص چهره (سمت راست تصویر دوربین‌ها) اضافه
         می‌کند. ``cam``: کل دیکشنری دوربین (نه فقط اسم) تا nvr_id/channel هم
         برای لینک «پخش ویدیوی NVR» در دیالوگ گزارش‌ها ذخیره شود."""
+        # گیت لایسنس: اگر قابلیت چهره‌خوان فعال نباشد، چهره‌ای شناسایی
+        # و ثبت نمی‌شود.
+        try:
+            from license import is_feature_enabled
+            if not is_feature_enabled("face_recognition"):
+                return
+        except Exception:
+            pass
         camera_name = cam.get("name", "")
         timestamp = time.strftime("%H:%M:%S")
         if person:

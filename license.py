@@ -26,9 +26,11 @@ except ImportError:  # اجرای مستقیم از tools/
 LICENSE_FORMAT = "IAS-CMS-LICENSE-1"
 LICENSE_FILENAME = "license.lic"
 
-# سهمیه‌های حالت محدود (وقتی لایسنس معتبر نیست)
+# سهمیه‌های حالت محدود (وقتی لایسنس معتبر نیست):
+# تصویر همه‌ی دوربین‌ها نمایش داده می‌شود (cameras=0 یعنی نامحدود) ولی
+# هیچ‌یک از قابلیت‌های سهمیه‌ای فعال نمی‌شوند.
 DEMO_QUOTAS = {
-    "cameras": 1,
+    "cameras": 0,
     "plate": 0,
     "fire": 0,
     "person_tracking": 0,
@@ -36,6 +38,25 @@ DEMO_QUOTAS = {
 
 # ترتیب نمایش سهمیه‌ها در دیالوگ
 QUOTA_ORDER = ["cameras", "plate", "fire", "person_tracking"]
+
+# ----------------------------------------------------------------------------
+# قابلیت‌های روشن/خاموش (بدون سهمیه‌ی تعدادی — فقط فعال یا غیرفعال).
+# در فایل لایسنس با کلید "features" می‌آیند؛ اگر در لایسنسی نباشند،
+# پیش‌فرض «فعال» است تا لایسنس‌های قبلی نشکنند.
+# ----------------------------------------------------------------------------
+FEATURE_DEFS = {
+    "people_counting": "شمارش افراد",
+    "face_recognition": "چهره‌خوان (شناسایی چهره)",
+    "zone_alerts": "هشدار ورود به محدوده",
+}
+FEATURE_ORDER = ["people_counting", "face_recognition", "zone_alerts"]
+
+# حالت محدود (بدون لایسنس معتبر): فقط شمارش افراد فعال است
+RESTRICTED_FEATURES = {
+    "people_counting": True,
+    "face_recognition": False,
+    "zone_alerts": False,
+}
 
 
 # ----------------------------------------------------------------------------
@@ -158,13 +179,17 @@ def check_payload_validity(payload: dict):
 # ----------------------------------------------------------------------------
 class LicenseState:
     def __init__(self, valid=False, customer="", issued="", expires="",
-                 quotas=None, hwid=None, error="", path=""):
+                 quotas=None, hwid=None, features=None, error="", path=""):
         self.valid = valid
         self.customer = customer
         self.issued = issued
         self.expires = expires
         self.quotas = quotas or dict(DEMO_QUOTAS)
         self.hwid = hwid
+        # دیفالت «فعال» برای سازگاری با لایسنس‌های قدیمی بدون فیلد features؛
+        # حالت محدود (نامعتبر) در effective_features جداگانه مدیریت می‌شود.
+        self.features = features if features is not None else \
+            {k: True for k in FEATURE_ORDER}
         self.error = error
         self.path = path
 
@@ -202,6 +227,12 @@ def load_license(path=None) -> LicenseState:
             quotas[k] = max(0, int(pq.get(k, 0)))
         except (TypeError, ValueError):
             pass
+    # قابلیت‌های روشن/خاموش؛ نبودشان در لایسنس یعنی «فعال» (سازگاری عقب‌رو)
+    features = {k: True for k in FEATURE_ORDER}
+    pf = payload.get("features") or {}
+    for k in features:
+        if k in pf:
+            features[k] = bool(pf[k])
     return LicenseState(
         valid=True,
         customer=payload.get("customer", ""),
@@ -209,6 +240,7 @@ def load_license(path=None) -> LicenseState:
         expires=payload.get("expires") or "",
         quotas=quotas,
         hwid=payload.get("hwid"),
+        features=features,
         path=p,
     )
 
@@ -219,6 +251,23 @@ def effective_quotas(state=None) -> dict:
     if st.valid:
         return dict(st.quotas)
     return dict(DEMO_QUOTAS)
+
+
+def effective_features(state=None) -> dict:
+    """وضعیت قابلیت‌های روشن/خاموش؛ بدون لایسنس معتبر = حالت محدود
+    (فقط شمارش افراد)."""
+    st = state or load_license()
+    if st.valid:
+        return dict(st.features)
+    return dict(RESTRICTED_FEATURES)
+
+
+def is_feature_enabled(name: str, state=None) -> bool:
+    """آیا قابلیت on/off داده‌شده فعال است؟"""
+    try:
+        return bool(effective_features(state).get(name, False))
+    except Exception:
+        return False
 
 
 def install_license_file(src_path: str) -> str:
@@ -303,6 +352,15 @@ def open_license_dialog(parent, camera_store=None):
         qgrid.addWidget(QLabel(_quota_title(key) + ":"), i, 0)
         qgrid.addWidget(QLabel(qtext), i, 1)
     lay.addLayout(qgrid)
+
+    lay.addWidget(QLabel("<b>قابلیت‌ها:</b>"))
+    fgrid = QGridLayout()
+    feats = effective_features(state)
+    for i, key in enumerate(FEATURE_ORDER):
+        on = feats.get(key, False)
+        fgrid.addWidget(QLabel(FEATURE_DEFS.get(key, key) + ":"), i, 0)
+        fgrid.addWidget(QLabel("✅ فعال" if on else "❌ غیرفعال"), i, 1)
+    lay.addLayout(fgrid)
 
     hwid_row = QLabel(f"شناسه‌ی سخت‌افزاری این سیستم:<br><code>{get_hwid()}</code>")
     hwid_row.setWordWrap(True)
