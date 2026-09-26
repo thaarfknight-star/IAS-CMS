@@ -3372,8 +3372,9 @@ class MainWindow(QMainWindow):
             from admin_quota import check_quota, quota_denied_message
             allowed, used, quota = check_quota("cameras", self.camera_store)
             if not allowed:
-                QMessageBox.warning(self, "سهمیه تکمیل است",
-                                    quota_denied_message("cameras", used, quota))
+                QMessageBox.warning(
+                    self, "قابلیت غیرفعال" if quota == -1 else "سهمیه تکمیل است",
+                    quota_denied_message("cameras", used, quota))
                 return
         except Exception:
             pass
@@ -3418,7 +3419,8 @@ class MainWindow(QMainWindow):
                                                    count=n_channels)
                 if not allowed:
                     QMessageBox.warning(
-                        self, "سهمیه تکمیل است",
+                        self,
+                        "قابلیت غیرفعال" if quota == -1 else "سهمیه تکمیل است",
                         quota_denied_message("cameras", used, quota)
                         + f"\nکانال‌های انتخاب‌شده: {n_channels}")
                     return

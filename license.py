@@ -179,7 +179,8 @@ def check_payload_validity(payload: dict):
 # ----------------------------------------------------------------------------
 class LicenseState:
     def __init__(self, valid=False, customer="", issued="", expires="",
-                 quotas=None, hwid=None, features=None, error="", path=""):
+                 quotas=None, hwid=None, features=None, quota_enabled=None,
+                 error="", path=""):
         self.valid = valid
         self.customer = customer
         self.issued = issued
@@ -190,6 +191,10 @@ class LicenseState:
         # حالت محدود (نامعتبر) در effective_features جداگانه مدیریت می‌شود.
         self.features = features if features is not None else \
             {k: True for k in FEATURE_ORDER}
+        # فعال/غیرفعال بودن سهمیه‌های تعدادی؛ نبود در لایسنس = فعال
+        # (سازگاری با لایسنس‌های صادرشده قبل از v1.2.0 نرم‌افزار صدور)
+        self.quota_enabled = quota_enabled if quota_enabled is not None else \
+            {k: True for k in QUOTA_ORDER}
         self.error = error
         self.path = path
 
@@ -233,6 +238,12 @@ def load_license(path=None) -> LicenseState:
     for k in features:
         if k in pf:
             features[k] = bool(pf[k])
+    # فعال/غیرفعال بودن سهمیه‌های تعدادی؛ نبودشان یعنی «فعال» (عقب‌رو)
+    quota_enabled = {k: True for k in QUOTA_ORDER}
+    pqe = payload.get("quota_enabled") or {}
+    for k in quota_enabled:
+        if k in pqe:
+            quota_enabled[k] = bool(pqe[k])
     return LicenseState(
         valid=True,
         customer=payload.get("customer", ""),
@@ -241,6 +252,7 @@ def load_license(path=None) -> LicenseState:
         quotas=quotas,
         hwid=payload.get("hwid"),
         features=features,
+        quota_enabled=quota_enabled,
         path=p,
     )
 
@@ -268,6 +280,22 @@ def is_feature_enabled(name: str, state=None) -> bool:
         return bool(effective_features(state).get(name, False))
     except Exception:
         return False
+
+
+def is_quota_enabled(name: str, state=None) -> bool:
+    """آیا سهمیه‌ی تعدادی داده‌شده در لایسنس فعال است؟
+
+    بدون لایسنس معتبر False برمی‌گرداند (حالت محدود جداگانه مدیریت
+    می‌شود)؛ لایسنس‌های قدیمی بدون فیلد quota_enabled همه را فعال
+    در نظر می‌گیرند.
+    """
+    try:
+        st = state or load_license()
+        if not st.valid:
+            return False
+        return bool(st.quota_enabled.get(name, True))
+    except Exception:
+        return True
 
 
 def install_license_file(src_path: str) -> str:
@@ -348,7 +376,12 @@ def open_license_dialog(parent, camera_store=None):
     for i, key in enumerate(QUOTA_ORDER):
         q = state.quotas.get(key, 0)
         u = usage.get(key, 0) if isinstance(usage, dict) else 0
-        qtext = "نامحدود" if q == 0 else f"{u} از {q}"
+        if state.valid and not state.quota_enabled.get(key, True):
+            qtext = "❌ غیرفعال"
+        elif q == 0:
+            qtext = "نامحدود"
+        else:
+            qtext = f"{u} از {q}"
         qgrid.addWidget(QLabel(_quota_title(key) + ":"), i, 0)
         qgrid.addWidget(QLabel(qtext), i, 1)
     lay.addLayout(qgrid)

@@ -125,6 +125,13 @@ def check_quota(feature, camera_store, count=1, exclude_cam_id=None):
             return False, 0, 0
         used = count_usage(camera_store, "cameras")
         return True, used, 0
+    # سهمیه‌ی تعدادی غیرفعال‌شده در لایسنس: صفر واقعی (کاملاً بسته)
+    try:
+        from license import is_quota_enabled
+        if not is_quota_enabled(feature):
+            return False, count_usage(camera_store, feature), -1
+    except Exception:
+        pass
     quotas = get_quotas()
     quota = quotas.get(feature, 0)
     if quota <= 0:
@@ -153,6 +160,12 @@ def check_quota(feature, camera_store, count=1, exclude_cam_id=None):
 
 
 def quota_denied_message(feature, used, quota):
+    # quota برابر ۱- یعنی این سهمیه در لایسنس کلاً غیرفعال است (صفر واقعی)
+    if quota == -1:
+        return (
+            f"قابلیت «{quota_title(feature)}» در لایسنس فعلی غیرفعال است.\n"
+            "برای فعال‌سازی آن با فروشنده‌ی نرم‌افزار در تماس باشید."
+        )
     if not _license_valid():
         return (
             "لایسنس معتبر یافت نشد؛ برنامه در حالت محدود است.\n"
@@ -235,8 +248,9 @@ def guard_feature_enable(feature, camera_store, checklist, item, parent):
             checklist.blockSignals(False)
         except Exception:
             pass
+    title = "قابلیت غیرفعال" if quota == -1 else "سهمیه تکمیل است"
     try:
-        QMessageBox.warning(parent, "سهمیه تکمیل است",
+        QMessageBox.warning(parent, title,
                             quota_denied_message(feature, used, quota))
     except Exception:
         pass
