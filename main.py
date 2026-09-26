@@ -2717,7 +2717,8 @@ class MainWindow(QMainWindow):
         self.settings_page = SettingsPage(
             on_apply_update=self._on_apply_update,
             on_sound_changed=self._on_alarm_sound_changed,
-            on_password_save_changed=self._on_password_save_changed)
+            on_password_save_changed=self._on_password_save_changed,
+            camera_store=self.camera_store)
         self.pages.addWidget(self.settings_page)
 
         main_layout.addWidget(self._build_header())
@@ -3308,6 +3309,16 @@ class MainWindow(QMainWindow):
 
     def open_add_camera_dialog(self, prefill_ip=None, detected_path=None, detected_full_url=None,
                                 prefill_user=None, prefill_pass=None):
+        # گیت سهمیه‌ی «تعداد کل دوربین‌ها»
+        try:
+            from admin_quota import check_quota, quota_denied_message
+            allowed, used, quota = check_quota("cameras", self.camera_store)
+            if not allowed:
+                QMessageBox.warning(self, "سهمیه تکمیل است",
+                                    quota_denied_message("cameras", used, quota))
+                return
+        except Exception:
+            pass
         dialog = AddCameraDialog(self)
         if prefill_ip:
             dialog.ip_input.setText(prefill_ip)
@@ -3341,6 +3352,20 @@ class MainWindow(QMainWindow):
             dialog.set_detected_brand(brand=detected_brand, onvif_port=detected_onvif_port)
         if dialog.exec():
             data = dialog.get_nvr_data()
+            # گیت سهمیه‌ی «تعداد کل دوربین‌ها» برای کانال‌های انتخاب‌شده‌ی NVR
+            try:
+                from admin_quota import check_quota, quota_denied_message
+                n_channels = len(dialog.get_selected_channels())
+                allowed, used, quota = check_quota("cameras", self.camera_store,
+                                                   count=n_channels)
+                if not allowed:
+                    QMessageBox.warning(
+                        self, "سهمیه تکمیل است",
+                        quota_denied_message("cameras", used, quota)
+                        + f"\nکانال‌های انتخاب‌شده: {n_channels}")
+                    return
+            except Exception:
+                pass
             nvr = self.camera_store.add_nvr(
                 name=data["name"], ip=data["ip"], rtsp_port=data["rtsp_port"],
                 onvif_port=data["onvif_port"], user=data["user"],

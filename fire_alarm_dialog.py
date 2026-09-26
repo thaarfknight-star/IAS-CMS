@@ -166,6 +166,12 @@ class FireAlarmPage(QWidget):
     def _on_camera_check_changed(self, item):
         cam_id = item.data(Qt.ItemDataRole.UserRole)
         enabled = item.checkState() == Qt.CheckState.Checked
+        if enabled:
+            # گیت سهمیه‌ی «دوربین تشخیص حریق» (قبل از ذخیره در camera_store)
+            from admin_quota import guard_feature_enable
+            if not guard_feature_enable("fire", self.camera_store,
+                                        self.camera_checklist, item, self):
+                return
         try:
             self.camera_store.update_camera(cam_id, fire_detection=enabled)
         except Exception as e:

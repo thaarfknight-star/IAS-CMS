@@ -26,11 +26,12 @@ from theme import apply_theme
 
 class SettingsPage(QWidget):
     def __init__(self, on_apply_update=None, on_sound_changed=None,
-                 on_password_save_changed=None, parent=None):
+                 on_password_save_changed=None, camera_store=None, parent=None):
         super().__init__(parent)
         self.on_apply_update = on_apply_update
         self.on_sound_changed = on_sound_changed
         self.on_password_save_changed = on_password_save_changed
+        self.camera_store = camera_store
         self._build()
 
     # ------------------------------------------------------------------
@@ -62,6 +63,7 @@ class SettingsPage(QWidget):
         layout.addWidget(self._build_theme_group())
         layout.addWidget(self._build_sound_group())
         layout.addWidget(self._build_security_group())
+        layout.addWidget(self._build_admin_group())
         layout.addWidget(self._build_update_group())
         layout.addWidget(self._build_uninstall_group())
 
@@ -165,6 +167,41 @@ class SettingsPage(QWidget):
         seclay.addWidget(sechint)
         sec_group.setLayout(seclay)
         return sec_group
+
+    def _build_admin_group(self):
+        # --- محیط ادمین: ورود با رمز ادمین برای تعیین سهمیه‌ی قابلیت‌ها ---
+        adm_group = QGroupBox("👑 محیط ادمین")
+        admlay = QVBoxLayout()
+        admlay.setSpacing(10)
+        admrow = QHBoxLayout()
+        admrow.setSpacing(8)
+        admrow.setContentsMargins(2, 4, 2, 4)
+        self.admin_btn = self._action_button("🔐 ورود ادمین", "#7b2fbe")
+        self.admin_btn.clicked.connect(self._on_admin_login)
+        admrow.addWidget(self.admin_btn)
+        admlbl = QLabel("تعیین سهمیه‌ی هر قابلیت (تعداد دوربین پلاک‌خوان، "
+                        "تشخیص حریق، ردیابی اشخاص و سقف کل دوربین‌ها)")
+        admlbl.setWordWrap(True)
+        admrow.addWidget(admlbl, 1)
+        admlay.addLayout(admrow)
+        admhint = QLabel("این بخش فقط با رمز ادمین باز می‌شود و برای نصاب/مدیر "
+                         "سیستم است؛ کاربر عادی به آن دسترسی ندارد.")
+        admhint.setStyleSheet("color: #888; font-size: 11px;")
+        admhint.setWordWrap(True)
+        admlay.addWidget(adhint)
+        adm_group.setLayout(admlay)
+        return adm_group
+
+    def _on_admin_login(self):
+        try:
+            from admin_quota import prompt_admin_password, AdminQuotaDialog
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "خطا", f"بارگذاری محیط ادمین ناموفق بود:\n{e}")
+            return
+        if prompt_admin_password(self):
+            dlg = AdminQuotaDialog(camera_store=self.camera_store, parent=self)
+            dlg.exec()
 
     def _action_button(self, text, color):
         """دکمه‌ی اکشن تمام‌متن: اندازه‌ی طبیعی متن + بدون بریده‌شدن."""
