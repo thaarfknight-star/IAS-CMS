@@ -63,7 +63,7 @@ class SettingsPage(QWidget):
         layout.addWidget(self._build_theme_group())
         layout.addWidget(self._build_sound_group())
         layout.addWidget(self._build_security_group())
-        layout.addWidget(self._build_admin_group())
+        layout.addWidget(self._build_license_group())
         layout.addWidget(self._build_update_group())
         layout.addWidget(self._build_uninstall_group())
 
@@ -168,40 +168,79 @@ class SettingsPage(QWidget):
         sec_group.setLayout(seclay)
         return sec_group
 
-    def _build_admin_group(self):
-        # --- محیط ادمین: مدیریت لایسنس (مشاهده‌ی سهمیه‌ها + بارگذاری فایل لایسنس) ---
-        adm_group = QGroupBox("👑 محیط ادمین")
-        admlay = QVBoxLayout()
-        admlay.setSpacing(10)
-        admrow = QHBoxLayout()
-        admrow.setSpacing(8)
-        admrow.setContentsMargins(2, 4, 2, 4)
-        self.admin_btn = self._action_button("🔐 ورود ادمین", "#7b2fbe")
-        self.admin_btn.clicked.connect(self._on_admin_login)
-        admrow.addWidget(self.admin_btn)
-        admlbl = QLabel("مدیریت لایسنس: مشاهده‌ی وضعیت و سهمیه‌ها، "
-                        "کپی شناسه‌ی سخت‌افزاری و بارگذاری فایل لایسنس (.lic)")
-        admlbl.setWordWrap(True)
-        admrow.addWidget(admlbl, 1)
-        admlay.addLayout(admrow)
-        admhint = QLabel("این بخش فقط با رمز ادمین باز می‌شود و برای نصاب/مدیر "
-                         "سیستم است؛ کاربر عادی به آن دسترسی ندارد.")
-        admhint.setStyleSheet("color: #888; font-size: 11px;")
-        admhint.setWordWrap(True)
-        admlay.addWidget(admhint)
-        adm_group.setLayout(admlay)
-        return adm_group
+    def _build_license_group(self):
+        # --- لایسنس: فقط بارگذاری فایل لایسنس (.lic)؛ بدون رمز ادمین ---
+        lic_group = QGroupBox("🔑 لایسنس")
+        liclay = QVBoxLayout()
+        liclay.setSpacing(10)
+        self.license_status_lbl = QLabel()
+        self.license_status_lbl.setWordWrap(True)
+        liclay.addWidget(self.license_status_lbl)
+        licrow = QHBoxLayout()
+        licrow.setSpacing(8)
+        licrow.setContentsMargins(2, 4, 2, 4)
+        self.license_btn = self._action_button("📂 بارگذاری فایل لایسنس…",
+                                               "#2e7d32")
+        self.license_btn.clicked.connect(self._on_license_upload)
+        licrow.addWidget(self.license_btn)
+        lichint = QLabel("فایل لایسنس (.lic) را که از فروشنده گرفته‌اید انتخاب "
+                         "کنید؛ فقط همین فایل پذیرفته می‌شود و قابلیت‌های مجاز "
+                         "بلافاصله فعال می‌شوند.")
+        lichint.setWordWrap(True)
+        licrow.addWidget(lichint, 1)
+        liclay.addLayout(licrow)
+        lic_group.setLayout(liclay)
+        self._refresh_license_status()
+        return lic_group
 
-    def _on_admin_login(self):
+    def _refresh_license_status(self):
         try:
-            from admin_quota import prompt_admin_password
-            from license import open_license_dialog
+            from license import load_license
+            st = load_license()
+        except Exception:
+            st = None
+        try:
+            if st is not None and st.valid:
+                self.license_status_lbl.setText(
+                    f"✅ <b>لایسنس معتبر</b> — {st.customer or 'بدون نام'}"
+                    f" — انقضا: {st.expires or 'دائمی'}")
+            else:
+                self.license_status_lbl.setText(
+                    "⛔ <b>لایسنس معتبر نیست</b> — برنامه در حالت محدود است "
+                    "(نمایش تصویر همه‌ی دوربین‌ها؛ فقط شمارش افراد فعال است).")
+        except Exception:
+            pass
+
+    def _on_license_upload(self):
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        try:
+            from license import install_license_file
         except Exception as e:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "خطا", f"بارگذاری محیط ادمین ناموفق بود:\n{e}")
+            QMessageBox.warning(self, "خطا",
+                                f"بارگذاری ماژول لایسنس ناموفق بود:\n{e}")
             return
-        if prompt_admin_password(self):
-            open_license_dialog(self, camera_store=self.camera_store)
+        fp, _ = QFileDialog.getOpenFileName(
+            self, "انتخاب فایل لایسنس", "", "License (*.lic)")
+        if not fp:
+            return
+        try:
+            install_license_file(fp)
+        except Exception as e:
+            QMessageBox.warning(self, "خطا", f"لایسنس پذیرفته نشد:\n{e}")
+            return
+        self._refresh_license_status()
+        # فعال‌سازی فوری: وضعیت لایسنس پنجره‌ی اصلی هم تازه می‌شود
+        try:
+            win = self.window()
+            if hasattr(win, "refresh_license_state"):
+                win.refresh_license_state()
+        except Exception:
+            pass
+        QMessageBox.information(
+            self, "انجام شد",
+            "لایسنس با موفقیت نصب و فعال شد. ✅\n\n"
+            "قابلیت‌های مجاز این لایسنس هم‌اکنون فعال‌اند؛ "
+            "نیازی به بستن و باز کردن برنامه نیست.")
 
     def _action_button(self, text, color):
         """دکمه‌ی اکشن تمام‌متن: اندازه‌ی طبیعی متن + بدون بریده‌شدن."""

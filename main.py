@@ -2200,13 +2200,8 @@ class MainWindow(QMainWindow):
         except Exception:
             from license import LicenseState
             self.license_state = LicenseState(error="خطا در بررسی لایسنس.")
-        if self.license_state.valid:
-            _lic_cust = self.license_state.customer or ""
-            self.setWindowTitle(
-                f"{APP_NAME_FA} | {APP_NAME_EN} v{self.app_version} — 🔑 {_lic_cust}")
-        else:
-            self.setWindowTitle(
-                f"{APP_NAME_FA} | {APP_NAME_EN} v{self.app_version} — ⛔ حالت محدود")
+        self._apply_license_title()
+        if not self.license_state.valid:
             try:
                 from PyQt6.QtCore import QTimer
                 from PyQt6.QtWidgets import QMessageBox
@@ -2215,8 +2210,7 @@ class MainWindow(QMainWindow):
                     self, "لایسنس معتبر نیست",
                     f"{_lic_err}\n\nبرنامه در حالت محدود اجرا می‌شود "
                     "(نمایش تصویر همه‌ی دوربین‌ها؛ فقط شمارش افراد فعال است).\n"
-                    "از صفحه‌ی تنظیمات ← ورود ادمین، فایل لایسنس (.lic) را "
-                    "بارگذاری کنید."))
+                    "از صفحه‌ی تنظیمات، فایل لایسنس (.lic) را بارگذاری کنید."))
             except Exception:
                 pass
         # آیکون پنجره: سپر لوگوی شرکت (هم در اجرای عادی، هم داخل exe).
@@ -2280,6 +2274,32 @@ class MainWindow(QMainWindow):
         # هدر، متد refresh صفحه صدا زده می‌شود).
         for panel in self.fire_alarm_store.panels:
             self._start_fire_alarm_monitor(panel)
+
+    def _apply_license_title(self):
+        """به‌روزرسانی عنوان پنجره بر اساس وضعیت فعلی لایسنس."""
+        try:
+            if self.license_state.valid:
+                _lic_cust = self.license_state.customer or ""
+                self.setWindowTitle(
+                    f"{APP_NAME_FA} | {APP_NAME_EN} v{self.app_version} — 🔑 {_lic_cust}")
+            else:
+                self.setWindowTitle(
+                    f"{APP_NAME_FA} | {APP_NAME_EN} v{self.app_version} — ⛔ حالت محدود")
+        except Exception:
+            pass
+
+    def refresh_license_state(self):
+        """بارخوانی لایسنس از فایل (مثلاً بعد از آپلود) و به‌روزرسانی عنوان.
+
+        گیت‌های قابلیت‌ها فایل را هر بار تازه می‌خوانند، پس با این فراخوانی
+        قابلیت‌های لایسنس جدید بلافاصله و بدون ری‌استارت فعال می‌شوند.
+        """
+        try:
+            from license import load_license
+            self.license_state = load_license()
+        except Exception:
+            pass
+        self._apply_license_title()
 
     # ---------------------------------------------------------------- UI ---
 
