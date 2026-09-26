@@ -433,3 +433,94 @@ def open_license_dialog(parent, camera_store=None):
     lay.addWidget(btn_close)
 
     dlg.exec()
+
+
+# ----------------------------------------------------------------------------
+# اطلاع‌رسانی «چه قابلیت‌هایی باز شد»: بعد از آپلود فایل لایسنس در تنظیمات،
+# تفاوت وضعیت قبلی و جدید محاسبه و در یک پنجره‌ی اطلاعیه نمایش داده می‌شود.
+# ----------------------------------------------------------------------------
+
+def _fmt_quota_limit(v) -> str:
+    try:
+        return "نامحدود" if int(v or 0) == 0 else str(int(v))
+    except Exception:
+        return "نامحدود"
+
+
+def describe_license_changes(old_state, new_state) -> list:
+    """مقایسه‌ی دو وضعیت لایسنس؛ خروجی: خطوط فارسی تغییرات (فعال/غیرفعال/سقف)."""
+    lines = []
+    try:
+        old_f = effective_features(old_state)
+        new_f = effective_features(new_state)
+        for k in FEATURE_ORDER:
+            o, n = bool(old_f.get(k)), bool(new_f.get(k))
+            name = FEATURE_DEFS.get(k, k)
+            if n and not o:
+                lines.append(f"✅ {name} فعال شد")
+            elif o and not n:
+                lines.append(f"⛔ {name} غیرفعال شد")
+        old_q = effective_quotas(old_state)
+        new_q = effective_quotas(new_state)
+        for k in QUOTA_ORDER:
+            o_en = is_quota_enabled(k, old_state)
+            n_en = is_quota_enabled(k, new_state)
+            title = _quota_title(k)
+            if n_en and not o_en:
+                lines.append(
+                    f"✅ {title} فعال شد — سقف: {_fmt_quota_limit(new_q.get(k, 0))}")
+            elif o_en and not n_en:
+                lines.append(f"⛔ {title} غیرفعال شد")
+            elif n_en and o_en:
+                try:
+                    ov, nv = int(old_q.get(k, 0) or 0), int(new_q.get(k, 0) or 0)
+                except Exception:
+                    ov, nv = 0, 0
+                if ov != nv:
+                    lines.append(
+                        f"🔼 سقف {title}: {_fmt_quota_limit(ov)} ← {_fmt_quota_limit(nv)}")
+    except Exception:
+        pass
+    return lines
+
+
+def show_license_announcement(parent, old_state, new_state):
+    """پنجره‌ی اطلاعیه بعد از آپلود لایسنس: چه قابلیت‌هایی باز/بسته شد."""
+    from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QPushButton)
+    from PyQt6.QtCore import Qt
+    changes = describe_license_changes(old_state, new_state)
+    dlg = QDialog(parent)
+    dlg.setWindowTitle("لایسنس فعال شد")
+    dlg.setMinimumWidth(440)
+    dlg.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+    lay = QVBoxLayout(dlg)
+    lay.setSpacing(10)
+    lay.addWidget(QLabel("🎉 <b>لایسنس با موفقیت نصب و فعال شد.</b>"))
+    try:
+        cust = (new_state.customer or "").strip() if new_state else ""
+        exp = (new_state.expires or "").strip() if new_state else ""
+        info = []
+        if cust:
+            info.append(f"مشتری: <b>{cust}</b>")
+        info.append(f"انقضا: <b>{exp or 'دائمی'}</b>")
+        lbl = QLabel("<br>".join(info))
+        lbl.setStyleSheet("color: #555; font-size: 12px;")
+        lay.addWidget(lbl)
+    except Exception:
+        pass
+    if changes:
+        lay.addWidget(QLabel("<b>تغییرات این لایسنس:</b>"))
+        body = QLabel("<br>".join(changes))
+        body.setWordWrap(True)
+        body.setStyleSheet("font-size: 13px;")
+        lay.addWidget(body)
+    else:
+        lay.addWidget(QLabel("تغییری در قابلیت‌ها نسبت به قبل ایجاد نشد."))
+    lay.addWidget(QLabel(
+        "<span style='color:#888; font-size:11px;'>قابلیت‌های مجاز هم‌اکنون "
+        "فعال‌اند؛ نیازی به بستن و باز کردن برنامه نیست.</span>"))
+    ok = QPushButton("باشه")
+    ok.setDefault(True)
+    ok.clicked.connect(dlg.accept)
+    lay.addWidget(ok)
+    dlg.exec()

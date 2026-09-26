@@ -211,6 +211,7 @@ jobs:
           "--hidden-import=ssl"
           "--add-data=faces;faces"
           "--add-data=yolov8n.pt;."
+          "--add-data=CHANGELOG_FA.md;."
           "--add-data=segformer_floor_model;segformer_floor_model"
           "--collect-all=ultralytics"
           "--collect-all=torch"

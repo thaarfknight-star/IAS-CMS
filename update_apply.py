@@ -232,6 +232,17 @@ def apply_update(install_dir, pending_dir, parent_pid, exe_name,
 
     _log(log_file, "update to v%s OK" % info.get("version"))
 
+    # ۷-ب) نشانگر «آپدیت تازه اعمال شد» برای پنجره‌ی اطلاع‌رسانی تغییرات:
+    # در استارت بعدی برنامه خوانده و بعد از نمایش، پاک می‌شود.
+    try:
+        (install_dir / "update_applied.json").write_text(
+            json.dumps({"prev_version": str(info.get("prev_version", "")),
+                        "new_version": str(info.get("version", ""))},
+                       ensure_ascii=False),
+            encoding="utf-8")
+    except Exception as e:
+        _log(log_file, "WARN could not write update_applied.json: %s" % e)
+
     # ۸) اجرای مجدد برنامه + راستی‌آزمایی اینکه واقعاً بالا آمد
     if relaunch:
         exe_path = install_dir / exe_name

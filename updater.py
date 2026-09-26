@@ -72,6 +72,77 @@ def _ver_tuple(v):
     return tuple(parts)
 
 
+# ----------------------------------------------------------------------------
+# اطلاع‌رسانی «تغییرات آپدیت»: موتور آپدیت (update_apply.py) بعد از اعمال
+# موفق، فایل update_applied.json را کنار برنامه می‌نویسد؛ در استارت بعدی،
+# پنجره‌ی تغییرات از روی CHANGELOG_FA.md نمایش داده می‌شود.
+# ----------------------------------------------------------------------------
+
+def get_update_notice():
+    """خواندن نشانگر آپدیت تازه‌اعمال‌شده (dict با prev_version/new_version)
+    یا None اگر آپدیتی در کار نبوده."""
+    try:
+        import json as _json
+        p = get_install_dir() / "update_applied.json"
+        if p.is_file():
+            data = _json.loads(p.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return None
+
+
+def clear_update_notice():
+    """حذف نشانگر آپدیت (بعد از نمایش پنجره‌ی تغییرات)."""
+    try:
+        p = get_install_dir() / "update_applied.json"
+        if p.is_file():
+            p.unlink()
+    except Exception:
+        pass
+
+
+def changelog_between(prev_version, new_version, max_chars=6000):
+    """ورودی‌های CHANGELOG_FA.md از بعدِ prev_version تا new_version.
+
+    خروجی: لیستی از (version, date, body) از جدید به قدیم. اگر فایل چنج‌لاگ
+    کنار برنامه نباشد، لیست خالی برمی‌گردد.
+    """
+    try:
+        text = (get_install_dir() / "CHANGELOG_FA.md").read_text(
+            encoding="utf-8")
+    except Exception:
+        return []
+    import re as _re
+    entries = []
+    cur_ver, cur_date, buf = None, None, []
+    for line in text.splitlines():
+        m = _re.match(r"^##\s+(\S+)(?:\s+\(([^)]*)\))?\s*$", line)
+        if m:
+            if cur_ver:
+                entries.append((cur_ver, cur_date, "\n".join(buf).strip()))
+            cur_ver, cur_date, buf = m.group(1), m.group(2) or "", []
+        elif cur_ver is not None:
+            buf.append(line)
+    if cur_ver:
+        entries.append((cur_ver, cur_date, "\n".join(buf).strip()))
+    prev_t = _ver_tuple(prev_version or "0")
+    new_t = _ver_tuple(new_version or "0")
+    out, total = [], 0
+    for ver, date, body in entries:
+        vt = _ver_tuple(ver)
+        if vt <= prev_t:
+            break  # ورودی‌ها از جدید به قدیم‌اند
+        if vt > new_t:
+            continue
+        out.append((ver, date, body))
+        total += len(body)
+        if total > max_chars:
+            break
+    return out
+
+
 def _theme():
     """پالت تم برنامه؛ اگر theme.py در دسترس نبود، مقادیر پیش‌فرض."""
     try:

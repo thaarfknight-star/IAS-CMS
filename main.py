@@ -2201,18 +2201,13 @@ class MainWindow(QMainWindow):
             from license import LicenseState
             self.license_state = LicenseState(error="خطا در بررسی لایسنس.")
         self._apply_license_title()
-        if not self.license_state.valid:
-            try:
-                from PyQt6.QtCore import QTimer
-                from PyQt6.QtWidgets import QMessageBox
-                _lic_err = self.license_state.error or "فایل لایسنس یافت نشد."
-                QTimer.singleShot(900, lambda: QMessageBox.warning(
-                    self, "لایسنس معتبر نیست",
-                    f"{_lic_err}\n\nبرنامه در حالت محدود اجرا می‌شود "
-                    "(نمایش تصویر همه‌ی دوربین‌ها؛ فقط شمارش افراد فعال است).\n"
-                    "از صفحه‌ی تنظیمات، فایل لایسنس (.lic) را بارگذاری کنید."))
-            except Exception:
-                pass
+        # اعلان‌های شروع برنامه: هشدار لایسنس (در صورت نیاز) و بعد پنجره‌ی
+        # «تغییرات آپدیت» اگر تازه به‌روزرسانی اعمال شده باشد.
+        try:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(900, self._show_startup_notices)
+        except Exception:
+            pass
         # آیکون پنجره: سپر لوگوی شرکت (هم در اجرای عادی، هم داخل exe).
         _logo_icon = QIcon(LOGO_SHIELD)
         if not _logo_icon.isNull():
@@ -2300,6 +2295,66 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self._apply_license_title()
+
+    def _show_startup_notices(self):
+        """اعلان‌های شروع: هشدار لایسنس (در صورت نیاز) + تغییرات آپدیت."""
+        try:
+            if not self.license_state.valid:
+                from PyQt6.QtWidgets import QMessageBox
+                _lic_err = self.license_state.error or "فایل لایسنس یافت نشد."
+                QMessageBox.warning(
+                    self, "لایسنس معتبر نیست",
+                    f"{_lic_err}\n\nبرنامه در حالت محدود اجرا می‌شود "
+                    "(نمایش تصویر همه‌ی دوربین‌ها؛ فقط شمارش افراد فعال است).\n"
+                    "از صفحه‌ی تنظیمات، فایل لایسنس (.lic) را بارگذاری کنید.")
+        except Exception:
+            pass
+        self._maybe_show_update_notice()
+
+    def _maybe_show_update_notice(self):
+        """اگر موتور آپدیت تازه نسخه‌ی جدید را اعمال کرده، پنجره‌ی
+        «تغییرات این نسخه» را از روی CHANGELOG_FA.md نشان بده."""
+        try:
+            from updater import (get_update_notice, clear_update_notice,
+                                 changelog_between)
+            notice = get_update_notice()
+            if not notice:
+                return
+            clear_update_notice()
+            new_v = str(notice.get("new_version") or "")
+            prev_v = str(notice.get("prev_version") or "")
+            entries = changelog_between(prev_v, new_v) if new_v else []
+            from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QPushButton
+            from PyQt6.QtWidgets import QTextEdit
+            from PyQt6.QtCore import Qt
+            dlg = QDialog(self)
+            dlg.setWindowTitle("به‌روزرسانی انجام شد")
+            dlg.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+            dlg.resize(540, 430)
+            lay = QVBoxLayout(dlg)
+            lay.setSpacing(10)
+            lay.addWidget(QLabel(
+                f"🎉 <b>برنامه با موفقیت به نسخه‌ی {new_v} به‌روزرسانی شد.</b>"))
+            if entries:
+                lay.addWidget(QLabel("<b>تغییرات این نسخه‌ها:</b>"))
+                te = QTextEdit()
+                te.setReadOnly(True)
+                parts = []
+                for ver, date, body in entries:
+                    head = f"## نسخه‌ی {ver}" + (f" ({date})" if date else "")
+                    parts.append(head + "\n" + body)
+                te.setMarkdown("\n\n".join(parts))
+                lay.addWidget(te, 1)
+            else:
+                lay.addWidget(QLabel(
+                    "تغییرات جزئی و رفع اشکال در این نسخه اعمال شد."))
+            ok = QPushButton("باشه")
+            ok.setDefault(True)
+            ok.clicked.connect(dlg.accept)
+            lay.addWidget(ok)
+            dlg.exec()
+        except Exception:
+            pass
 
     # ---------------------------------------------------------------- UI ---
 

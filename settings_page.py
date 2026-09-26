@@ -214,11 +214,16 @@ class SettingsPage(QWidget):
     def _on_license_upload(self):
         from PyQt6.QtWidgets import QFileDialog, QMessageBox
         try:
-            from license import install_license_file
+            from license import (install_license_file, load_license,
+                                 show_license_announcement)
         except Exception as e:
             QMessageBox.warning(self, "خطا",
                                 f"بارگذاری ماژول لایسنس ناموفق بود:\n{e}")
             return
+        try:
+            old_state = load_license()
+        except Exception:
+            old_state = None
         fp, _ = QFileDialog.getOpenFileName(
             self, "انتخاب فایل لایسنس", "", "License (*.lic)")
         if not fp:
@@ -228,6 +233,10 @@ class SettingsPage(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "خطا", f"لایسنس پذیرفته نشد:\n{e}")
             return
+        try:
+            new_state = load_license()
+        except Exception:
+            new_state = None
         self._refresh_license_status()
         # فعال‌سازی فوری: وضعیت لایسنس پنجره‌ی اصلی هم تازه می‌شود
         try:
@@ -236,11 +245,12 @@ class SettingsPage(QWidget):
                 win.refresh_license_state()
         except Exception:
             pass
-        QMessageBox.information(
-            self, "انجام شد",
-            "لایسنس با موفقیت نصب و فعال شد. ✅\n\n"
-            "قابلیت‌های مجاز این لایسنس هم‌اکنون فعال‌اند؛ "
-            "نیازی به بستن و باز کردن برنامه نیست.")
+        # پنجره‌ی اطلاعیه: چه قابلیت‌هایی باز شد
+        try:
+            show_license_announcement(self, old_state, new_state)
+        except Exception as e:
+            QMessageBox.information(self, "انجام شد",
+                                    "لایسنس با موفقیت نصب و فعال شد. ✅")
 
     def _action_button(self, text, color):
         """دکمه‌ی اکشن تمام‌متن: اندازه‌ی طبیعی متن + بدون بریده‌شدن."""
