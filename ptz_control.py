@@ -73,8 +73,74 @@ def _spaces_of(node):
     return out
 
 
+def _try_ptz_node(ptz):
+    """تلاش برای خواندن نود PTZ؛ (node, spaces) یا (None, set())."""
+    try:
+        nodes = ptz.GetNodes() or []
+    except Exception:
+        return None, set()
+    if not nodes:
+        return None, set()
+    node = nodes[0]
+    return node, _spaces_of(node)
+
+
+def _try_imaging_focus(onvif_cam):
+    """بررسی پشتیبانی فوکوس از طریق سرویس Imaging — مستقل از PTZ."""
+    try:
+        imaging = onvif_cam.create_imaging_service()
+        media = onvif_cam.create_media_service()
+        sources = media.GetVideoSources() or []
+        if not sources:
+            return False
+        try:
+            vsrc_tok = str(sources[0].token)
+        except Exception:
+            return False
+        opts = imaging.GetOptions({"VideoSourceToken": vsrc_tok})
+        return getattr(opts, "Focus", None) is not None
+    except Exception:
+        return False
+
+
+def _try_profile_token(onvif_cam, node):
+    """پروفایل مدیای متناظر با نود PTZ (یا اولین پروفایل)."""
+    try:
+        media = onvif_cam.create_media_service()
+        profiles = media.GetProfiles() or []
+    except Exception:
+        return None
+    node_tok = _node_token(node) if node is not None else ""
+    profile_token = None
+    for pr in profiles:
+        try:
+            cfg = pr.PTZConfiguration
+        except Exception:
+            cfg = None
+        if cfg is not None:
+            try:
+                nt = str(cfg.NodeToken)
+            except Exception:
+                nt = ""
+            if (node_tok and nt == node_tok) or not profile_token:
+                try:
+                    profile_token = str(pr.token)
+                except Exception:
+                    profile_token = None
+            if node_tok and nt == node_tok:
+                break
+    if not profile_token and profiles:
+        try:
+            profile_token = str(profiles[0].token)
+        except Exception:
+            profile_token = None
+    return profile_token
 def detect_ptz_support(cam, timeout=10):
     """شناسایی قابلیت PTZ/لنز موتورایزد دوربین.
+
+    PTZ و Imaging مستقل از هم بررسی می‌شوند: دوربین‌های لنز موتورایزد
+    ارزان (مثل بردهای OEM) معمولاً سرویس PTZ ندارند و فوکوس/زومشان فقط
+    از طریق Imaging در دسترس است.
 
     خروجی: dict با کلیدهای supported/pan/tilt/zoom/focus/presets/
     home/node_token/profile_token/onvif_port/error
@@ -93,52 +159,24 @@ def detect_ptz_support(cam, timeout=10):
     for port in _iter_onvif_ports(cam):
         try:
             onvif_cam = _new_onvif_camera(ip, port, user, pwd)
-            ptz = onvif_cam.create_ptz_service()
-            nodes = ptz.GetNodes() or []
-            if not nodes:
-                last_err = f"پورت {port}: نود PTZ ندارد"
-                continue
-            node = nodes[0]
-            spaces = _spaces_of(node)
+            # ۱) سرویس PTZ (اختیاری — ممکن است وجود نداشته باشد)
+            node, spaces = None, set()
+            try:
+                ptz = onvif_cam.create_ptz_service()
+                node, spaces = _try_ptz_node(ptz)
+            except Exception:
+                node, spaces = None, set()
             pan_tilt = bool({"AbsolutePanTiltPositionSpace",
                              "RelativePanTiltTranslationSpace",
                              "ContinuousPanTiltVelocitySpace"} & spaces)
             zoom = bool({"AbsoluteZoomPositionSpace",
                          "RelativeZoomTranslationSpace",
                          "ContinuousZoomVelocitySpace"} & spaces)
-            if not (pan_tilt or zoom):
-                last_err = f"پورت {port}: فضای PTZ پشتیبانی نمی‌شود"
+            # ۲) فوکوس از طریق Imaging — مستقل از PTZ
+            focus = _try_imaging_focus(onvif_cam)
+            if not (pan_tilt or zoom or focus):
+                last_err = f"پورت {port}: قابلیت PTZ/فوکوس ندارد"
                 continue
-            # پروفایل مدیا‌ی متناظر با این نود
-            profile_token = None
-            try:
-                media = onvif_cam.create_media_service()
-                profiles = media.GetProfiles() or []
-                node_tok = _node_token(node)
-                for pr in profiles:
-                    try:
-                        cfg = pr.PTZConfiguration
-                    except Exception:
-                        cfg = None
-                    if cfg is not None:
-                        try:
-                            nt = str(cfg.NodeToken)
-                        except Exception:
-                            nt = ""
-                        if (node_tok and nt == node_tok) or not profile_token:
-                            try:
-                                profile_token = str(pr.token)
-                            except Exception:
-                                profile_token = None
-                        if node_tok and nt == node_tok:
-                            break
-                if not profile_token and profiles:
-                    try:
-                        profile_token = str(profiles[0].token)
-                    except Exception:
-                        profile_token = None
-            except Exception:
-                profile_token = None
             try:
                 max_presets = int(getattr(node, "MaximumNumberOfPresets", 0) or 0)
             except Exception:
@@ -147,22 +185,6 @@ def detect_ptz_support(cam, timeout=10):
                 home = bool(getattr(node, "HomeSupported", False))
             except Exception:
                 home = False
-            # فوکوس لنز موتورایزد از طریق سرویس Imaging
-            focus = False
-            try:
-                imaging = onvif_cam.create_imaging_service()
-                media2 = onvif_cam.create_media_service()
-                sources = media2.GetVideoSources() or []
-                if sources:
-                    try:
-                        vsrc_tok = str(sources[0].token)
-                    except Exception:
-                        vsrc_tok = None
-                    if vsrc_tok:
-                        opts = imaging.GetOptions({"VideoSourceToken": vsrc_tok})
-                        focus = getattr(opts, "Focus", None) is not None
-            except Exception:
-                focus = False
             result.update({
                 "supported": True,
                 "pan": pan_tilt, "tilt": pan_tilt, "zoom": zoom,
@@ -170,7 +192,7 @@ def detect_ptz_support(cam, timeout=10):
                 "presets": max_presets > 0,
                 "home": home,
                 "node_token": _node_token(node) or None,
-                "profile_token": profile_token,
+                "profile_token": _try_profile_token(onvif_cam, node),
                 "onvif_port": int(port),
             })
             return result
