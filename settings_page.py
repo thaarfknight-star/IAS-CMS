@@ -201,20 +201,21 @@ class SettingsPage(QWidget):
         return lic_group
 
     def _build_bandwidth_group(self):
-        # --- مدیریت پهنای باند (2.0.52-beta): سقف کلی + سهم برابر ---
+        # --- مدیریت پهنای باند (2.0.52-beta؛ توسعه‌یافته در 2.0.64-beta):
+        # سقف کلی + بیت‌ریت درخواستی هر دوربین (kbps) + تخصیص دقیق ---
         from bandwidth import load_bw_settings, save_bw_settings
         bw_group = QGroupBox("📊 مدیریت پهنای باند")
         blay = QVBoxLayout()
         blay.setSpacing(10)
 
         cfg = load_bw_settings()
-        self.bw_enabled_chk = QCheckBox("فعال‌سازی مدیریت پهنای باند (سهم برابر برای همه‌ی دوربین‌ها)")
+        self.bw_enabled_chk = QCheckBox("فعال‌سازی مدیریت پهنای باند")
         self.bw_enabled_chk.setChecked(cfg["enabled"])
         self.bw_enabled_chk.stateChanged.connect(self._on_bw_settings_changed)
         blay.addWidget(self.bw_enabled_chk)
 
         cap_row = QHBoxLayout()
-        cap_row.addWidget(QLabel("سقف کلی پهنای باند (مگابیت/ثانیه):"))
+        cap_row.addWidget(QLabel("سقف کلی پهنای باند:"))
         self.bw_cap_spin = QDoubleSpinBox()
         self.bw_cap_spin.setRange(0, 1000)
         self.bw_cap_spin.setDecimals(1)
@@ -224,6 +225,7 @@ class SettingsPage(QWidget):
         self.bw_cap_spin.setMinimumWidth(120)
         self.bw_cap_spin.valueChanged.connect(self._on_bw_settings_changed)
         cap_row.addWidget(self.bw_cap_spin)
+        cap_row.addWidget(QLabel("مگابیت/ثانیه (Mbps)"))  # واحد کنار کادر
         cap_row.addWidget(QLabel("(۰ = نامحدود؛ فقط نمایش)"))
         cap_row.addStretch()
         blay.addLayout(cap_row)
@@ -233,9 +235,12 @@ class SettingsPage(QWidget):
         self.bw_live_btn = self._action_button("📊 مشاهده‌ی زنده‌ی پهنای باند", "#1565c0")
         self.bw_live_btn.clicked.connect(self._on_bw_live_view)
         live_row.addWidget(self.bw_live_btn)
-        bhint = QLabel("سهم برابر هر دوربین = سقف کلی ÷ تعداد دوربین‌های فعال. "
-                       "با «اعمال سهم برابر» بیت‌ریت انکدر دوربین‌های مستقیم از طریق "
-                       "ONVIF تنظیم می‌شود.")
+        bhint = QLabel("قانون تخصیص: هر دوربینی که «بیت‌ریت درخواستی» (کیلوبیت/ثانیه، "
+                       "در دیالوگ افزودن/ویرایش دوربین یا همین‌جا در نمای زنده) داشته "
+                       "باشد، دقیقاً همان مقدار را می‌گیرد؛ باقی‌مانده‌ی سقف کلی "
+                       "به‌تساوی بین بقیه‌ی دوربین‌ها تقسیم می‌شود. «اعمال روی "
+                       "دوربین‌ها» این مقادیر را از طریق ONVIF روی انکدر دوربین‌های "
+                       "مستقیم تنظیم می‌کند.")
         bhint.setWordWrap(True)
         live_row.addWidget(bhint, 1)
         blay.addLayout(live_row)

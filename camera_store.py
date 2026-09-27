@@ -149,7 +149,7 @@ class CameraStore:
     # ------------------------------------------------------------ cameras --
 
     def add_camera(self, name, ip, port, user, pwd, path, nvr_id=None, channel=None, full_url=None,
-                   camera_ip=None, floor_id="", group=""):
+                   camera_ip=None, floor_id="", group="", bitrate_kbps=0):
         cam = {
             "id": str(uuid.uuid4()),
             "name": name or ip,
@@ -164,6 +164,9 @@ class CameraStore:
             # (2.0.61-beta) گروه‌بندی دوربین‌ها: نام گروه نمایشی (مثلاً
             # «طبقه اول»، «پارکینگ»)؛ خالی یعنی بدون گروه.
             "group": group or "",
+            # (2.0.64-beta) بیت‌ریت درخواستی این دوربین (کیلوبیت/ثانیه)؛
+            # صفر یعنی «خودکار» — در تخصیص پهنای باند، سهم برابر می‌گیرد.
+            "bitrate_kbps": max(0, int(bitrate_kbps or 0)),
             # طبقه‌ی دوربین (کنترل تردد طبقاتی) — از نقشه‌ی ساختمان سینک
             # می‌شود یا دستی در تنظیمات دوربین ست می‌شود.
             "floor_id": floor_id or "",
@@ -195,6 +198,14 @@ class CameraStore:
             if cam["id"] == cam_id:
                 return cam
         return None
+
+    @staticmethod
+    def get_bitrate_kbps(cam):
+        """بیت‌ریت درخواستی دوربین (kbps)؛ برای رکوردهای قدیمیِ بدون فیلد، ۰."""
+        try:
+            return max(0, int(float((cam or {}).get("bitrate_kbps") or 0)))
+        except Exception:
+            return 0
 
     def get_cameras(self):
         """همه‌ی دوربین‌ها (مستقیم + کانال‌های NVR) — برای شمارش سهمیه‌ی لایسنس."""

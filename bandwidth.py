@@ -1,23 +1,25 @@
 # -*- coding: utf-8 -*-
-"""سیستم مدیریت پهنای باند (2.0.52-beta).
+"""سیستم مدیریت پهنای باند (2.0.52-beta؛ توسعه‌یافته در 2.0.64-beta).
 
-هدف: همه‌ی دوربین‌های فعال «به یک اندازه» از پهنای باند شبکه استفاده کنند و
-افت بیت‌ریت/قطعی تصویر به‌خاطر ازدحام پیش نیاید.
+هدف: هر دوربین «به یک اندازه» از پهنای باند شبکه استفاده کند و اگر برای
+دوربینی «بیت‌ریت درخواستی» تعیین شده بود، دقیقاً همان مقدار به آن برسد.
 
 اجزا:
   1) مانیتور زنده: هر CameraSlotWidget هر ~۵ ثانیه kbps/fps استریمش را از
      طریق on_stream_stats گزارش می‌دهد؛ BandwidthMonitor آخرین مقدار هر
      دوربین را نگه می‌دارد.
-  2) سقف کلی + سهم برابر: کاربر در تنظیمات یک سقف کلی (مگابیت/ثانیه) تعیین
-     می‌کند؛ سهم برابر هر دوربین = سقف ÷ تعداد دوربین‌های فعال. سقف صفر یعنی
-     فقط «نمایش» بدون قضاوت (حالت نامحدود).
-  3) اعمال سهم برابر (ONVIF): دکمه‌ی «اعمال سهم برابر» در دیالوگ زنده، برای
+  2) سقف کلی + تخصیص دقیق (allocate_bandwidth): کاربر در تنظیمات یک سقف کلی
+     (مگابیت/ثانیه) تعیین می‌کند و برای هر دوربین می‌تواند «بیت‌ریت درخواستی»
+     (کیلوبیت/ثانیه) بگذارد. قانون تخصیص: اول دوربین‌های دارای بیت‌ریت
+     درخواستی دقیقاً همان مقدار را می‌گیرند؛ باقی‌مانده‌ی سقف به‌تساوی بین
+     بقیه تقسیم می‌شود؛ اگر سقف نامحدود باشد، بقیه «خودکار» می‌مانند.
+  3) اعمال تخصیص (ONVIF): دکمه‌ی «اعمال روی دوربین‌ها» در دیالوگ زنده، برای
      هر دوربین مستقیم (نه کانال NVR) تلاش می‌کند از طریق ONVIF استاندارد
-     (SetVideoEncoderConfiguration) بیت‌ریت انکدر دوربین را روی سهم برابر
-     تنظیم کند. Best-effort است: دوربینی که ONVIF ندهد یا خطا بدهد، در گزارش
-     مشخص می‌شود و بقیه ادامه پیدا می‌کنند.
+     (SetVideoEncoderConfiguration) بیت‌ریت انکدر دوربین را روی «سهم نهایی»
+     همان دوربین تنظیم کند. Best-effort است: دوربینی که ONVIF ندهد یا خطا
+     بدهد، در گزارش مشخص می‌شود و بقیه ادامه پیدا می‌کنند.
   4) کانال‌های NVR از طریق ONVIF خود NVR قابل تنظیم نیستند (پروفایل‌های NVR
-     لزوماً به کانال‌ها نگاشت نمی‌شوند)؛ برای آن‌ها سهم برابر فقط «نمایشی و
+     لزوماً به کانال‌ها نگاشت نمی‌شوند)؛ برای آن‌ها تخصیص فقط «نمایشی و
      هشداری» است.
 
 نکته‌ی مهم صداقت: بیت‌ریت واقعیِ ارسالی هر دوربین را فقط خودِ دوربین (انکدرش)
@@ -92,6 +94,85 @@ def fair_share_kbps(total_mbps, n_cams):
     return (total * 1000.0) / n
 
 
+# ---------------------------------------------------------------------------
+# موتور تخصیص پهنای باند (2.0.64-beta)
+# ---------------------------------------------------------------------------
+# قانون تخصیص — دقیق و قطعی:
+#   ۱) هر دوربینی که «بیت‌ریت درخواستی» دارد (bitrate_kbps > 0)، دقیقاً همان
+#      مقدار را می‌گیرد (حالت fixed)؛ چه سقف کلی تعیین شده باشد چه نه.
+#   ۲) اگر سقف کلی تعیین شده باشد: مجموع ثابت‌ها از سقف کم می‌شود و
+#      باقی‌مانده «به‌تساوی» بین دوربین‌های بدون بیت‌ریت درخواستی تقسیم
+#      می‌شود (حالت equal).
+#   ۳) اگر سقف کلی نامحدود (صفر) باشد: دوربین‌های بدون بیت‌ریت درخواستی
+#      «خودکار» می‌مانند (حالت auto) و برنامه برایشان تصمیمی نمی‌گیرد.
+#   ۴) اگر مجموع ثابت‌ها از سقف بیشتر شود، تخصیص همان مقادیر ثابت است ولی
+#      هشدار «over_allocated» ثبت می‌شود تا کاربر سقف را بالا ببرد یا
+#      بیت‌ریت‌ها را کم کند (برنامه خودسرانه کم نمی‌کند).
+
+def allocate_bandwidth(cameras, total_mbps):
+    """تخصیص قطعی پهنای باند.
+
+    cameras: لیستی از dict با کلیدهای:
+        id, label, bitrate_kbps (عدد؛ ۰ یا None یعنی خودکار), nvr (bool)
+    total_mbps: سقف کلی (۰ یعنی نامحدود).
+
+    برمی‌گرداند:
+        {"allocations": {cam_id: {"target_kbps": float|None,
+                                  "mode": "fixed"|"equal"|"auto",
+                                  "label": str}},
+         "total_kbps": مجموع تخصیص‌یافته‌ی قطعی (فقط fixedها؛ float)،
+         "equal_share_kbps": سهم برابر باقی‌مانده (یا None)،
+         "n_fixed": int, "n_auto": int,
+         "warnings": [str]}
+    """
+    allocs = {}
+    fixed_sum = 0.0
+    fixed_ids = []
+    auto_ids = []
+    try:
+        total = max(0.0, float(total_mbps or 0))
+    except Exception:
+        total = 0.0
+
+    for cam in cameras or []:
+        cid = str(cam.get("id") or "")
+        if not cid:
+            continue
+        try:
+            want = max(0, int(float(cam.get("bitrate_kbps") or 0)))
+        except Exception:
+            want = 0
+        label = cam.get("label") or cam.get("name") or cam.get("ip") or cid
+        if want > 0:
+            allocs[cid] = {"target_kbps": float(want), "mode": "fixed",
+                           "label": label}
+            fixed_sum += want
+            fixed_ids.append(cid)
+        else:
+            auto_ids.append(cid)
+            allocs[cid] = {"target_kbps": None, "mode": "auto", "label": label}
+
+    warnings = []
+    equal_share = None
+    if total > 0:
+        remaining = total * 1000.0 - fixed_sum
+        if remaining < 0:
+            warnings.append(
+                f"مجموع بیت‌ریت‌های ثابت ({fixed_sum:,.0f} kbps) از سقف کلی "
+                f"({total:g} Mbps) بیشتر است؛ دوربین‌های خودکار سهمی نمی‌گیرند.")
+            remaining = 0.0
+        if auto_ids:
+            equal_share = remaining / len(auto_ids)
+            for cid in auto_ids:
+                allocs[cid]["target_kbps"] = round(equal_share, 1)
+                allocs[cid]["mode"] = "equal"
+    return {"allocations": allocs,
+            "total_kbps": round(fixed_sum, 1),
+            "equal_share_kbps": round(equal_share, 1) if equal_share else None,
+            "n_fixed": len(fixed_ids), "n_auto": len(auto_ids),
+            "warnings": warnings}
+
+
 class BandwidthMonitor:
     """نگه‌داشت آخرین kbps هر دوربین فعال + محاسبه‌ی سهم برابر و وضعیت."""
 
@@ -113,12 +194,16 @@ class BandwidthMonitor:
     def remove(self, cam_id):
         self._data.pop(cam_id, None)
 
-    def snapshot(self, total_mbps=0):
+    def snapshot(self, total_mbps=0, targets=None):
         """وضعیت لحظه‌ای؛ هر آیتم: label, kbps, status.
 
         status: "ok" | "over" (پرمصرف) | "stale" (داده کهنه/قطع)
+        targets (اختیاری، 2.0.64-beta): دیکشنری cam_id -> target_kbps؛ اگر
+        برای دوربینی هدف مشخص باشد، «پرمصرف» نسبت به همان هدف سنجیده
+        می‌شود، وگرنه مثل قبل نسبت به سهم برابر کلی.
         """
         now = time.monotonic()
+        targets = targets or {}
         items = []
         for cam_id, d in self._data.items():
             age = now - d["ts"]
@@ -132,10 +217,14 @@ class BandwidthMonitor:
         n = len([i for i in items if i["status"] != "stale"])
         share = fair_share_kbps(total_mbps, n)
         total_kbps = round(sum(i["kbps"] for i in items if i["status"] != "stale"), 1)
-        if share:
-            for i in items:
-                if i["status"] == "ok" and i["kbps"] > share * OVER_SHARE_RATIO:
-                    i["status"] = "over"
+        for i in items:
+            if i["status"] != "ok":
+                continue
+            ref = targets.get(i["cam_id"])
+            if not ref:
+                ref = share
+            if ref and i["kbps"] > ref * OVER_SHARE_RATIO:
+                i["status"] = "over"
         items.sort(key=lambda i: i["kbps"], reverse=True)
         return {"total_kbps": total_kbps, "share_kbps": round(share, 1) if share else None,
                 "n_active": n, "items": items}
@@ -182,8 +271,9 @@ def _set_encoder_bitrate_onvif(ip, onvif_port, user, pwd, bitrate_kbps, timeout=
     return False, "; ".join(msgs) or "خطای نامشخص ONVIF"
 
 
-def apply_fair_share_blocking(cam, share_kbps):
-    """تلاش بلاکینگ برای یک دوربین مستقیم؛ (ok, message) برمی‌گرداند.
+def apply_target_bitrate_blocking(cam, bitrate_kbps):
+    """(2.0.64-beta) تلاش بلاکینگ برای تنظیم بیت‌ریت انکدر یک دوربین مستقیم
+    روی مقدار دقیق درخواستی؛ (ok, message) برمی‌گرداند.
 
     در ترد جدا صدا زده می‌شود، نه ترد اصلی UI.
     """
@@ -206,10 +296,20 @@ def apply_fair_share_blocking(cam, share_kbps):
     last_err = ""
     for port in ports:
         try:
-            ok, msg = _set_encoder_bitrate_onvif(ip, port, user, pwd, share_kbps)
+            ok, msg = _set_encoder_bitrate_onvif(ip, port, user, pwd,
+                                                 bitrate_kbps)
             if ok:
                 return True, f"پورت {port}: {msg}"
             last_err = f"پورت {port}: {msg}"
         except Exception as e:
             last_err = f"پورت {port}: {str(e)[:80]}"
     return False, last_err or "ONVIF پاسخ نداد"
+
+
+def apply_fair_share_blocking(cam, share_kbps):
+    """تلاش بلاکینگ برای یک دوربین مستقیم؛ (ok, message) برمی‌گرداند.
+
+    در ترد جدا صدا زده می‌شود، نه ترد اصلی UI.
+    (2.0.64-beta: حالا فقط یک wrapper روی apply_target_bitrate_blocking است.)
+    """
+    return apply_target_bitrate_blocking(cam, share_kbps)

@@ -3608,6 +3608,7 @@ class MainWindow(QMainWindow):
                 full_url=data.get("full_url"),
                 floor_id=data.get("floor_id", ""),
                 group=data.get("group", ""),
+                bitrate_kbps=data.get("bitrate_kbps", 0),
             )
             self.reload_camera_list()
             # رفع درخواست: دوربین تازه‌اضافه‌شده اتوماتیک به پنجره‌ی نمایش اضافه شود.

@@ -1,7 +1,7 @@
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QLineEdit, QCheckBox, QLabel,
-    QDialogButtonBox, QMessageBox, QComboBox
+    QDialogButtonBox, QMessageBox, QComboBox, QSpinBox,
 )
 
 from rtsp_utils import build_rtsp_url, probe_stream
@@ -123,6 +123,22 @@ class AddCameraDialog(QDialog):
             "گروه نمایشی این دوربین (مثلاً «طبقه اول»، «پارکینگ»).\n"
             "می‌توانید نام جدیدی هم تایپ کنید.")
 
+        # (2.0.64-beta) بیت‌ریت درخواستی این دوربین — واحد (kbps) کنار کادر
+        # نوشته می‌شود. صفر یعنی «خودکار»: در مدیریت پهنای باند، سهم برابر
+        # از سقف کلی می‌گیرد؛ اگر عدد بگذارید، دقیقاً همان مقدار به دوربین
+        # تخصیص داده و (برای دوربین مستقیم، از طریق ONVIF) اعمال می‌شود.
+        self.bitrate_spin = QSpinBox()
+        self.bitrate_spin.setRange(0, 100000)
+        self.bitrate_spin.setSingleStep(256)
+        self.bitrate_spin.setSuffix(" kbps")
+        self.bitrate_spin.setSpecialValueText("خودکار")
+        self.bitrate_spin.setMinimumWidth(160)
+        self.bitrate_spin.setToolTip(
+            "بیت‌ریت درخواستی این دوربین به کیلوبیت/ثانیه (kbps).\n"
+            "«خودکار» (۰) یعنی سهم برابر از سقف کلی پهنای باند.\n"
+            "اگر عدد تعیین کنید، در «مدیریت پهنای باند» دقیقاً همان مقدار\n"
+            "به این دوربین تخصیص داده می‌شود.")
+
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: #aaaaaa; font-size: 11px;")
 
@@ -149,6 +165,12 @@ class AddCameraDialog(QDialog):
                     self.group_combo.setCurrentIndex(_gidx)
                 else:
                     self.group_combo.setEditText(_eg)
+            # بیت‌ریت درخواستی ذخیره‌شده (رکوردهای قدیمی: خودکار)
+            try:
+                _eb = int(float(existing_cam.get("bitrate_kbps") or 0))
+            except Exception:
+                _eb = 0
+            self.bitrate_spin.setValue(max(0, _eb))
 
         form = QFormLayout()
         form.addRow("نام دوربین:", self.name_input)
@@ -158,6 +180,7 @@ class AddCameraDialog(QDialog):
         form.addRow("رمز عبور:", self.pass_input)
         form.addRow("🏢 طبقه:", self.floor_combo)
         form.addRow("📁 گروه:", self.group_combo)
+        form.addRow("بیت‌ریت درخواستی (kbps):", self.bitrate_spin)
         form.addRow(self.auto_detect_chk)
         form.addRow("مسیر دستی:", self.path_input)
         form.addRow(self.status_label)
@@ -256,4 +279,5 @@ class AddCameraDialog(QDialog):
             "full_url": self.detected_full_url,
             "floor_id": self.floor_combo.currentData() or "",
             "group": _group,
+            "bitrate_kbps": int(self.bitrate_spin.value()),
         }

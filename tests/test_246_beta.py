@@ -22,17 +22,17 @@ def test_help_pages_mapping():
     from app_help import HELP_PAGES
     assert set(HELP_PAGES) == {"home", "fire", "face", "reports", "plate",
                                "person", "map", "settings"}
-    # نگاشت 2.0.58: شروع هر بخش در آموزش ۴۷ صفحه‌ای قدم‌به‌قدم، بدون تکرار
+    # نگاشت 2.0.64: شروع هر بخش در آموزش ۴۸ صفحه‌ای قدم‌به‌قدم، بدون تکرار
     assert HELP_PAGES == {"home": 6, "fire": 14, "face": 17, "reports": 21,
                           "plate": 25, "person": 32, "map": 37, "settings": 41}
 
 
-def test_manual_pdf_exists_and_has_47_pages():
+def test_manual_pdf_exists_and_has_48_pages():
     from pypdf import PdfReader
     from app_help import manual_path
     path = manual_path()
     assert os.path.exists(path), f"PDF راهنما پیدا نشد: {path}"
-    assert len(PdfReader(path).pages) == 47
+    assert len(PdfReader(path).pages) == 48
 
 
 def test_manual_pdf_bundled_in_assets():
