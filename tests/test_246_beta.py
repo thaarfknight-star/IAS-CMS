@@ -144,3 +144,16 @@ def test_add_buttons_row_and_net_probe_below_panel():
     cam = src.index('left_panel.addWidget(cam_group)')
     probe = src.index('left_panel.addWidget(self.net_probe_btn)')
     assert probe > cam, "net_probe_btn باید بعد از cam_group به left_panel اضافه شود"
+
+
+def test_camera_list_and_connect_hint_created_in_init_ui():
+    # رگرسیون 2.0.58: جابه‌جایی دکمه‌ها نباید خطوط ساخت camera_list و
+    # connect_hint را پاک کند (باعث NameError موقع اجرای برنامه می‌شد).
+    src = _main_source()
+    assert "self.camera_list = CameraTreeWidget()" in src
+    assert "connect_hint = QLabel(" in src
+    # و هر دو قبل از استفاده در cam_layout ساخته شده باشند
+    assert src.index("self.camera_list = CameraTreeWidget()") < \
+        src.index("cam_layout.addWidget(self.camera_list)")
+    assert src.index("connect_hint = QLabel(") < \
+        src.index("cam_layout.addWidget(connect_hint)")
