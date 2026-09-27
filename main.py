@@ -2455,9 +2455,9 @@ class MainWindow(QMainWindow):
         cam_group = QGroupBox("دوربین‌ها و NVRهای من")
         cam_layout = QVBoxLayout()
         add_btn_row = QHBoxLayout()
-        self.add_camera_btn = QPushButton("+ افزودن دوربین تکی")
+        self.add_camera_btn = QPushButton("افزودن دوربین تکی")
         self.add_camera_btn.clicked.connect(lambda: self.open_add_camera_dialog())
-        self.add_nvr_btn = QPushButton("+ افزودن NVR")
+        self.add_nvr_btn = QPushButton("افزودن NVR")
         # نکته: چون open_add_nvr_dialog اکنون یک آرگومان اختیاری (prefill_ip)
         # دارد، باید مثل add_camera_btn از طریق lambda وصل شود؛ در غیر این
         # صورت PyQt مقدار bool سیگنال clicked(checked) را به‌جای None به

@@ -157,3 +157,13 @@ def test_camera_list_and_connect_hint_created_in_init_ui():
         src.index("cam_layout.addWidget(self.camera_list)")
     assert src.index("connect_hint = QLabel(") < \
         src.index("cam_layout.addWidget(connect_hint)")
+
+
+def test_add_buttons_have_clean_rtl_labels():
+    # رگرسیون 2.0.60: برچسب دکمه‌های افزودن نباید با "+" شروع شود؛ کاراکتر
+    # خنثی ابتدای متن راست‌به‌چپ در دکمه‌ی باریک، نوشتار را به‌هم می‌ریزد.
+    src = _main_source()
+    assert 'QPushButton("افزودن دوربین تکی")' in src
+    assert 'QPushButton("افزودن NVR")' in src
+    assert '"+ افزودن دوربین تکی"' not in src
+    assert '"+ افزودن NVR"' not in src
