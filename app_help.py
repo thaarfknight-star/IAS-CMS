@@ -15,13 +15,13 @@ import sys
 
 HELP_PAGES = {
     "home": 6,
-    "fire": 10,
-    "face": 12,
-    "reports": 15,
-    "plate": 18,
-    "person": 22,
-    "map": 25,
-    "settings": 27,
+    "fire": 13,
+    "face": 16,
+    "reports": 20,
+    "plate": 24,
+    "person": 31,
+    "map": 35,
+    "settings": 38,
 }
 
 _MANUAL_REL = os.path.join("assets", "help", "user-manual.pdf")

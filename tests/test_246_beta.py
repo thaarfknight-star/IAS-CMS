@@ -22,17 +22,17 @@ def test_help_pages_mapping():
     from app_help import HELP_PAGES
     assert set(HELP_PAGES) == {"home", "fire", "face", "reports", "plate",
                                "person", "map", "settings"}
-    # نگاشت 2.0.55: شروع هر بخش در آموزش ۳۲ صفحه‌ای، بدون تکرار
-    assert HELP_PAGES == {"home": 6, "fire": 10, "face": 12, "reports": 15,
-                          "plate": 18, "person": 22, "map": 25, "settings": 27}
+    # نگاشت 2.0.57: شروع هر بخش در آموزش ۴۴ صفحه‌ای دکمه‌به‌دکمه، بدون تکرار
+    assert HELP_PAGES == {"home": 6, "fire": 13, "face": 16, "reports": 20,
+                          "plate": 24, "person": 31, "map": 35, "settings": 38}
 
 
-def test_manual_pdf_exists_and_has_32_pages():
+def test_manual_pdf_exists_and_has_44_pages():
     from pypdf import PdfReader
     from app_help import manual_path
     path = manual_path()
     assert os.path.exists(path), f"PDF راهنما پیدا نشد: {path}"
-    assert len(PdfReader(path).pages) == 32
+    assert len(PdfReader(path).pages) == 44
 
 
 def test_manual_pdf_bundled_in_assets():
@@ -66,18 +66,14 @@ def test_gallery_button_in_face_panel_not_face_page():
 
 
 def test_on_face_event_attaches_structured_data():
-    """on_face_event باید داده‌ی ساخت‌یافته (camera/time/name/known) را با
-    setData روی آیتم بگذارد تا گالری «دیدن تصاویر» از آن بخواند."""
+    """on_face_event باید داده‌ی ساخت‌یافته (camera/time/name/known) را در
+    حافظه‌ی _recent_face_events بگذارد تا گالری «دیدن تصاویر» از آن بخواند
+    (از 2.0.56: چهره‌ها دیگر در پنل رویدادها نیستند)."""
     src = _main_source()
     tree = ast.parse(src)
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == "on_face_event":
-            calls = [n for n in ast.walk(node) if isinstance(n, ast.Call)]
-            setdata = [c for c in calls
-                       if isinstance(c.func, ast.Attribute)
-                       and c.func.attr == "setData"]
-            assert setdata, "on_face_event باید setData صدا بزند"
-            # کلیدهای دیکشنری داده
+            # کلیدهای دیکشنری داده‌ی ساخت‌یافته
             dicts = [n for n in ast.walk(node) if isinstance(n, ast.Dict)]
             keys = set()
             for d in dicts:
@@ -85,6 +81,7 @@ def test_on_face_event_attaches_structured_data():
                     if isinstance(k, ast.Constant):
                         keys.add(k.value)
             assert {"camera", "time", "name", "known"} <= keys
+            assert "_recent_face_events" in src
             return
     pytest.fail("on_face_event پیدا نشد")
 
