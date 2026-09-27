@@ -194,8 +194,10 @@ def _discover_onvif_channels(ip, onvif_port, user, pwd):
     """بدنه‌ی اصلی کشف ONVIF؛ این تابع می‌تواند برای مدتی نامحدود بلاک شود، به
     همین دلیل توسط try_onvif_discovery با یک مهلت زمانی ثابت فراخوانی می‌شود."""
     from onvif import ONVIFCamera
+    from app_paths import get_onvif_wsdl_dir
 
-    cam = ONVIFCamera(ip, int(onvif_port), user, pwd)
+    cam = ONVIFCamera(ip, int(onvif_port), user, pwd,
+                      wsdl_dir=get_onvif_wsdl_dir())
     media = cam.create_media_service()
     profiles = media.GetProfiles()
     if not profiles:

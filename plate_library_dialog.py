@@ -214,7 +214,7 @@ class PlateSegmentInput(QWidget):
 
     def refresh_preview(self):
         """پیش‌نمایش زنده‌ی پلاک واردشده."""
-        canon, kind, _err = self._current_canonical()
+        canon, kind, _err = self.current_canonical()
         if canon:
             emoji = "🏍" if kind == "motorcycle" else "🚗"
             self.preview_label.setText(f"{emoji} {prettify_plate_html(canon)}")

@@ -47,6 +47,28 @@ def get_data_dir():
     return d
 
 
+def get_onvif_wsdl_dir():
+    """پوشه‌ی فایل‌های WSDL کتابخانه‌ی onvif (vendored در assets/onvif_wsdl).
+
+    پکیج onvif_zeep فایل‌های WSDL را هنگام نصب pip جا می‌اندازد (باگ پکیجینگ
+    نسخه‌ی 0.2.12) و ‎--collect-all=onvif‎ هم پوشه‌ی wsdl را — که همسایه‌ی
+    پوشه‌ی پکیج است، نه داخل آن — باندل نمی‌کند؛ به‌همین دلیل ONVIFCamera
+    همیشه با خطای «No such file» شکست می‌خورد. این تابع مسیر پوشه‌ی WSDL
+    باندل‌شده در assets را برمی‌گرداند تا صریحاً به ONVIFCamera داده شود.
+    """
+    if is_frozen():
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            d = os.path.join(meipass, "assets", "onvif_wsdl")
+            if os.path.isdir(d):
+                return d
+        d = os.path.join(get_install_dir(), "assets", "onvif_wsdl")
+        if os.path.isdir(d):
+            return d
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "assets", "onvif_wsdl")
+
+
 def get_registered_install_dir():
     """محل نصب ثبت‌شده در رجیستری (فقط ویندوز)؛ None اگر پیدا نشود."""
     if os.name != "nt":

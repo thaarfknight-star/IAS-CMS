@@ -244,9 +244,11 @@ def get_monitor():
 def _set_encoder_bitrate_onvif(ip, onvif_port, user, pwd, bitrate_kbps, timeout=10):
     """تنظیم بیت‌ریت انکدر دوربین از طریق ONVIF. موفق/ناموفق + پیام برمی‌گرداند."""
     from onvif import ONVIFCamera
+    from app_paths import get_onvif_wsdl_dir
 
     bitrate = max(64, int(bitrate_kbps))
-    cam = ONVIFCamera(ip, int(onvif_port), user, pwd)
+    cam = ONVIFCamera(ip, int(onvif_port), user, pwd,
+                      wsdl_dir=get_onvif_wsdl_dir())
     # timeout دستی: مثل nvr_scanner، فراخوانی‌های zeep ممکن است بلاک شوند.
     media = cam.create_media_service()
     profiles = media.GetProfiles()
