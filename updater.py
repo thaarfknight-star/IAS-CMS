@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""اعمال «فایل آپدیت» ایمن آرا سورنا از داخل برنامه.
+"""اعمال «فایل آپدیت» IAS Viewer از داخل برنامه.
 
 گردش کار:
   ۱) کاربر از هدر برنامه «⬆️ اعمال آپدیت» را می‌زند؛ دیالوگ مدرن و
@@ -162,7 +162,7 @@ def _theme():
             "TEXT": "#e9eef1", "TEXT_MUTED": "#9b978c",
             "ACCENT": "#0f7cc1", "ACCENT_HOVER": "#2a9bd8",
             "DANGER": "#e74c3c", "LOGO_SHIELD": "",
-            "APP_NAME_FA": "ایمن آرا سورنا",
+            "APP_NAME_FA": "IAS Viewer",
         }
 
 
@@ -190,7 +190,7 @@ def validate_update_zip(zip_path):
     except Exception as e:
         return False, f"خواندن فایل آپدیت ممکن نشد: {e}"
     if info.get("app") != "IAS-CMS":
-        return False, "این فایل آپدیت متعلق به ایمن آرا سورنا نیست."
+        return False, "این فایل آپدیت متعلق به IAS Viewer نیست."
     if not info.get("version"):
         return False, "نسخه‌ی فایل آپدیت مشخص نیست."
     if not info.get("files"):
@@ -385,7 +385,7 @@ class UpdateDialog(__import__("PyQt6.QtWidgets", fromlist=["QDialog"]).QDialog):
     def _pick_file(self):
         path, _ = self._QFileDialog.getOpenFileName(
             self, "انتخاب فایل آپدیت", str(Path.home()),
-            "فایل آپدیت ایمن آرا سورنا (*.zip)")
+            "فایل آپدیت IAS Viewer (*.zip)")
         if not path:
             return
         self.file_lbl.setText(Path(path).name)

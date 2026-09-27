@@ -21,7 +21,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 W, H = 960, 600
 
-# پالت «ایمن آرا سورنا» (همان theme.py)
+# پالت «IAS Viewer» (همان theme.py)
 BG_TOP = (27, 34, 39)
 BG_BOTTOM = (13, 18, 21)
 CARD = (36, 46, 52)
@@ -208,7 +208,7 @@ def screen_welcome(logo_full, logo_shield, version, fb, fr):
 def screen_dir(logo_shield, version, fb, fr):
     img = add_glow(gradient_bg())
     img = header_band(img, "انتخاب پوشه‌ی نصب",
-                      "ایمن آرا سورنا | IMENARA SORENA", logo_shield, version, fb, fr)
+                      "IAS Viewer", logo_shield, version, fb, fr)
     draw = ImageDraw.Draw(img, "RGBA")
     text_r(draw, (W - 60, 190), "برنامه در کدام پوشه نصب شود؟", fb, WHITE)
     text_r(draw, (W - 60, 232),
@@ -226,7 +226,7 @@ def screen_dir(logo_shield, version, fb, fr):
 def screen_install(logo_shield, version, fb, fr):
     img = add_glow(gradient_bg())
     img = header_band(img, "در حال نصب",
-                      "ایمن آرا سورنا | IMENARA SORENA", logo_shield, version, fb, fr)
+                      "IAS Viewer", logo_shield, version, fb, fr)
     draw = ImageDraw.Draw(img, "RGBA")
     text_r(draw, (W - 60, 190), "در حال کپی فایل‌ها…", fb, WHITE)
     text_r(draw, (W - 60, 232),

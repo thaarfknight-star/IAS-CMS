@@ -58,13 +58,14 @@ def test_onvif_wsdl_vendored():
     from app_paths import get_onvif_wsdl_dir
     d = get_onvif_wsdl_dir()
     assert os.path.isdir(d), d
+    # همان چکی که onvif/client.py در get_definition می‌کند:
+    # wsdlpath = os.path.join(wsdl_dir, wsdl_file) باید فایل باشد
     for must in ("devicemgmt.wsdl", "media.wsdl"):
-        assert os.path.isfile(os.path.join(d, must)), must
-    # همه‌ی WSDLهایی که onvif می‌شناسد باید موجود باشند
-    from onvif.definition import SERVICES
-    missing = [s["wsdl"] for s in SERVICES.values()
-               if not os.path.isfile(os.path.join(d, s["wsdl"]))]
-    assert not missing, f"missing WSDLs: {missing}"
+        wsdlpath = os.path.join(d, must)
+        assert os.path.isfile(wsdlpath), wsdlpath
+    # کل ست WSDL از sdist رسمی وندور شده، نه فقط دو فایل
+    wsdls = [f for f in os.listdir(d) if f.endswith(".wsdl")]
+    assert len(wsdls) >= 15, f"فقط {len(wsdls)} فایل wsdl وندور شده"
 
 
 def test_onvif_camera_gets_wsdl_dir():

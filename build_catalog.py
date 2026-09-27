@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""ساخت کاتالوگ آموزشی PDF نرم‌افزار «ایمن آرا سورنا» (IAS-CMS).
+"""ساخت کاتالوگ آموزشی PDF نرم‌افزار «IAS Viewer» (IAS-CMS).
 
 قالب تیره‌ی هم‌خون با خود برنامه، کاملاً فارسی و راست‌به‌چپ، با فونت
 B Nazanin. خروجی: کاتالوگ آموزشی هر صفحه/بخش برنامه.
@@ -265,7 +265,7 @@ class CatalogDoc(BaseDocTemplate):
             pass
         c.setFont("BNazanin", 10)
         c.setFillColor(MUTED)
-        c.drawRightString(W - 35, 20, fa_plain("ایمن آرا سورنا"))
+        c.drawRightString(W - 35, 20, fa_plain("IAS Viewer"))
         c.drawString(58, 20, fa_plain(f"صفحه {fan(doc.page)}"))
         c.restoreState()
 
@@ -298,8 +298,8 @@ def HP(text, style):
 
 # ------------------------------------------------------------ محتوا ---
 def build():
-    doc = CatalogDoc(OUT, title=fa("کاتالوگ آموزشی ایمن آرا سورنا"),
-                     author=fa("ایمن آرا سورنا"))
+    doc = CatalogDoc(OUT, title=fa("کاتالوگ آموزشی IAS Viewer"),
+                     author=fa("IAS Viewer"))
     story = []
     toc = FaTOC()
     toc.levelStyles = [sToc1, sToc2]
@@ -340,7 +340,7 @@ def build():
     story.append(HP("۱. معرفی سامانه", sH1))
     story.append(Spacer(1, 8))
     story.append(P(
-        "«ایمن آرا سورنا» یک سامانه یکپارچه مدیریت نظارت تصویری (CMS) است؛ "
+        "«IAS Viewer» یک سامانه یکپارچه مدیریت نظارت تصویری (CMS) است؛ "
         "یعنی به‌جای چند نرم‌افزار جدا، پخش زنده دوربین‌ها، اعلام حریق، تشخیص "
         "چهره، پلاک‌خوان، ردیابی اشخاص و نقشه ساختمان را در یک برنامه فارسی "
         "و یکدست کنار هم دارید."))

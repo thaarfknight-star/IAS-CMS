@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""مرحله‌ی دوم آپدیت «ایمن آرا سورنا» — موتور آپدیت خالص پایتون.
+"""مرحله‌ی دوم آپدیت «IAS Viewer» — موتور آپدیت خالص پایتون.
 
 چرا بدون PowerShell؟ موتور قبلی (updater.ps1) روی بعضی سیستم‌ها اصلاً بالا
 نمی‌آمد (ExecutionPolicy، آنتی‌ویروس، PowerShell قفل‌شده) و هیچ لاگی هم از
@@ -51,7 +51,7 @@ def _log(log_file, msg):
         pass
 
 
-def _msgbox(text, title="خطای آپدیت ایمن آرا سورنا"):
+def _msgbox(text, title="خطای آپدیت IAS Viewer"):
     """پیام خطای قابل‌مشاهده (نه سکوت). فقط روی ویندوز."""
     if os.name != "nt":
         return
@@ -124,7 +124,7 @@ def apply_update(install_dir, pending_dir, parent_pid, exe_name,
 
     # ۱) انتظار برای خروج کامل برنامه (فایل‌ها قفل‌اند تا برنامه باز است)
     if not _wait_pid_exit(parent_pid, 120):
-        msg = ("برنامه‌ی ایمن آرا سورنا بعد از ۱۲۰ ثانیه هنوز باز است؛ "
+        msg = ("برنامه‌ی IAS Viewer بعد از ۱۲۰ ثانیه هنوز باز است؛ "
                "آپدیت لغو شد. لطفاً برنامه را دستی ببندید و دوباره تلاش کنید.")
         _log(log_file, "ERROR: " + msg)
         _msgbox(msg + "\n\nجزئیات در فایل update.log (پوشه‌ی نصب) ثبت شد.")

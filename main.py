@@ -2222,7 +2222,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         from updater import get_app_version
         self.app_version = get_app_version()
-        self.setWindowTitle(f"{APP_NAME_FA} | {APP_NAME_EN} v{self.app_version}")
+        self.setWindowTitle(f"{APP_NAME_FA} v{self.app_version}")
         # بررسی لایسنس در شروع برنامه (license.py) — بدون لایسنس معتبر،
         # حالت محدود فعال می‌شود (نمایش تصویر همه‌ی دوربین‌ها، فقط شمارش
         # افراد؛ بدون پلاک‌خوان/حریق/ردیابی اشخاص/چهره‌خوان/هشدار محدوده).
@@ -2308,10 +2308,10 @@ class MainWindow(QMainWindow):
             if self.license_state.valid:
                 _lic_cust = self.license_state.customer or ""
                 self.setWindowTitle(
-                    f"{APP_NAME_FA} | {APP_NAME_EN} v{self.app_version} — 🔑 {_lic_cust}")
+                    f"{APP_NAME_FA} v{self.app_version} — 🔑 {_lic_cust}")
             else:
                 self.setWindowTitle(
-                    f"{APP_NAME_FA} | {APP_NAME_EN} v{self.app_version} — ⛔ حالت محدود")
+                    f"{APP_NAME_FA} v{self.app_version} — ⛔ حالت محدود")
         except Exception:
             pass
 
@@ -4282,7 +4282,7 @@ class MainWindow(QMainWindow):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(8, 4, 8, 4)
 
-        # لوگوی شرکت در هدر: سپر + نام فارسی/انگلیسی «ایمن آرا سورنا».
+        # لوگوی برنامه در هدر: سپر + نام «IAS Viewer».
         brand_row = QHBoxLayout()
         brand_row.setSpacing(10)
         logo_label = QLabel()
@@ -5114,7 +5114,7 @@ if __name__ == "__main__":
                 return False
 
     app = _SafeApplication(sys.argv)
-    apply_theme(app)  # تم تیره‌ی سازگار با لوگوی ایمن آرا سورنا
+    apply_theme(app)  # تم تیره‌ی سازگار با لوگوی IAS Viewer
     window = MainWindow()
     # برنامه از ابتدا ماکسیمایز باز می‌شود (درخواست قبلی کاربر).
     window.showMaximized()

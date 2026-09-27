@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""هویت بصری «ایمن آرا سورنا» (IMENARA SORENA):
+"""هویت بصری «IAS Viewer»:
 
 - پالت رنگی استخراج‌شده از لوگوی شرکت (سپر دو رنگ).
 - `resource_path`: مسیر فایل‌های assets هم در اجرای عادی و هم داخل exe
@@ -28,8 +28,8 @@ ACCENT = LOGO_BLUE       # آبی تاکیدی لوگو
 ACCENT_HOVER = "#2a9bd8"
 DANGER = "#e74c3c"
 
-APP_NAME_FA = "ایمن آرا سورنا"
-APP_NAME_EN = "IMENARA SORENA"
+APP_NAME_FA = "IAS Viewer"
+APP_NAME_EN = "IAS VIEWER"
 
 
 def resource_path(relative_path):
@@ -437,7 +437,7 @@ def resolve_theme(mode):
 
 
 def apply_theme(app, mode=None):
-    """اعمال تم ایمن آرا سورنا روی کل برنامه.
+    """اعمال تم IAS Viewer روی کل برنامه.
     mode: 'dark' | 'light' | 'system' | None (خواندن از تنظیمات)."""
     _ensure_vazirmatn(app)
     if mode is None:

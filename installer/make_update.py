@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""ساخت مانیفست کامل و «فایل آپدیت» تفاضلی ایمن آرا سورنا.
+"""ساخت مانیفست کامل و «فایل آپدیت» تفاضلی IAS Viewer.
 
 دستورات:
     manifest --dist dist/CCTV_CMS --version 2.0.0 --out dist/manifest.json
