@@ -3611,6 +3611,8 @@ class MainWindow(QMainWindow):
                 bitrate_kbps=data.get("bitrate_kbps", 0),
             )
             self.reload_camera_list()
+            # (2.0.68-beta) شناسایی خودکار PTZ/لنز موتورایزد در پس‌زمینه
+            self._autodetect_ptz_async(cam["id"])
             # رفع درخواست: دوربین تازه‌اضافه‌شده اتوماتیک به پنجره‌ی نمایش اضافه شود.
             self.open_live_view(cam)
 
@@ -3933,7 +3935,11 @@ class MainWindow(QMainWindow):
             group_action.triggered.connect(lambda: self.move_camera_to_group(data["id"]))
             delete_action = QAction("حذف", self)
             delete_action.triggered.connect(lambda: self.delete_camera(data["id"]))
+            # (2.0.68-beta) کنترل PTZ/لنز موتورایزد
+            ptz_action = QAction("🎮 کنترل PTZ", self)
+            ptz_action.triggered.connect(lambda: self.open_ptz_control(data["id"]))
             menu.addAction(edit_action)
+            menu.addAction(ptz_action)
             menu.addAction(group_action)
             menu.addAction(delete_action)
         elif data["type"] == "group":
@@ -4197,6 +4203,41 @@ class MainWindow(QMainWindow):
         self._advance_detect_queue()
 
     # ------------------------------------------------------ live view -----
+
+    # (2.0.68-beta) کنترل PTZ/لنز موتورایزد --------------------------------
+    def open_ptz_control(self, cam_id):
+        """باز کردن دیالوگ کنترل PTZ دوربین (شناسایی خودکار در صورت نیاز)."""
+        from ptz_dialog import PTZDialog
+        cam = self.camera_store.get_camera(cam_id)
+        if not cam:
+            return
+        def _save_info(info):
+            self.camera_store.update_camera(cam_id, ptz=info)
+        dlg = PTZDialog(cam, on_detected=_save_info, parent=self)
+        dlg.exec()
+
+    def _autodetect_ptz_async(self, cam_id):
+        """شناسایی PTZ در ترد جدا پس از افزودن دوربین؛ نتیجه در رکورد ذخیره می‌شود."""
+        import threading
+        from ptz_control import detect_ptz_support, describe_support
+
+        def _job():
+            cam = self.camera_store.get_camera(cam_id)
+            if not cam:
+                return
+            try:
+                info = detect_ptz_support(cam)
+            except Exception:
+                return
+            self.camera_store.update_camera(cam_id, ptz=info)
+            if info.get("supported"):
+                try:
+                    self.statusBar().showMessage(
+                        f"🎮 {cam.get('name') or cam.get('ip')}: {describe_support(info)}",
+                        8000)
+                except Exception:
+                    pass
+        threading.Thread(target=_job, daemon=True).start()
 
     def open_live_view(self, cam: dict):
         """دوربین انتخاب‌شده را در اولین خانه‌ی خالی شبکه‌ی نمایش باز می‌کند.

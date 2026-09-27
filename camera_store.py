@@ -149,7 +149,7 @@ class CameraStore:
     # ------------------------------------------------------------ cameras --
 
     def add_camera(self, name, ip, port, user, pwd, path, nvr_id=None, channel=None, full_url=None,
-                   camera_ip=None, floor_id="", group="", bitrate_kbps=0):
+                   camera_ip=None, floor_id="", group="", bitrate_kbps=0, ptz=None):
         cam = {
             "id": str(uuid.uuid4()),
             "name": name or ip,
@@ -167,6 +167,9 @@ class CameraStore:
             # (2.0.64-beta) بیت‌ریت درخواستی این دوربین (کیلوبیت/ثانیه)؛
             # صفر یعنی «خودکار» — در تخصیص پهنای باند، سهم برابر می‌گیرد.
             "bitrate_kbps": max(0, int(bitrate_kbps or 0)),
+            # (2.0.68-beta) نتیجه‌ی شناسایی PTZ/لنز موتورایزد (dict از
+            # ptz_control.detect_ptz_support)؛ None یعنی هنوز شناسایی نشده.
+            "ptz": ptz,
             # طبقه‌ی دوربین (کنترل تردد طبقاتی) — از نقشه‌ی ساختمان سینک
             # می‌شود یا دستی در تنظیمات دوربین ست می‌شود.
             "floor_id": floor_id or "",

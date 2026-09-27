@@ -21,18 +21,19 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def test_help_pages_mapping():
     from app_help import HELP_PAGES
     assert set(HELP_PAGES) == {"home", "fire", "face", "reports", "plate",
-                               "person", "map", "settings"}
-    # نگاشت 2.0.64: شروع هر بخش در آموزش ۴۸ صفحه‌ای قدم‌به‌قدم، بدون تکرار
+                               "person", "map", "ptz", "settings"}
+    # نگاشت 2.0.68: شروع هر بخش در آموزش ۴۹ صفحه‌ای قدم‌به‌قدم، بدون تکرار
     assert HELP_PAGES == {"home": 6, "fire": 14, "face": 17, "reports": 21,
-                          "plate": 25, "person": 32, "map": 37, "settings": 41}
+                          "plate": 25, "person": 32, "map": 37, "ptz": 41,
+                          "settings": 42}
 
 
-def test_manual_pdf_exists_and_has_48_pages():
+def test_manual_pdf_exists_and_has_49_pages():
     from pypdf import PdfReader
     from app_help import manual_path
     path = manual_path()
     assert os.path.exists(path), f"PDF راهنما پیدا نشد: {path}"
-    assert len(PdfReader(path).pages) == 48
+    assert len(PdfReader(path).pages) == 49
 
 
 def test_manual_pdf_bundled_in_assets():
@@ -163,7 +164,7 @@ def test_add_buttons_have_clean_rtl_labels():
     # رگرسیون 2.0.60: برچسب دکمه‌های افزودن نباید با "+" شروع شود؛ کاراکتر
     # خنثی ابتدای متن راست‌به‌چپ در دکمه‌ی باریک، نوشتار را به‌هم می‌ریزد.
     src = _main_source()
-    assert 'QPushButton("افزودن دوربین تکی")' in src
+    assert 'QPushButton("افزودن دوربین")' in src
     assert 'QPushButton("افزودن NVR")' in src
-    assert '"+ افزودن دوربین تکی"' not in src
+    assert '"+ افزودن دوربین"' not in src
     assert '"+ افزودن NVR"' not in src
