@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""دیالوگ «🎮 کنترل PTZ» (2.0.69-beta).
+"""دیالوگ «🎮 کنترل PTZ» (2.0.70-beta).
 
 کنترل زنده‌ی دوربین‌های PTZ و لنز موتورایزد از طریق ONVIF:
 صفحه‌جهت (چرخش افقی/عمودی)، زوم، فوکوس، سرعت حرکت، پریست‌ها و خانه.
@@ -56,7 +56,7 @@ class PTZDialog(QDialog):
         self._on_detected = on_detected
         self.controller = PTZController(cam)
         self.info = cam.get("ptz") or None
-        self._speed = 0.5
+        self._speed = 1.0
         self._workers = []
         self._move_btns = []
 
