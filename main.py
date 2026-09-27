@@ -3561,7 +3561,6 @@ class MainWindow(QMainWindow):
         for cam in self.camera_store.standalone_cameras():
             if not _group_of(cam):
                 _add_item(self._make_camera_tree_item(cam), None)
-            self.camera_list.addTopLevelItem(cam_item)
 
     def _scan_credentials(self):
         """رفع درخواست: نام‌کاربری/رمز کادر بالای پنل اسکن شبکه را برمی‌گرداند
