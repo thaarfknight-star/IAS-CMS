@@ -25,7 +25,10 @@ def test_installer_graphics_say_ias_viewer():
 
 def test_version_pill_bidi_isolated():
     src = _read("installer/make_graphics.py")
-    assert "\\u2066" in src or " " in src, "ایزوله‌سازی bidi نسخه در make_graphics.py نیست"
+    # LRE/PDF کلاسیک — python-bidi 0.6.11 روی CI کاراکترهای isolate جدید (U+2066) را نمی‌شناسد
+    assert "\\u202a" in src and "\\u202c" in src, "ایزوله‌سازی bidi نسخه در make_graphics.py نیست"
+    assert "\\u2066" not in src and "\\u2069" not in src, \
+        "کاراکتر isolate جدید (U+2066/U+2069) باعث کرش python-bidi روی CI می‌شود"
 
 
 def test_logo_full_exists_and_valid():

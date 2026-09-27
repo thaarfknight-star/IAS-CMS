@@ -141,7 +141,7 @@ def header_band(img, title, subtitle, logo_path, version=None,
     text_r(draw, (tx, 24), title, font_bold, WHITE)
     text_r(draw, (tx, 68), subtitle, font_reg, MUTED)
     if version:
-        pill_s = "نسخه‌ی \u2066" + version + "\u2069"
+        pill_s = "نسخه‌ی \u202a" + version + "\u202c"
         pw = text_size(draw, pill_s, font_reg) + 36
         draw.rounded_rectangle([24, 40, 24 + pw, 78], radius=19, fill=BLUE)
         text_c(draw, (24 + pw / 2, 59), pill_s, font_reg, WHITE)
@@ -171,7 +171,7 @@ def screen_welcome(logo_full, logo_shield, version, fb, fr):
     tx = lx - 30
     text_r(draw, (tx, 62), "IAS Viewer", fb, WHITE)
     # نشان نسخه دقیقاً زیر تیتر، هم‌تراز با لبه‌ی راست
-    pill_s = "نسخه‌ی \u2066" + version + "\u2069"
+    pill_s = "نسخه‌ی \u202a" + version + "\u202c"
     pw = text_size(draw, pill_s, fr) + 40
     draw.rounded_rectangle([tx - pw, 126, tx, 166], radius=20, fill=BLUE)
     text_c(draw, (tx - pw / 2, 146), pill_s, fr, WHITE)
@@ -262,7 +262,7 @@ def screen_finish(logo_shield, version, fb, fr):
     draw_check(draw, cx, cy, 44, WHITE, 7)
     text_c(draw, (cx, 410), "نصب با موفقیت انجام شد", fb, WHITE)
     text_c(draw, (cx, 452),
-           "نسخه‌ی \u2066" + version + "\u2069 برنامه‌ی IAS Viewer آماده‌ی استفاده است.", fr, MUTED)
+           "نسخه‌ی \u202a" + version + "\u202c برنامه‌ی IAS Viewer آماده‌ی استفاده است.", fr, MUTED)
     return footer_strip(img)
 
 
@@ -280,7 +280,7 @@ def screen_uninstall(logo_shield, version, fb, fr):
         lx = W - 48
     tx = lx - 30
     text_r(draw, (tx, 62), "حذف کامل IAS Viewer", fb, WHITE)
-    pill_s = "نسخه‌ی \u2066" + version + "\u2069"
+    pill_s = "نسخه‌ی \u202a" + version + "\u202c"
     pw = text_size(draw, pill_s, fr) + 40
     draw.rounded_rectangle([tx - pw, 126, tx, 166], radius=20, fill=RED_DARK)
     text_c(draw, (tx - pw / 2, 146), pill_s, fr, WHITE)
