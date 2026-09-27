@@ -34,6 +34,7 @@ DEFAULT_CONFIG = {
     "fire_enabled": False,       # آژیر ممتد حریق (پیش‌فرض خاموش)
     "zone_enabled": False,        # بوق ورود به محدوده (پیش‌فرض خاموش)
     "violation_enabled": True,    # بوق تخلف طبقاتی (پیش‌فرض روشن، مثل قبل)
+    "videoloss_enabled": True,    # بوق قطع تصویر (پیش‌فرض روشن؛ 2.0.61-beta)
     "sound_file": "",        # خالی = فایل پیش‌فرض assets/fire_alarm.wav
     "volume": 0.9,           # 0.0 تا 1.0 (فقط برای QSoundEffect)
     "loop": True,            # تکرار تا قطع شدن
@@ -45,6 +46,7 @@ _SOUND_KEYS = {
     "fire": "fire_enabled",
     "zone": "zone_enabled",
     "violation": "violation_enabled",
+    "videoloss": "videoloss_enabled",
 }
 
 
@@ -85,7 +87,7 @@ def migrate_legacy_violation(get_setting):
 
 
 def sound_enabled(kind, cfg=None):
-    """وضعیت فعال‌بودن یک نوع صدا: 'fire' | 'zone' | 'violation'."""
+    """وضعیت فعال‌بودن یک نوع صدا: 'fire' | 'zone' | 'violation' | 'videoloss'."""
     key = _SOUND_KEYS.get(kind)
     if key is None:
         return False

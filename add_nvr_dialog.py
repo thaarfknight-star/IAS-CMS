@@ -62,6 +62,20 @@ class AddNVRDialog(QDialog):
         form.addRow("رمز عبور:", self.pass_input)
         form.addRow("برند NVR:", self.brand_combo)
         form.addRow("برند دوربین‌های متصل:", self.camera_brand_combo)
+        # (2.0.61-beta) گروه‌بندی — کامبوی قابل‌ویرایش با گروه‌های موجود
+        self.group_combo = QComboBox()
+        self.group_combo.setEditable(True)
+        self.group_combo.addItem("— (بدون گروه)", "")
+        try:
+            _groups = parent.camera_store.get_groups() if hasattr(parent, "camera_store") else []
+            for _g in _groups:
+                self.group_combo.addItem(_g, _g)
+        except Exception:
+            pass
+        self.group_combo.setToolTip(
+            "گروه نمایشی این NVR (مثلاً «طبقه اول»).\n"
+            "می‌توانید نام جدیدی هم تایپ کنید.")
+        form.addRow("📁 گروه:", self.group_combo)
         form.addRow("حداکثر تعداد کانال برای بررسی:", self.max_channels_input)
 
         self.scan_btn = QPushButton("جستجوی کانال‌های متصل")
@@ -395,6 +409,13 @@ class AddNVRDialog(QDialog):
         # cam["pass"])؛ "pass" کلمه‌ی رزرو شده‌ی پایتون است پس نمی‌تواند نام آرگومان
         # تابع باشد، به همین دلیل در main.py هنگام فراخوانی add_nvr به‌صورت دستی به
         # آرگومان pwd نگاشت می‌شود.
+        _gdata = self.group_combo.currentData()
+        if isinstance(_gdata, str):
+            _group = _gdata.strip()
+        else:
+            _group = (self.group_combo.currentText() or "").strip()
+            if _group == "— (بدون گروه)":
+                _group = ""
         return {
             "name": self.name_input.text().strip() or self.ip_input.text().strip(),
             "ip": self.ip_input.text().strip(),
@@ -404,6 +425,7 @@ class AddNVRDialog(QDialog):
             "pass": self.pass_input.text().strip(),
             "brand": self.brand_combo.currentData(),
             "camera_brand": self.camera_brand_combo.currentData(),
+            "group": _group,
         }
 
     def get_selected_channels(self):

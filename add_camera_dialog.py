@@ -109,6 +109,20 @@ class AddCameraDialog(QDialog):
             "اگر دوربین روی «نقشه‌ی ساختمان» در طبقه‌ای قرار گیرد،\n"
             "خودکار همین‌جا سینک می‌شود.")
 
+        # (2.0.61-beta) گروه‌بندی دوربین‌ها — کامبوی قابل‌ویرایش با گروه‌های موجود
+        self.group_combo = QComboBox()
+        self.group_combo.setEditable(True)
+        self.group_combo.addItem("— (بدون گروه)", "")
+        try:
+            _groups = parent.camera_store.get_groups() if hasattr(parent, "camera_store") else []
+            for _g in _groups:
+                self.group_combo.addItem(_g, _g)
+        except Exception:
+            pass
+        self.group_combo.setToolTip(
+            "گروه نمایشی این دوربین (مثلاً «طبقه اول»، «پارکینگ»).\n"
+            "می‌توانید نام جدیدی هم تایپ کنید.")
+
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: #aaaaaa; font-size: 11px;")
 
@@ -127,6 +141,14 @@ class AddCameraDialog(QDialog):
                 _idx = self.floor_combo.findData(_ef)
                 if _idx >= 0:
                     self.floor_combo.setCurrentIndex(_idx)
+            # گروه ذخیره‌شده را انتخاب کن (یا اگر جزو لیست نیست، تایپ‌شده بماند)
+            _eg = str(existing_cam.get("group") or "").strip()
+            if _eg:
+                _gidx = self.group_combo.findData(_eg)
+                if _gidx >= 0:
+                    self.group_combo.setCurrentIndex(_gidx)
+                else:
+                    self.group_combo.setEditText(_eg)
 
         form = QFormLayout()
         form.addRow("نام دوربین:", self.name_input)
@@ -135,6 +157,7 @@ class AddCameraDialog(QDialog):
         form.addRow("نام کاربری:", self.user_input)
         form.addRow("رمز عبور:", self.pass_input)
         form.addRow("🏢 طبقه:", self.floor_combo)
+        form.addRow("📁 گروه:", self.group_combo)
         form.addRow(self.auto_detect_chk)
         form.addRow("مسیر دستی:", self.path_input)
         form.addRow(self.status_label)
@@ -212,6 +235,15 @@ class AddCameraDialog(QDialog):
         super().reject()
 
     def get_camera_data(self):
+        # گروه: اگر آیتم «بدون گروه» انتخاب شده، خالی؛ اگر گروه موجود انتخاب
+        # شده، همان؛ اگر نام جدید تایپ شده (currentData=None)، متن تایپ‌شده.
+        _gdata = self.group_combo.currentData()
+        if isinstance(_gdata, str):
+            _group = _gdata.strip()
+        else:
+            _group = (self.group_combo.currentText() or "").strip()
+            if _group == "— (بدون گروه)":
+                _group = ""
         return {
             "name": self.name_input.text().strip() or self.ip_input.text().strip(),
             "ip": self.ip_input.text().strip(),
@@ -223,4 +255,5 @@ class AddCameraDialog(QDialog):
             ),
             "full_url": self.detected_full_url,
             "floor_id": self.floor_combo.currentData() or "",
+            "group": _group,
         }

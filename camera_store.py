@@ -149,7 +149,7 @@ class CameraStore:
     # ------------------------------------------------------------ cameras --
 
     def add_camera(self, name, ip, port, user, pwd, path, nvr_id=None, channel=None, full_url=None,
-                   camera_ip=None, floor_id=""):
+                   camera_ip=None, floor_id="", group=""):
         cam = {
             "id": str(uuid.uuid4()),
             "name": name or ip,
@@ -161,6 +161,9 @@ class CameraStore:
             "nvr_id": nvr_id,
             "channel": channel,
             "full_url": full_url,
+            # (2.0.61-beta) گروه‌بندی دوربین‌ها: نام گروه نمایشی (مثلاً
+            # «طبقه اول»، «پارکینگ»)؛ خالی یعنی بدون گروه.
+            "group": group or "",
             # طبقه‌ی دوربین (کنترل تردد طبقاتی) — از نقشه‌ی ساختمان سینک
             # می‌شود یا دستی در تنظیمات دوربین ست می‌شود.
             "floor_id": floor_id or "",
@@ -229,6 +232,58 @@ class CameraStore:
                 return cam.get("nvr_id"), cam.get("channel")
         return None, None
 
+    def get_groups(self):
+        """(2.0.61-beta) لیست مرتب نام گروه‌های موجود (دوربین‌ها + NVRها)."""
+        groups = set()
+        for c in self.cameras:
+            g = (c.get("group") or "").strip()
+            if g:
+                groups.add(g)
+        for n in self.nvrs:
+            g = (n.get("group") or "").strip()
+            if g:
+                groups.add(g)
+        return sorted(groups)
+
+    def rename_group(self, old_name, new_name):
+        """(2.0.61-beta) تغییر نام گروه در همه‌ی دوربین‌ها و NVRها."""
+        old_name = (old_name or "").strip()
+        new_name = (new_name or "").strip()
+        if not old_name or not new_name or old_name == new_name:
+            return 0
+        count = 0
+        for c in self.cameras:
+            if (c.get("group") or "").strip() == old_name:
+                c["group"] = new_name
+                count += 1
+        for n in self.nvrs:
+            if (n.get("group") or "").strip() == old_name:
+                n["group"] = new_name
+                count += 1
+        if count:
+            self.save()
+            self.save_nvrs()
+        return count
+
+    def clear_group(self, name):
+        """(2.0.61-beta) حذف گروه: اعضا بدون گروه می‌شوند (حذف نمی‌شوند)."""
+        name = (name or "").strip()
+        if not name:
+            return 0
+        count = 0
+        for c in self.cameras:
+            if (c.get("group") or "").strip() == name:
+                c["group"] = ""
+                count += 1
+        for n in self.nvrs:
+            if (n.get("group") or "").strip() == name:
+                n["group"] = ""
+                count += 1
+        if count:
+            self.save()
+            self.save_nvrs()
+        return count
+
     def standalone_cameras(self):
         """دوربین‌هایی که به هیچ NVR متصل نیستند (اتصال مستقیم)."""
         return [c for c in self.cameras if not c.get("nvr_id")]
@@ -236,7 +291,7 @@ class CameraStore:
     # --------------------------------------------------------------- nvrs --
 
     def add_nvr(self, name, ip, rtsp_port, onvif_port, user, pwd, brand="",
-                camera_brand="", playback_template=""):
+                camera_brand="", playback_template="", group=""):
         nvr = {
             "id": str(uuid.uuid4()),
             "name": name or ip,
@@ -246,6 +301,9 @@ class CameraStore:
             "user": user,
             "pass": pwd,
             "brand": brand,
+            # (2.0.61-beta) گروه‌بندی: مثل دوربین‌ها، NVR هم می‌تواند عضو
+            # یک گروه نمایشی باشد؛ خالی یعنی بدون گروه.
+            "group": group or "",
             # رفع درخواست: برند دوربین‌های متصل هم جدا از برند خود NVR ذخیره
             # می‌شود تا هنگام «بازخوانی کانال‌ها» دوباره به‌صورت پیش‌فرض همان
             # انتخاب قبلی در دیالوگ بیاید (رجوع کنید به nvr_scanner.py).

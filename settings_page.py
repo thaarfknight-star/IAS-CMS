@@ -114,14 +114,16 @@ class SettingsPage(QWidget):
         self._sound_checks = {}
         for key, label in (("fire", "🔥 آژیر حریق"),
                            ("zone", "🚧 بوق ورود به محدوده"),
-                           ("violation", "🚨 بوق تخلف طبقاتی")):
+                           ("violation", "🚨 بوق تخلف طبقاتی"),
+                           ("videoloss", "📡 بوق قطع تصویر")):
             row = QHBoxLayout()
             row.setSpacing(8)
             row.setContentsMargins(2, 4, 2, 4)
             chk = QCheckBox()
             chk.setChecked(bool(_scfg.get(
                 {"fire": "fire_enabled", "zone": "zone_enabled",
-                 "violation": "violation_enabled"}[key], False)))
+                 "violation": "violation_enabled",
+                 "videoloss": "videoloss_enabled"}[key], False)))
             chk.toggled.connect(lambda c, k=key: self._on_sound_toggled(k, c))
             lbl = QLabel(label)
             lbl.setWordWrap(True)

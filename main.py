@@ -25,6 +25,8 @@ from face_engine import FaceEngine
 from scanner import NetworkScanThread, parse_ip_range
 from camera_store import CameraStore
 from camera_stream import CameraStreamThread, region_to_polygon, is_low_spec_mode
+# (2.0.61-beta) منطق خالص تشخیص قطع/وصل مجدد تصویر (بدون وابستگی به Qt)
+from video_loss import transition as _video_loss_transition, cooldown_ok as _video_loss_cooldown_ok
 # نکته: floor_detector عمداً در بالای فایل import نمی‌شود؛ transformers و
 # SegFormer چند صد مگابایت رم می‌گیرند. فقط وقتی کاربر واقعاً دکمه‌ی «تشخیص
 # هوشمند زمین» را بزند، در همان لحظه بارگذاری می‌شود - رجوع کنید به
@@ -140,8 +142,9 @@ def _bgr_to_pixmap(frame):
 
 def _play_alarm_beep(kind="zone"):
     """پخش تک‌بوق هشدار در ترد جداگانه (رابط کاربری قفل نمی‌شود).
-    kind: نوع صدا — "zone" (ورود به محدوده) یا "fire" (تشخیص حریق/پنل).
-    هر نوع صدا تنظیم مستقل خودش را دارد (پیش‌فرض هر دو خاموش).
+    kind: نوع صدا — "zone" (ورود به محدوده)، "fire" (تشخیص حریق/پنل)،
+    "violation" (تخلف طبقاتی) یا "videoloss" (قطع تصویر).
+    هر نوع صدا تنظیم مستقل خودش را دارد.
     """
     try:
         from alarm_sound import sound_enabled
@@ -590,6 +593,8 @@ class CameraSlotWidget(QWidget):
     tripwire_changed = pyqtSignal()
     # تغییر وضعیت موتور تشخیص شخص (برای بنر صفحه‌ی «ردیابی اشخاص»).
     detector_status_changed = pyqtSignal()
+    # (2.0.61-beta) هشدار قطع تصویر: (cam dict, "lost"|"recovered")
+    video_loss_signal = pyqtSignal(object, str)
 
     # هشدارهای وضعیت پلاک‌خوان فقط یک‌بار در کل برنامه نمایش داده می‌شوند
     # (کلید: متن پیام) تا با چند دوربین، دیالوگ تکراری باز نشود.
@@ -1314,6 +1319,8 @@ class CameraSlotWidget(QWidget):
         self.close_btn.setVisible(True)
         self.status_label.setText("در حال اتصال...")
         self.video_label.setText("در انتظار تصویر...")
+        # (2.0.61-beta) ریست ردیاب قطع تصویر برای استریم جدید
+        self._last_stream_state = ""
 
         self.stream_thread = CameraStreamThread(rtsp_url, face_engine, process_every_n=_PROCESS_EVERY_N)
         # همه‌ی اتصال‌ها محافظت‌شده با نسل استریم‌اند تا رویدادهای جامانده‌ی
@@ -1446,6 +1453,15 @@ class CameraSlotWidget(QWidget):
     def on_stream_status(self, payload):
         try:
             state = (payload or {}).get("state", "")
+            # (2.0.61-beta) هشدار قطع تصویر: گذار از «متصل» به «تلاش مجدد»
+            # یعنی تصویری که وصل بود واقعاً قطع شده؛ بازگشت به «متصل» یعنی
+            # وصل مجدد. تلاش اولیه‌ی ناموفق (بدون اتصال قبلی) هشدار ندارد.
+            # منطق خالص در video_loss.py است تا بدون Qt هم تست شود.
+            prev = getattr(self, "_last_stream_state", "")
+            _vl_kind = _video_loss_transition(prev, state)
+            if _vl_kind in ("lost", "recovered") and self.cam is not None:
+                self.video_loss_signal.emit(dict(self.cam), _vl_kind)
+            self._last_stream_state = state
             if state == "reconnecting":
                 n = (payload or {}).get("reconnects", 0)
                 self.net_label.setText(f"📶 اتصال مجدد ({n})")
@@ -1672,6 +1688,8 @@ class CameraSlotWidget(QWidget):
         self.stream_thread = None
         self.cam = None
         self.latest_raw_frame = None
+        # (2.0.61-beta) ریست ردیاب قطع تصویر
+        self._last_stream_state = ""
         self._set_name_text("خالی")
         # بنر صفحه‌ی «ردیابی اشخاص» را هم تازه کن.
         try:
@@ -1916,6 +1934,9 @@ class CameraGridWidget(QWidget):
     # detector_status_changed)؛ به صورت تجمیعی به MainWindow می‌رسد تا بنر
     # صفحه‌ی «ردیابی اشخاص» با وضعیت واقعی به‌روز شود.
     detector_status_changed = pyqtSignal()
+    # (2.0.61-beta) هشدار قطع تصویر هر خانه (CameraSlotWidget.
+    # video_loss_signal)؛ به صورت تجمیعی به MainWindow می‌رسد.
+    video_loss = pyqtSignal(object, str)
 
     def __init__(self, face_engine: FaceEngine, on_face_event, on_external_camera_drop=None,
                  on_region_alert=None, on_fire_event=None, on_plate_event=None,
@@ -2008,6 +2029,8 @@ class CameraGridWidget(QWidget):
                 slot.tripwire_changed.connect(self.tripwire_changed.emit)
                 slot.detector_status_changed.connect(
                     self.detector_status_changed.emit)
+                # (2.0.61-beta) هشدار قطع تصویر هر خانه به سیگنال تجمیعی گرید
+                slot.video_loss_signal.connect(self.video_loss.emit)
                 self._layout.addWidget(slot, r, c)
                 self.slots.append(slot)
                 self._slot_positions.append((r, c))
@@ -2681,6 +2704,9 @@ class MainWindow(QMainWindow):
         self.camera_grid.tripwire_changed.connect(self._refresh_line_buttons)
         self.camera_grid.detector_status_changed.connect(
             self._refresh_person_detector_status)
+        # (2.0.61-beta) هشدار قطع تصویر هر خانه به MainWindow وصل می‌شود
+        # تا در «پنل رویدادها» ثبت و بوق هشدار پخش شود.
+        self.camera_grid.video_loss.connect(self._on_video_loss)
         grid_scroll = QScrollArea()
         grid_scroll.setWidgetResizable(True)
         grid_scroll.setWidget(self.camera_grid)
@@ -2715,6 +2741,10 @@ class MainWindow(QMainWindow):
         # قبلاً در پنل نمایش داده شده‌اند (جلوگیری از تکرار).
         self._recent_face_events = []
         self._shown_violation_ids = set()
+        # (2.0.61-beta) هشدار قطع تصویر: آخرین زمان هشدار هر دوربین
+        # (کول‌داون ضداسپم) + مجموعه‌ی دوربین‌هایی که الان قطع‌اند.
+        self._video_loss_alerted = {}
+        self._video_loss_down = set()
 
         # پنل «هشدارهای حریق و دود» - رفع درخواست «سیستم تشخیص دود و اعلام
         # حریق»: هم رویدادهای تشخیص تصویری (fire_smoke_detector.py روی هر
@@ -3175,6 +3205,49 @@ class MainWindow(QMainWindow):
         while self.events_panel_list.count() > 300:
             self.events_panel_list.takeItem(self.events_panel_list.count() - 1)
 
+    def _push_simple_event(self, text, color="#c0392b"):
+        """(2.0.61-beta) افزودن یک ردیف متنی ساده به «پنل رویدادها»
+        (بدون ثبت دائمی در گزارش‌ها)؛ سقف ۳۰۰ ردیف مثل بقیه."""
+        try:
+            timestamp = time.strftime("%H:%M:%S")
+            item = QListWidgetItem(f"[{timestamp}] {text}")
+            item.setForeground(QColor(color))
+            self.events_panel_list.insertItem(0, item)
+            while self.events_panel_list.count() > 300:
+                self.events_panel_list.takeItem(self.events_panel_list.count() - 1)
+        except Exception:
+            pass
+
+    def _on_video_loss(self, cam, kind):
+        """(2.0.61-beta) هشدار قطع/وصل مجدد تصویر دوربین (از
+        CameraSlotWidget.video_loss_signal): ثبت در «پنل رویدادها» + بوق.
+        کول‌داون ۵ دقیقه‌ای برای هر دوربین تا در قطعی‌های پشت‌سرهم
+        پنل اسپم نشود."""
+        try:
+            cam = cam or {}
+            cam_id = str(cam.get("id") or "")
+            if not cam_id:
+                return
+            cam_name = cam.get("name") or cam.get("ip") or "دوربین"
+            now = time.time()
+            if kind == "lost":
+                # کول‌داون ضداسپم (منطق خالص در video_loss.py)
+                if not _video_loss_cooldown_ok(self._video_loss_alerted.get(cam_id, 0), now):
+                    return
+                self._video_loss_alerted[cam_id] = now
+                self._video_loss_down.add(cam_id)
+                self._push_simple_event(
+                    f"📡 قطع تصویر دوربین «{cam_name}»", color="#c0392b")
+                _play_alarm_beep("videoloss")
+            elif kind == "recovered":
+                if cam_id not in self._video_loss_down:
+                    return
+                self._video_loss_down.discard(cam_id)
+                self._push_simple_event(
+                    f"✅ وصل مجدد تصویر دوربین «{cam_name}»", color="#27ae60")
+        except Exception as e:
+            print(f"خطا در هشدار قطع تصویر: {e}")
+
     def on_fire_event(self, cam, kind: str, crop_frame, confidence: float):
         """رفع درخواست «سیستم تشخیص دود و اعلام حریق»: با هر تشخیص تصویری
         آتش/دود روی یکی از دوربین‌ها (از CameraSlotWidget._on_fire_event)،
@@ -3422,41 +3495,72 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _make_camera_tree_item(self, cam):
+        """(2.0.61-beta) ساخت آیتم درختی یک دوربین (مستقل یا کانال NVR) —
+        بدون افزودن به والد؛ برای استفاده‌ی مشترک در حالت گروه‌دار/بدون‌گروه."""
+        # رفع درخواست: در صورت شناسایی IP واقعی دوربین شبکه‌ای پشت این
+        # کانال (متفاوت از IP خود NVR)، جلوی نام کانال هم نمایش داده می‌شود.
+        cam_label = cam["name"]
+        if cam.get("camera_ip"):
+            cam_label += f"  ({cam['camera_ip']})"
+        badge, style = self._net_badge(cam)
+        cam_item = QTreeWidgetItem([cam_label + badge])
+        if style:
+            cam_item.setForeground(0, QColor(style[0]))
+            cam_item.setToolTip(0, style[1])
+        cam_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "camera", "id": cam["id"]})
+        return cam_item
+
+    def _make_nvr_tree_item(self, nvr):
+        """(2.0.61-beta) ساخت آیتم درختی یک NVR همراه با کانال‌هایش."""
+        channel_count = len(self.camera_store.cameras_for_nvr(nvr["id"]))
+        nvr_item = QTreeWidgetItem([f"🖥 {nvr['name']}  ({nvr['ip']}) — {channel_count} کانال"])
+        nvr_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "nvr", "id": nvr["id"]})
+        for cam in self.camera_store.cameras_for_nvr(nvr["id"]):
+            nvr_item.addChild(self._make_camera_tree_item(cam))
+        nvr_item.setExpanded(True)
+        return nvr_item
+
     def reload_camera_list(self):
         self.camera_list.clear()
         # پنل «هشدارهای حریق و دود» فقط وقتی دیده می‌شود که حداقل یک دوربین
         # تشخیص حریق فعال داشته باشد (با افزودن/حذف/ویرایش دوربین تازه می‌شود).
         self._refresh_fire_panel_visibility()
 
-        # NVRها به‌صورت گره‌های والد و کانال‌های آن‌ها به‌صورت فرزند نمایش داده می‌شوند.
-        for nvr in self.camera_store.nvrs:
-            channel_count = len(self.camera_store.cameras_for_nvr(nvr["id"]))
-            nvr_item = QTreeWidgetItem([f"🖥 {nvr['name']}  ({nvr['ip']}) — {channel_count} کانال"])
-            nvr_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "nvr", "id": nvr["id"]})
-            self.camera_list.addTopLevelItem(nvr_item)
-            for cam in self.camera_store.cameras_for_nvr(nvr["id"]):
-                # رفع درخواست: در صورت شناسایی IP واقعی دوربین شبکه‌ای پشت این
-                # کانال (متفاوت از IP خود NVR)، جلوی نام کانال هم نمایش داده می‌شود.
-                cam_label = cam["name"]
-                if cam.get("camera_ip"):
-                    cam_label += f"  ({cam['camera_ip']})"
-                badge, style = self._net_badge(cam)
-                cam_item = QTreeWidgetItem([cam_label + badge])
-                if style:
-                    cam_item.setForeground(0, QColor(style[0]))
-                    cam_item.setToolTip(0, style[1])
-                cam_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "camera", "id": cam["id"]})
-                nvr_item.addChild(cam_item)
-            nvr_item.setExpanded(True)
+        def _group_of(x):
+            return (x.get("group") or "").strip()
 
-        # دوربین‌های مستقل (بدون NVR)
+        def _add_item(item, parent):
+            if parent is None:
+                self.camera_list.addTopLevelItem(item)
+            else:
+                parent.addChild(item)
+
+        # (2.0.61-beta) گروه‌بندی: هر گروه یک پوشه‌ی 📁 در سطح بالا می‌گیرد؛
+        # کانال‌های NVR مثل قبل زیر NVR خودشان می‌مانند. آیتم‌های بدون گروه
+        # دقیقاً مثل قبل در سطح بالا نمایش داده می‌شوند.
+        groups = self.camera_store.get_groups()
+        for g in groups:
+            folder = QTreeWidgetItem([f"📁 {g}"])
+            folder.setData(0, Qt.ItemDataRole.UserRole, {"type": "group", "name": g})
+            self.camera_list.addTopLevelItem(folder)
+            for nvr in self.camera_store.nvrs:
+                if _group_of(nvr) == g:
+                    _add_item(self._make_nvr_tree_item(nvr), folder)
+            for cam in self.camera_store.standalone_cameras():
+                if _group_of(cam) == g:
+                    _add_item(self._make_camera_tree_item(cam), folder)
+            folder.setExpanded(True)
+
+        # NVRهای بدون گروه — مثل قبل در سطح بالا.
+        for nvr in self.camera_store.nvrs:
+            if not _group_of(nvr):
+                _add_item(self._make_nvr_tree_item(nvr), None)
+
+        # دوربین‌های مستقل (بدون NVR) و بدون گروه — مثل قبل در سطح بالا.
         for cam in self.camera_store.standalone_cameras():
-            badge, style = self._net_badge(cam)
-            cam_item = QTreeWidgetItem([cam["name"] + badge])
-            if style:
-                cam_item.setForeground(0, QColor(style[0]))
-                cam_item.setToolTip(0, style[1])
-            cam_item.setData(0, Qt.ItemDataRole.UserRole, {"type": "camera", "id": cam["id"]})
+            if not _group_of(cam):
+                _add_item(self._make_camera_tree_item(cam), None)
             self.camera_list.addTopLevelItem(cam_item)
 
     def _scan_credentials(self):
@@ -3504,6 +3608,7 @@ class MainWindow(QMainWindow):
                 data["name"], data["ip"], data["port"], data["user"], data["pass"], data["path"],
                 full_url=data.get("full_url"),
                 floor_id=data.get("floor_id", ""),
+                group=data.get("group", ""),
             )
             self.reload_camera_list()
             # رفع درخواست: دوربین تازه‌اضافه‌شده اتوماتیک به پنجره‌ی نمایش اضافه شود.
@@ -3542,6 +3647,7 @@ class MainWindow(QMainWindow):
                 onvif_port=data["onvif_port"], user=data["user"],
                 pwd=data["pass"], brand=data["brand"],
                 camera_brand=data["camera_brand"],
+                group=data.get("group", ""),
             )
             added_cams = [
                 self._add_channel_from_entry(nvr, entry, default_name)
@@ -3822,10 +3928,22 @@ class MainWindow(QMainWindow):
         if data["type"] == "camera":
             edit_action = QAction("ویرایش", self)
             edit_action.triggered.connect(lambda: self.edit_camera(data["id"]))
+            # (2.0.61-beta) گروه‌بندی
+            group_action = QAction("📁 انتقال به گروه…", self)
+            group_action.triggered.connect(lambda: self.move_camera_to_group(data["id"]))
             delete_action = QAction("حذف", self)
             delete_action.triggered.connect(lambda: self.delete_camera(data["id"]))
             menu.addAction(edit_action)
+            menu.addAction(group_action)
             menu.addAction(delete_action)
+        elif data["type"] == "group":
+            # (2.0.61-beta) گروه‌بندی: مدیریت پوشه‌ی گروه
+            rename_action = QAction("✏ تغییر نام گروه", self)
+            rename_action.triggered.connect(lambda: self.rename_camera_group(data["name"]))
+            delete_group_action = QAction("🗑 حذف گروه", self)
+            delete_group_action.triggered.connect(lambda: self.delete_camera_group(data["name"]))
+            menu.addAction(rename_action)
+            menu.addAction(delete_group_action)
         else:  # nvr
             rescan_action = QAction("بازخوانی کانال‌ها", self)
             rescan_action.triggered.connect(lambda: self.rescan_nvr(data["id"]))
@@ -3848,12 +3966,81 @@ class MainWindow(QMainWindow):
                 lambda: self.edit_nvr_playback_template(data["id"]))
             delete_action = QAction("حذف NVR و همه کانال‌ها", self)
             delete_action.triggered.connect(lambda: self.delete_nvr(data["id"]))
+            # (2.0.61-beta) گروه‌بندی
+            nvr_group_action = QAction("📁 انتقال به گروه…", self)
+            nvr_group_action.triggered.connect(lambda: self.move_nvr_to_group(data["id"]))
             menu.addAction(rescan_action)
             menu.addAction(webview_action)
             menu.addAction(storage_action)
             menu.addAction(playback_tpl_action)
+            menu.addAction(nvr_group_action)
             menu.addAction(delete_action)
         menu.exec(self.camera_list.mapToGlobal(pos))
+
+    def _ask_group_name(self, current=""):
+        """(2.0.61-beta) دیالوگ انتخاب/ساخت گروه؛ برمی‌گرداند: نام گروه،
+        "" (بدون گروه)، یا None اگر انصراف داده شد."""
+        groups = self.camera_store.get_groups()
+        items = ["— (بدون گروه)"] + groups
+        idx = items.index(current) if current in items else 0
+        text, ok = QInputDialog.getItem(
+            self, "گروه‌بندی دوربین‌ها",
+            "گروه را انتخاب کنید یا نام جدیدی تایپ کنید:",
+            items, idx, True)
+        if not ok:
+            return None
+        text = (text or "").strip()
+        if text == "— (بدون گروه)":
+            return ""
+        return text
+
+    def move_camera_to_group(self, cam_id):
+        """(2.0.61-beta) انتقال یک دوربین به گروه انتخابی."""
+        cam = self.camera_store.get_camera(cam_id)
+        if not cam:
+            return
+        g = self._ask_group_name((cam.get("group") or "").strip())
+        if g is None:
+            return
+        self.camera_store.update_camera(cam_id, group=g)
+        self.reload_camera_list()
+
+    def move_nvr_to_group(self, nvr_id):
+        """(2.0.61-beta) انتقال یک NVR (با کانال‌هایش) به گروه انتخابی."""
+        nvr = self.camera_store.get_nvr(nvr_id)
+        if not nvr:
+            return
+        g = self._ask_group_name((nvr.get("group") or "").strip())
+        if g is None:
+            return
+        self.camera_store.update_nvr(nvr_id, group=g)
+        self.reload_camera_list()
+
+    def rename_camera_group(self, old_name):
+        """(2.0.61-beta) تغییر نام یک گروه در همه‌ی اعضا."""
+        text, ok = QInputDialog.getText(
+            self, "تغییر نام گروه", "نام جدید گروه:", text=old_name)
+        if not ok:
+            return
+        text = (text or "").strip()
+        if not text or text == old_name:
+            return
+        if text in self.camera_store.get_groups():
+            QMessageBox.warning(self, "گروه تکراری",
+                                f"گروه «{text}» از قبل وجود دارد.")
+            return
+        self.camera_store.rename_group(old_name, text)
+        self.reload_camera_list()
+
+    def delete_camera_group(self, name):
+        """(2.0.61-beta) حذف گروه؛ اعضا حذف نمی‌شوند، بدون گروه می‌شوند."""
+        confirm = QMessageBox.question(
+            self, "حذف گروه",
+            f"گروه «{name}» حذف شود؟\n"
+            "دوربین‌ها و NVRهای آن حذف نمی‌شوند؛ بدون گروه می‌شوند.")
+        if confirm == QMessageBox.StandardButton.Yes:
+            self.camera_store.clear_group(name)
+            self.reload_camera_list()
 
     def edit_camera(self, cam_id):
         cam = self.camera_store.get_camera(cam_id)

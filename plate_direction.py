@@ -110,31 +110,12 @@ class PlateDirectionEngine:
             print(f"خطا در موتور جهت پلاک: {e}")
             return None
 
-    def _process_inner(self, cam, data, event):
-        cam = cam or {}
-        role = (cam.get("plate_role") or "").strip()
-        if role not in (ROLE_ENTRY, ROLE_EXIT):
-            return None  # دوربین نقش ورود/خروج ندارد -> فقط لاگ عادی
-
-        text = normalize_plate_text((data or {}).get("plate_text", ""))
-        if not text:
-            return None
-        event = event or {}
-        event_id = event.get("id", "")
-        plate_display = event.get("plate_display", "")
-        plate_obj = event.get("plate")
-        plate_id = plate_obj.get("id") if isinstance(plate_obj, dict) else None
-        owner_name = event.get("owner_name", "")
-        snapshot = event.get("snapshot_path", "")
-        cam_id = str(cam.get("id", ""))
-        cam_name = cam.get("name", "")
-        lane_id = (cam.get("lane_id") or "").strip()
-
-        crossing = "entry" if role == ROLE_ENTRY else "exit"
-        travel = TRAVEL_GOING if crossing == "entry" else TRAVEL_RETURN
-        now = time.time()
+    def _watchlist_violations(self, text, cam_id, cam_name, lane_id,
+                              snapshot, plate_display, plate_id,
+                              owner_name):
+        """تخلفات «لیست تحت‌نظر» برای یک پلاک دیده‌شده؛ خروجی لیست id
+        تخلف‌ها. مستقل از نقش ورود/خروج دوربین است (2.0.61-beta)."""
         violations = []
-
         # لیست تحت‌نظر پلاک‌ها (2.0.18-beta): پلاک سیاه/سفید دیده شد ->
         # ثبت تخلف از نوع watchlist_* (با ضدتکرار ۶۰ثانیه‌ای log_violation)
         # و بوق، مثل بقیه‌ی تخلفات.
@@ -157,6 +138,67 @@ class PlateDirectionEngine:
                     owner_name=owner_name))
         except Exception:
             pass
+        return violations
+
+    def _log_crossing_and_link(self, text, cam_id, cam_name, lane_id,
+                               crossing, travel, event_id, snapshot,
+                               plate_display, plate_id, owner_name,
+                               violations):
+        """ثبت عبور + لینک کردن تخلفات به آن؛ خروجی crossing_id."""
+        crossing_id = self.store.log_crossing(
+            text, camera_id=cam_id, camera_name=cam_name, lane_id=lane_id,
+            crossing_type=crossing, travel=travel, event_id=event_id,
+            snapshot_path=snapshot, plate_display=plate_display,
+            plate_id=plate_id, owner_name=owner_name)
+        for vid in violations:
+            try:
+                with self.store._lock:
+                    self.store._conn.execute(
+                        "UPDATE plate_violations SET crossing_id=? WHERE id=?",
+                        (crossing_id, vid))
+                    self.store._conn.commit()
+            except Exception:
+                pass
+        return crossing_id
+
+    def _process_inner(self, cam, data, event):
+        cam = cam or {}
+        text = normalize_plate_text((data or {}).get("plate_text", ""))
+        if not text:
+            return None
+        event = event or {}
+        event_id = event.get("id", "")
+        plate_display = event.get("plate_display", "")
+        plate_obj = event.get("plate")
+        plate_id = plate_obj.get("id") if isinstance(plate_obj, dict) else None
+        owner_name = event.get("owner_name", "")
+        snapshot = event.get("snapshot_path", "")
+        cam_id = str(cam.get("id", ""))
+        cam_name = cam.get("name", "")
+        lane_id = (cam.get("lane_id") or "").strip()
+        now = time.time()
+        violations = []
+
+        # (2.0.61-beta) لیست تحت‌نظر مستقل از نقش ورود/خروج دوربین بررسی
+        # می‌شود تا تخلف «ورود غیرمجاز» همیشه ثبت شود.
+        violations.extend(self._watchlist_violations(
+            text, cam_id, cam_name, lane_id, snapshot,
+            plate_display, plate_id, owner_name))
+
+        role = (cam.get("plate_role") or "").strip()
+        if role not in (ROLE_ENTRY, ROLE_EXIT):
+            # دوربین نقش ورود/خروج ندارد: قوانین جهت تردد (خلاف جهت،
+            # خروج بدون ورود، ورود مجدد) اجرا نمی‌شود، ولی عبور ثبت
+            # می‌شود تا «آمار تردد» خالی نماند.
+            crossing_id = self._log_crossing_and_link(
+                text, cam_id, cam_name, lane_id, "", "", event_id,
+                snapshot, plate_display, plate_id, owner_name, violations)
+            if violations:
+                self._beep_violation()
+            return {"crossing_id": crossing_id, "violations": violations}
+
+        crossing = "entry" if role == ROLE_ENTRY else "exit"
+        travel = TRAVEL_GOING if crossing == "entry" else TRAVEL_RETURN
 
         # قانون ج) خلاف جهت مسیر - مستقل از وضعیت داخل/خارج
         lane = self.get_lane(lane_id)
@@ -253,20 +295,9 @@ class PlateDirectionEngine:
             pass
 
         # ثبت عبور (همیشه، حتی با تخلف) + لینک دوربین/مسیر روی رویداد اصلی
-        crossing_id = self.store.log_crossing(
-            text, camera_id=cam_id, camera_name=cam_name, lane_id=lane_id,
-            crossing_type=crossing, travel=travel, event_id=event_id,
-            snapshot_path=snapshot, plate_display=plate_display,
-            plate_id=plate_id, owner_name=owner_name)
-        for vid in violations:
-            try:
-                with self.store._lock:
-                    self.store._conn.execute(
-                        "UPDATE plate_violations SET crossing_id=? WHERE id=?",
-                        (crossing_id, vid))
-                    self.store._conn.commit()
-            except Exception:
-                pass
+        crossing_id = self._log_crossing_and_link(
+            text, cam_id, cam_name, lane_id, crossing, travel, event_id,
+            snapshot, plate_display, plate_id, owner_name, violations)
         if violations:
             self._beep_violation()
         return {"crossing_id": crossing_id, "violations": violations}
