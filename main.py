@@ -2463,30 +2463,22 @@ class MainWindow(QMainWindow):
         # صورت PyQt مقدار bool سیگنال clicked(checked) را به‌جای None به
         # prefill_ip پاس می‌دهد و IP به‌اشتباه با True/False پر می‌شود.
         self.add_nvr_btn.clicked.connect(lambda: self.open_add_nvr_dialog())
-        add_btn_row.addWidget(self.add_camera_btn)
-        add_btn_row.addWidget(self.add_nvr_btn)
-        # (2.0.15-beta به دستور کاربر) اسکن پهنای باند/پایداری شبکه‌ی
-        # دوربین‌ها؛ نتیجه (خوب/متوسط/ضعیف/قطع) کنار هر دوربین نشان داده
-        # می‌شود و استریم‌ها بر اساس آن تطبیقی پایدار می‌مانند.
+        add_btn_row.addWidget(self.add_camera_btn, 1)
+        add_btn_row.addWidget(self.add_nvr_btn, 1)
+        # (2.0.58-beta به دستور کاربر) دکمه‌ی «تست پایداری شبکه» از ردیف
+        # دکمه‌های افزودن جدا شد و زیر پنل «دوربین‌ها و NVRهای من» قرار گرفت،
+        # تا دو دکمه‌ی افزودن دوربین/NVR کنار هم با برچسب کامل جا شوند.
         self.net_probe_btn = QPushButton("📶 تست پایداری شبکه")
         self.net_probe_btn.setToolTip(
             "اسکن پهنای باند و تاخیر شبکه‌ی همه‌ی دوربین‌ها (چند ثانیه طول می‌کشد)")
         self.net_probe_btn.clicked.connect(self._on_network_probe_clicked)
-        add_btn_row.addWidget(self.net_probe_btn)
-
-        # دوربین‌های متصل به یک NVR به‌صورت زیرمجموعه‌ی همان NVR نمایش داده می‌شوند.
-        self.camera_list = CameraTreeWidget()
-        self.camera_list.setHeaderHidden(True)
-        self.camera_list.itemDoubleClicked.connect(self.on_camera_item_activated)
-        self.camera_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.camera_list.customContextMenuRequested.connect(self.show_camera_context_menu)
-        connect_hint = QLabel("برای پخش زنده روی یک دوربین/کانال دابل‌کلیک کنید. کلیک راست: ویرایش/حذف/بازخوانی کانال‌ها")
         connect_hint.setStyleSheet("color: #888; font-size: 10px;")
         cam_layout.addLayout(add_btn_row)
         cam_layout.addWidget(self.camera_list)
         cam_layout.addWidget(connect_hint)
         cam_group.setLayout(cam_layout)
         left_panel.addWidget(cam_group)
+        left_panel.addWidget(self.net_probe_btn)
 
         # «🔥 اعلام حریق»، «👤 چهره‌ها» و «📊 گزارش‌ها» دیگر در پنل چپ
         # نیستند؛ هرکدام صفحه‌ی جداگانه‌ی خودشان را دارند و از هدر بالای

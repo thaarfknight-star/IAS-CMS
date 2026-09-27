@@ -22,17 +22,17 @@ def test_help_pages_mapping():
     from app_help import HELP_PAGES
     assert set(HELP_PAGES) == {"home", "fire", "face", "reports", "plate",
                                "person", "map", "settings"}
-    # نگاشت 2.0.57: شروع هر بخش در آموزش ۴۴ صفحه‌ای دکمه‌به‌دکمه، بدون تکرار
-    assert HELP_PAGES == {"home": 6, "fire": 13, "face": 16, "reports": 20,
-                          "plate": 24, "person": 31, "map": 35, "settings": 38}
+    # نگاشت 2.0.58: شروع هر بخش در آموزش ۴۷ صفحه‌ای قدم‌به‌قدم، بدون تکرار
+    assert HELP_PAGES == {"home": 6, "fire": 14, "face": 17, "reports": 21,
+                          "plate": 25, "person": 32, "map": 37, "settings": 41}
 
 
-def test_manual_pdf_exists_and_has_44_pages():
+def test_manual_pdf_exists_and_has_47_pages():
     from pypdf import PdfReader
     from app_help import manual_path
     path = manual_path()
     assert os.path.exists(path), f"PDF راهنما پیدا نشد: {path}"
-    assert len(PdfReader(path).pages) == 44
+    assert len(PdfReader(path).pages) == 47
 
 
 def test_manual_pdf_bundled_in_assets():
@@ -132,3 +132,15 @@ def test_open_help_wired():
                      and isinstance(n.func, ast.Attribute)]
             found = "open_manual" in names + attrs
     assert found
+
+
+def test_add_buttons_row_and_net_probe_below_panel():
+    # (2.0.58 به دستور کاربر) دو دکمه‌ی افزودن دوربین/NVR کنار هم در یک ردیف،
+    # و «تست پایداری شبکه» زیر پنل «دوربین‌ها و NVRهای من» (نه داخل ردیف).
+    src = _main_source()
+    assert "add_btn_row.addWidget(self.add_camera_btn, 1)" in src
+    assert "add_btn_row.addWidget(self.add_nvr_btn, 1)" in src
+    assert "add_btn_row.addWidget(self.net_probe_btn)" not in src
+    cam = src.index('left_panel.addWidget(cam_group)')
+    probe = src.index('left_panel.addWidget(self.net_probe_btn)')
+    assert probe > cam, "net_probe_btn باید بعد از cam_group به left_panel اضافه شود"
