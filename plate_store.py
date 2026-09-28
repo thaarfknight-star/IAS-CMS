@@ -1040,19 +1040,22 @@ class PlateStore:
     def log_violation(self, violation_type, plate_text, camera_id="",
                       camera_name="", lane_id="", detail="", crossing_id="",
                       snapshot_path="", plate_display="", plate_id=None,
-                      owner_name=""):
+                      owner_name="", dedup_seconds=60):
         """ثبت تخلف؛ خروجی id تخلف. ضدتکرار: اگر همین پلاک با همین نوع تخلف
-        در ۶۰ ثانیه‌ی اخیر ثبت شده باشد، همان id قبلی برمی‌گردد."""
+        در dedup_seconds ثانیه‌ی اخیر ثبت شده باشد، همان id قبلی برمی‌گردد.
+        با dedup_seconds=0 ضدتکرار غیرفعال است (هر بار ثبت تازه)."""
         canonical = normalize_plate_text(plate_text)
         now = time.time()
-        with self._lock:
-            row = self._conn.execute(
-                """SELECT id FROM plate_violations
-                   WHERE plate_text=? AND violation_type=? AND ts>?
-                   ORDER BY ts DESC LIMIT 1""",
-                (canonical, violation_type, now - 60)).fetchone()
-            if row:
-                return row["id"]
+        if dedup_seconds and dedup_seconds > 0:
+            with self._lock:
+                row = self._conn.execute(
+                    """SELECT id FROM plate_violations
+                       WHERE plate_text=? AND violation_type=? AND ts>?
+                       ORDER BY ts DESC LIMIT 1""",
+                    (canonical, violation_type,
+                     now - dedup_seconds)).fetchone()
+                if row:
+                    return row["id"]
         ts = now
         dt = datetime.fromtimestamp(ts)
         vid = uuid.uuid4().hex

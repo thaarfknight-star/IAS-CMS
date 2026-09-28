@@ -117,8 +117,9 @@ class PlateDirectionEngine:
         تخلف‌ها. مستقل از نقش ورود/خروج دوربین است (2.0.61-beta)."""
         violations = []
         # لیست تحت‌نظر پلاک‌ها (2.0.18-beta): پلاک سیاه/سفید دیده شد ->
-        # ثبت تخلف از نوع watchlist_* (با ضدتکرار ۶۰ثانیه‌ای log_violation)
-        # و بوق، مثل بقیه‌ی تخلفات.
+        # ثبت تخلف از نوع watchlist_* و بوق، مثل بقیه‌ی تخلفات.
+        # (2.0.75-beta) ضدتکرار غیرفعال است: به دستور کاربر، هر بار دیده شدن
+        # پلاک تحت‌نظر یک تخلف تازه ثبت می‌کند.
         try:
             for w in self.store.find_watchlist(text):
                 wkind = (w.get("kind") or "").strip()
@@ -135,7 +136,7 @@ class PlateDirectionEngine:
                     vtype, text, camera_id=cam_id, camera_name=cam_name,
                     lane_id=lane_id, detail=detail, snapshot_path=snapshot,
                     plate_display=plate_display, plate_id=plate_id,
-                    owner_name=owner_name))
+                    owner_name=owner_name, dedup_seconds=0))
         except Exception:
             pass
         return violations
