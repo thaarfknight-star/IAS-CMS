@@ -109,7 +109,7 @@ def test_version_compare():
     assert not uc.is_newer("2.0.72-beta", "2.0.73-beta")
 
 
-def _fake_release(tag, with_asset=True):
+def _fake_release(tag, with_asset=True, draft=False, prerelease=True):
     assets = []
     if with_asset:
         assets.append({
@@ -117,29 +117,44 @@ def _fake_release(tag, with_asset=True):
             "browser_download_url":
                 f"https://github.com/x/y/releases/download/v{tag}/IAS-CMS-Update-v{tag}.zip",
         })
-    return {"tag_name": f"v{tag}", "assets": assets,
+    return {"tag_name": f"v{tag}", "assets": assets, "draft": draft,
+            "prerelease": prerelease,
             "body": "notes", "published_at": "2026-01-01"}
 
 
 def test_check_for_updates_mocked():
     import update_checker as uc
     real = uc._api_get
+    seen_urls = []
     try:
-        uc._api_get = lambda url, timeout=12: _fake_release("2.0.73-beta")
+        # ریلیز جدیدتر (حتی prerelease) با فایل آپدیت → هشدار
+        def _fake(url, timeout=12):
+            seen_urls.append(url)
+            return [_fake_release("2.0.73-beta")]
+        uc._api_get = _fake
         info = uc.check_for_updates("2.0.72-beta")
+        assert seen_urls and "latest" not in seen_urls[-1], \
+            "باید از لیست ریلیزها خواند (بتا در latest نیست)"
         assert info and info["version"] == "2.0.73-beta"
         assert info["download_url"].endswith(".zip")
 
-        uc._api_get = lambda url, timeout=12: _fake_release("2.0.72-beta")
+        uc._api_get = lambda url, timeout=12: [_fake_release("2.0.72-beta")]
         assert uc.check_for_updates("2.0.72-beta") is None, "نسخه‌ی برابر"
 
-        uc._api_get = lambda url, timeout=12: _fake_release("2.0.71-beta")
+        uc._api_get = lambda url, timeout=12: [_fake_release("2.0.71-beta")]
         assert uc.check_for_updates("2.0.72-beta") is None, "نسخه‌ی قدیمی‌تر"
 
-        uc._api_get = lambda url, timeout=12: _fake_release("2.0.73-beta",
-                                                            with_asset=False)
+        uc._api_get = lambda url, timeout=12: [
+            _fake_release("2.0.73-beta", with_asset=False)]
         assert uc.check_for_updates("2.0.72-beta") is None, \
             "بدون asset فایل آپدیت نباید هشدار داد"
+
+        # draft رد می‌شود؛ ریلیز بعدیِ معتبر پیدا می‌شود
+        uc._api_get = lambda url, timeout=12: [
+            _fake_release("2.0.74-beta", draft=True),
+            _fake_release("2.0.73-beta")]
+        info = uc.check_for_updates("2.0.72-beta")
+        assert info and info["version"] == "2.0.73-beta"
 
         def _boom(url, timeout=12):
             raise OSError("no network")
@@ -275,7 +290,7 @@ def test_main_window_applies_permissions():
     fr.face_encodings = lambda *a, **k: []
     sys.modules.setdefault("face_recognition", fr)
     from PyQt6.QtWidgets import QApplication
-    QApplication.instance() or QApplication(["test"])
+    app = QApplication.instance() or QApplication(["test"])
     um, mgr = _fresh_mgr()
     mgr.ensure_default_admin()
     mgr.create_user("op1", "secret12", permissions={"home": True})

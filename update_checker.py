@@ -15,7 +15,9 @@ import re
 import urllib.request
 
 GITHUB_REPO = "thaarfknight-star/IAS-CMS"
-RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+# لیست Releaseها (نه /latest) — چون نسخه‌ها بتا هستند و GitHub نسخه‌ی
+# prerelease را در /releases/latest برنمی‌گرداند. در کد، draftها رد می‌شوند.
+RELEASES_API = f"https://api.github.com/repos/{GITHUB_REPO}/releases"
 _USER_AGENT = "IAS-Viewer-UpdateChecker"
 
 
@@ -54,25 +56,33 @@ def check_for_updates(current_version: str, timeout: int = 12):
     """
     try:
         data = _api_get(RELEASES_API, timeout=timeout)
-        tag = str(data.get("tag_name", "")).strip().lstrip("vV")
-        if not tag or not is_newer(tag, current_version):
+        if not isinstance(data, list):
             return None
-        # asset فایل آپدیت را پیدا کن
-        want = f"IAS-CMS-Update-v{tag}.zip".lower()
-        dl_url = None
-        for asset in data.get("assets", []) or []:
-            name = str(asset.get("name", "")).lower()
-            if name == want or (name.startswith("ias-cms-update-v") and name.endswith(".zip")):
-                dl_url = asset.get("browser_download_url")
-                break
-        if not dl_url:
-            return None  # Release هست ولی فایل آپدیت ندارد → هشدار نده
-        return {
-            "version": tag,
-            "download_url": dl_url,
-            "notes": str(data.get("body", "") or "")[:2000],
-            "published_at": str(data.get("published_at", "") or ""),
-        }
+        # گیت‌هاب جدیدترین را اول می‌دهد؛ draftها رد، اولین Release جدیدترِ
+        # دارای فایل آپدیت برنده است.
+        for rel in data:
+            if not isinstance(rel, dict) or rel.get("draft"):
+                continue
+            tag = str(rel.get("tag_name", "")).strip().lstrip("vV")
+            if not tag or not is_newer(tag, current_version):
+                continue
+            # asset فایل آپدیت را پیدا کن
+            want = f"IAS-CMS-Update-v{tag}.zip".lower()
+            dl_url = None
+            for asset in rel.get("assets", []) or []:
+                name = str(asset.get("name", "")).lower()
+                if name == want or (name.startswith("ias-cms-update-v") and name.endswith(".zip")):
+                    dl_url = asset.get("browser_download_url")
+                    break
+            if not dl_url:
+                continue  # این Release فایل آپدیت ندارد → بعدی
+            return {
+                "version": tag,
+                "download_url": dl_url,
+                "notes": str(rel.get("body", "") or "")[:2000],
+                "published_at": str(rel.get("published_at", "") or ""),
+            }
+        return None
     except Exception:
         return None
 

@@ -13,6 +13,10 @@ on:
         description: 'true = فقط «فایل آپدیت» (بدون Setup.exe) — برای آپدیت‌های کوچک | false = بیلد کامل'
         type: boolean
         default: false
+      publish_release:
+        description: 'true = ساخت GitHub Release برای همین نسخه و اتصال «فایل آپدیت» به آن — آپدیت خودکار برنامه فقط از Release می‌خواند'
+        type: boolean
+        default: false
 
 concurrency:
   group: build-exe-${{ github.ref }}
@@ -21,6 +25,9 @@ concurrency:
 jobs:
   build:
     runs-on: windows-latest
+    # برای ساخت Release و آپلود «فایل آپدیت» (فقط در قدم publish_release استفاده می‌شود)
+    permissions:
+      contents: write
 
     steps:
     - name: Checkout repository
@@ -699,3 +706,31 @@ jobs:
         name: IAS-CMS-manifest
         path: dist/manifest.json
         if-no-files-found: warn
+
+    # اتصال «فایل آپدیت» به GitHub Release — فقط با اجرای دستی ورک‌فلو و تیک
+    # publish_release. آپدیت خودکار برنامه (update_checker.py) نسخه‌ی جدید را
+    # از لیست Releaseها می‌خواند؛ بدون این قدم، هشدار آپدیت هیچ‌وقت نمی‌آید.
+    # اگر Release آن نسخه از قبل ساخته شده باشد، فقط فایل جایگزین می‌شود.
+    - name: Publish update package to GitHub Release
+      if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release == 'true' }}
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        $ErrorActionPreference = "Stop"
+        $ver = (Get-Content version.txt -Raw).Trim()
+        $tag = "v$ver"
+        $zip = Get-ChildItem "dist/IAS-CMS-Update-v$ver.zip" | Select-Object -First 1
+        if (-not $zip) { throw "update zip not found: dist/IAS-CMS-Update-v$ver.zip" }
+        $notes = "IAS Viewer $ver — فایل آپدیت خودکار برنامه."
+        $m = Select-String -Path README.md -Pattern "\*\*نسخه‌ی $([regex]::Escape($ver))" | Select-Object -First 1
+        if ($m) { $notes = $m.Line.Trim() }
+        $exists = $true
+        gh release view $tag --json tagName 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 0) { $exists = $false }
+        if (-not $exists) {
+          gh release create $tag $zip.FullName --title "IAS Viewer $ver" --notes $notes --prerelease
+        } else {
+          gh release upload $tag $zip.FullName --clobber
+        }
+        Write-Host "OK: $($zip.Name) -> release $tag"
