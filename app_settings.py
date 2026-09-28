@@ -23,6 +23,9 @@ DEFAULTS = {
     # با DPAPI ویندوز (credential_vault.py)؛ با False رفتار قبلی برمی‌گردد
     # (رمز هرگز روی دیسک نمی‌ماند و هر بار پرسیده می‌شود).
     "save_passwords": True,
+    # (2.0.72-beta) بررسی خودکار آپدیت جدید از GitHub Releases در شروع
+    # برنامه و هر ۶ ساعت؛ فقط برای ادمین هشدار نمایش داده می‌شود.
+    "auto_update_check": True,
 }
 
 
@@ -57,4 +60,14 @@ def get_theme_mode():
 def set_theme_mode(mode):
     cfg = load_settings()
     cfg["theme"] = mode if mode in ("dark", "light", "system") else "dark"
+    save_settings(cfg)
+
+
+def get_auto_update_check():
+    return bool(load_settings().get("auto_update_check", True))
+
+
+def set_auto_update_check(on):
+    cfg = load_settings()
+    cfg["auto_update_check"] = bool(on)
     save_settings(cfg)

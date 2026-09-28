@@ -26,13 +26,31 @@ from theme import apply_theme
 
 class SettingsPage(QWidget):
     def __init__(self, on_apply_update=None, on_sound_changed=None,
-                 on_password_save_changed=None, camera_store=None, parent=None):
+                 on_password_save_changed=None, camera_store=None,
+                 on_check_updates_now=None, is_admin=True, parent=None):
         super().__init__(parent)
         self.on_apply_update = on_apply_update
         self.on_sound_changed = on_sound_changed
         self.on_password_save_changed = on_password_save_changed
         self.camera_store = camera_store
+        self.on_check_updates_now = on_check_updates_now
+        self._is_admin = bool(is_admin)
+        self._license_group = None
+        self._users_group = None
         self._build()
+        self.set_admin_mode(self._is_admin)
+
+    def set_admin_mode(self, is_admin):
+        """(2.0.72-beta) حالت ادمین: «لایسنس» و «مدیریت کاربران» فقط برای
+        ادمین دیده می‌شوند (لایسنس هرگز سطح‌بندی نمی‌شود)."""
+        self._is_admin = bool(is_admin)
+        try:
+            if self._license_group is not None:
+                self._license_group.setVisible(self._is_admin)
+            if self._users_group is not None:
+                self._users_group.setVisible(self._is_admin)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # ساختار صفحه: یک QScrollArea تمام‌صفحه که محتوایش (تیتر + گروه‌ها) با
@@ -63,7 +81,11 @@ class SettingsPage(QWidget):
         layout.addWidget(self._build_theme_group())
         layout.addWidget(self._build_sound_group())
         layout.addWidget(self._build_security_group())
-        layout.addWidget(self._build_license_group())
+        self._license_group = self._build_license_group()
+        layout.addWidget(self._license_group)
+        # (2.0.72-beta) مدیریت کاربران — فقط ادمین
+        self._users_group = self._build_users_group()
+        layout.addWidget(self._users_group)
         layout.addWidget(self._build_bandwidth_group())
         layout.addWidget(self._build_update_group())
         layout.addWidget(self._build_uninstall_group())
@@ -365,6 +387,33 @@ class SettingsPage(QWidget):
         btn.setMinimumWidth(btn.sizeHint().width() + 8)
         return btn
 
+    def _build_users_group(self):
+        """(2.0.72-beta) مدیریت کاربران — فقط برای ادمین نمایش داده می‌شود."""
+        users_group = QGroupBox("👥 مدیریت کاربران")
+        ulay = QVBoxLayout()
+        ulay.setSpacing(12)
+        desc = QLabel("تعریف کاربر جدید و تعیین سطح دسترسی هر کاربر به صفحه‌ها.\n"
+                      "«لایسنس» همیشه فقط برای ادمین است.")
+        desc.setWordWrap(True)
+        ulay.addWidget(desc)
+        self.users_btn = self._action_button("👥 مدیریت کاربران", "#0f7cc1")
+        self.users_btn.clicked.connect(self._on_users_clicked)
+        urow = QHBoxLayout()
+        urow.addWidget(self.users_btn)
+        urow.addStretch()
+        ulay.addLayout(urow)
+        users_group.setLayout(ulay)
+        return users_group
+
+    def _on_users_clicked(self):
+        try:
+            from user_admin_dialog import UserAdminDialog
+            from user_manager import UserManager
+            dlg = UserAdminDialog(UserManager(), parent=self)
+            dlg.exec()
+        except Exception as e:
+            QMessageBox.warning(self, "خطا", f"باز کردن مدیریت کاربران ممکن نشد:\n{e}")
+
     def _build_update_group(self):
         upd_group = QGroupBox("⬆️ به‌روزرسانی")
         ulay = QVBoxLayout()
@@ -372,14 +421,38 @@ class SettingsPage(QWidget):
         desc = QLabel("فایل «آپدیت» را انتخاب و فقط فایل‌های تغییرکرده را جایگزین کنید.")
         desc.setWordWrap(True)
         ulay.addWidget(desc)
+        # (2.0.72-beta) بررسی خودکار آپدیت جدید از GitHub Releases
+        self.auto_update_check = QCheckBox("🔔 بررسی خودکار آپدیت جدید (در شروع برنامه و هر ۶ ساعت)")
+        try:
+            self.auto_update_check.setChecked(app_settings.get_auto_update_check())
+        except Exception:
+            self.auto_update_check.setChecked(True)
+        self.auto_update_check.toggled.connect(self._on_auto_update_toggled)
+        ulay.addWidget(self.auto_update_check)
         self.update_btn = self._action_button("⬆️ اعمال آپدیت", "#0f7cc1")
         self.update_btn.clicked.connect(self._on_update_clicked)
+        self.check_now_btn = self._action_button("🔍 بررسی آپدیت جدید الآن", "#2e7d32")
+        self.check_now_btn.clicked.connect(self._on_check_now_clicked)
         urow = QHBoxLayout()
         urow.addWidget(self.update_btn)
+        urow.addWidget(self.check_now_btn)
         urow.addStretch()
         ulay.addLayout(urow)
         upd_group.setLayout(ulay)
         return upd_group
+
+    def _on_auto_update_toggled(self, checked):
+        try:
+            app_settings.set_auto_update_check(bool(checked))
+        except Exception:
+            pass
+
+    def _on_check_now_clicked(self):
+        if callable(self.on_check_updates_now):
+            try:
+                self.on_check_updates_now()
+            except Exception as e:
+                QMessageBox.warning(self, "خطا", f"بررسی آپدیت ممکن نشد:\n{e}")
 
     def _build_uninstall_group(self):
         un_group = QGroupBox("🗑 حذف نصب")

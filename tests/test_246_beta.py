@@ -21,19 +21,20 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def test_help_pages_mapping():
     from app_help import HELP_PAGES
     assert set(HELP_PAGES) == {"home", "fire", "face", "reports", "plate",
-                               "person", "map", "ptz", "settings"}
-    # نگاشت 2.0.68: شروع هر بخش در آموزش ۴۹ صفحه‌ای قدم‌به‌قدم، بدون تکرار
+                               "person", "map", "ptz", "settings",
+                               "users", "autoupdate"}
+    # نگاشت 2.0.72: شروع هر بخش در آموزش ۵۱ صفحه‌ای قدم‌به‌قدم، بدون تکرار
     assert HELP_PAGES == {"home": 6, "fire": 14, "face": 17, "reports": 21,
                           "plate": 25, "person": 32, "map": 37, "ptz": 41,
-                          "settings": 42}
+                          "settings": 42, "users": 50, "autoupdate": 51}
 
 
-def test_manual_pdf_exists_and_has_49_pages():
+def test_manual_pdf_exists_and_has_51_pages():
     from pypdf import PdfReader
     from app_help import manual_path
     path = manual_path()
     assert os.path.exists(path), f"PDF راهنما پیدا نشد: {path}"
-    assert len(PdfReader(path).pages) == 49
+    assert len(PdfReader(path).pages) == 51
 
 
 def test_manual_pdf_bundled_in_assets():

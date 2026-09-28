@@ -23,6 +23,8 @@ HELP_PAGES = {
     "map": 37,
     "ptz": 41,
     "settings": 42,
+    "users": 50,
+    "autoupdate": 51,
 }
 
 _MANUAL_REL = os.path.join("assets", "help", "user-manual.pdf")

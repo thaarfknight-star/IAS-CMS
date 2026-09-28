@@ -2218,7 +2218,12 @@ class CameraTreeWidget(QTreeWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self):
+    # (2.0.72-beta) نتیجه‌ی بررسی آپدیت از ترد پس‌زمینه به ترد UI
+    update_check_done = pyqtSignal(object)
+
+    def __init__(self, current_user=None):
+        # current_user=None یعنی حالت توسعه/تست: دسترسی کامل، بدون لاگین.
+        self.current_user = current_user
         super().__init__()
         from updater import get_app_version
         self.app_version = get_app_version()
@@ -2887,6 +2892,8 @@ class MainWindow(QMainWindow):
             on_apply_update=self._on_apply_update,
             on_sound_changed=self._on_alarm_sound_changed,
             on_password_save_changed=self._on_password_save_changed,
+            on_check_updates_now=self.check_updates_now,
+            is_admin=self._is_admin(),
             camera_store=self.camera_store)
         self.pages.addWidget(self.settings_page)
 
@@ -2899,6 +2906,15 @@ class MainWindow(QMainWindow):
         # پنل «هشدارهای حریق و دود» فقط وقتی دیده می‌شود که حداقل یک دوربین
         # تشخیص حریق فعال داشته باشد (وضعیت اولیه هنگام بالا آمدن برنامه).
         self._refresh_fire_panel_visibility()
+        # (2.0.72-beta) کاربران/سطح دسترسی + بررسی خودکار آپدیت جدید
+        self._update_notified_version = None
+        self._update_toast = None
+        try:
+            self.update_check_done.connect(self._on_update_check_result)
+        except Exception:
+            pass
+        self.apply_user_permissions()
+        self._schedule_update_checks()
 
     def _on_password_save_changed(self, enabled: bool):
         """(2.0.15-beta) وقتی کاربر ذخیره‌ی امن رمزها را در تنظیمات عوض می‌کند:
@@ -4385,10 +4401,39 @@ class MainWindow(QMainWindow):
             f"font-size: 10px; color: {TEXT_MUTED}; padding: 4px 8px;"
         )
         header_layout.addWidget(ver_label)
+        # (2.0.72-beta) دکمه‌ی «آپدیت جدید» — فقط برای ادمین، فقط وقتی
+        # Release جدیدی با فایل آپدیت پیدا شود (پیش‌فرض مخفی).
+        self.header_update_btn = QPushButton("⬆️ آپدیت جدید!")
+        self.header_update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.header_update_btn.setVisible(False)
+        self.header_update_btn.setStyleSheet(
+            "QPushButton{padding: 6px 14px; border-radius: 6px; font-size: 12px; "
+            "background: #b8860b; color: white; font-weight: bold;}"
+        )
+        self.header_update_btn.clicked.connect(self._on_header_update_clicked)
+        header_layout.addWidget(self.header_update_btn)
+        # (2.0.72-beta) کاربر جاری + دکمه‌ی قفل (تعویض کاربر)
+        self.user_label = QLabel()
+        self.user_label.setStyleSheet(
+            f"font-size: 11px; color: {TEXT_MUTED}; padding: 4px 8px;"
+        )
+        header_layout.addWidget(self.user_label)
+        self.lock_btn = QPushButton("🔒 قفل")
+        self.lock_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lock_btn.setStyleSheet(
+            "QPushButton{padding: 6px 14px; border-radius: 6px; font-size: 12px;}"
+        )
+        self.lock_btn.setToolTip("قفل برنامه و ورود با کاربر دیگر")
+        self.lock_btn.clicked.connect(self._on_lock_clicked)
+        header_layout.addWidget(self.lock_btn)
         return header
 
     def _on_apply_update(self):
-        """باز کردن دیالوگ انتخاب و اعمال «فایل آپدیت»."""
+        """باز کردن دیالوگ انتخاب و اعمال «فایل آپدیت» (فقط ادمین)."""
+        if not self._is_admin():
+            QMessageBox.warning(self, "دسترسی",
+                                "اعمال آپدیت فقط برای ادمین مجاز است.")
+            return
         try:
             from updater import show_apply_update_dialog
             show_apply_update_dialog(parent=self)
@@ -4406,6 +4451,10 @@ class MainWindow(QMainWindow):
     def show_page(self, key):
         """تغییر صفحه‌ی فعال از طریق هدر؛ هر صفحه هنگام نمایش، داده‌هایش را
         با متد refresh خودش تازه می‌کند."""
+        # (2.0.72-beta) دفاع عمقی سطح دسترسی: حتی اگر دکمه‌ای به‌خطا دیده
+        # شود، صفحه‌ی بدون دسترسی باز نمی‌شود.
+        if not self._has_access(key):
+            return
         # (2.0.53-beta) کلید صفحه‌ی فعلی برای دکمه‌ی «راهنما» نگه داشته
         # می‌شود تا PDF روی صفحه‌ی مربوط به همین صفحه باز شود.
         self._current_page_key = key
@@ -4431,6 +4480,289 @@ class MainWindow(QMainWindow):
         self.pages.setCurrentIndex(index)
         for k, btn in self.nav_buttons.items():
             btn.setChecked(k == key)
+
+    # ================= (2.0.72-beta) کاربران، سطح دسترسی، آپدیت خودکار ======
+    def _has_access(self, page_key):
+        """آیا کاربر جاری به این صفحه دسترسی دارد؟ (None = حالت توسعه/تست)"""
+        if self.current_user is None:
+            return True
+        try:
+            from user_manager import UserManager
+            return UserManager.can_access(self.current_user, page_key)
+        except Exception:
+            return True
+
+    def _is_admin(self):
+        if self.current_user is None:
+            return True  # حالت توسعه/تست
+        try:
+            from user_manager import UserManager
+            return UserManager.is_admin(self.current_user)
+        except Exception:
+            return True
+
+    def apply_user_permissions(self):
+        """اعمال سطح دسترسی کاربر جاری روی هدر، صفحه‌ها و دکمه‌ها."""
+        try:
+            user = self.current_user
+            for key, btn in self.nav_buttons.items():
+                btn.setVisible(self._has_access(key))
+            is_admin = self._is_admin()
+            try:
+                self.settings_page.set_admin_mode(is_admin)
+            except Exception:
+                pass
+            if user is not None:
+                star = "⭐ " if is_admin else ""
+                self.user_label.setText(f"👤 {star}{user.get('username', '')}")
+                self.user_label.setVisible(True)
+                self.lock_btn.setVisible(True)
+            else:
+                self.user_label.setVisible(False)
+                self.lock_btn.setVisible(False)
+            allowed = [k for k in ("home", "fire", "face", "reports", "plate",
+                                   "person", "map", "settings")
+                       if self._has_access(k)]
+            if allowed and getattr(self, "_current_page_key", "home") not in allowed:
+                self.show_page(allowed[0])
+            if not is_admin:
+                self.header_update_btn.setVisible(False)
+                self._hide_update_toast()
+        except Exception:
+            pass
+
+    def _on_lock_clicked(self):
+        """قفل برنامه و ورود با کاربر دیگر (بدون بستن برنامه)."""
+        try:
+            from login_dialog import LoginDialog
+            from user_manager import UserManager
+            mgr = UserManager()
+            dlg = LoginDialog(mgr, parent=self)
+            if dlg.exec() == QDialog.DialogCode.Accepted and dlg.user:
+                self.current_user = dlg.user
+                self._update_notified_version = None
+                self._pending_update_info = None
+                self._hide_update_toast()
+                self.header_update_btn.setVisible(False)
+                self.apply_user_permissions()
+                QMessageBox.information(
+                    self, "ورود",
+                    f"👤 وارد شدید: {dlg.user.get('username', '')}")
+        except Exception as e:
+            QMessageBox.warning(self, "خطا", f"تعویض کاربر ممکن نشد:\n{e}")
+
+    # ---------------------------------------------------------- آپدیت خودکار --
+    def _schedule_update_checks(self):
+        """بررسی خودکار: ۱۰ ثانیه بعد از بالا آمدن + هر ۶ ساعت."""
+        try:
+            QTimer.singleShot(10000, self._async_update_check)
+            self._update_timer = QTimer(self)
+            self._update_timer.setInterval(6 * 3600 * 1000)
+            self._update_timer.timeout.connect(self._async_update_check)
+            self._update_timer.start()
+        except Exception:
+            pass
+
+    def _auto_check_enabled(self):
+        try:
+            import app_settings
+            return bool(app_settings.get_auto_update_check())
+        except Exception:
+            return True
+
+    def _async_update_check(self):
+        if not self._auto_check_enabled():
+            return
+
+        def _worker():
+            try:
+                import update_checker
+                info = update_checker.check_for_updates(self.app_version)
+            except Exception:
+                info = None
+            try:
+                self.update_check_done.emit(info)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def check_updates_now(self):
+        """بررسی دستی آپدیت (دکمه‌ی «بررسی الآن» در تنظیمات)."""
+        self._async_update_check()
+        QMessageBox.information(
+            self, "بررسی آپدیت",
+            "🔍 در حال بررسی آپدیت جدید…\nاگر نسخه‌ی جدیدی منتشر شده باشد، هشدار آن نمایش داده می‌شود.")
+
+    def _on_update_check_result(self, info):
+        if not info or not self._is_admin() or not self._auto_check_enabled():
+            return
+        ver = info.get("version", "")
+        if not ver or ver == self._update_notified_version:
+            return  # برای همین نسخه قبلاً هشدار داده‌ایم
+        self._update_notified_version = ver
+        self._pending_update_info = info
+        self.header_update_btn.setVisible(True)
+        self._show_update_toast(info)
+
+    def _show_update_toast(self, info):
+        """پاپ‌آپ گوشه‌ی پایین-چپ: «آپدیت جدید منتشر شد!»"""
+        self._hide_update_toast()
+        try:
+            toast = QWidget(
+                self, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+            toast.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+            toast.setStyleSheet(
+                "background: #1d2b1d; border: 2px solid #2e7d32; "
+                "border-radius: 10px;")
+            lay = QVBoxLayout(toast)
+            lay.setContentsMargins(14, 12, 14, 12)
+            title = QLabel(f"⬆️ آپدیت جدید منتشر شد!  (v{info.get('version', '')})")
+            title.setStyleSheet("font-size: 14px; font-weight: bold; "
+                                "color: #a5d6a7; border: none;")
+            title.setWordWrap(True)
+            lay.addWidget(title)
+            notes = (info.get("notes", "") or "").strip().splitlines()
+            if notes:
+                nl = QLabel(notes[0][:140])
+                nl.setWordWrap(True)
+                nl.setStyleSheet("font-size: 11px; color: #cccccc; border: none;")
+                lay.addWidget(nl)
+            row = QHBoxLayout()
+            go_btn = QPushButton("⬆️ دانلود و نصب")
+            go_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            go_btn.setStyleSheet(
+                "QPushButton{background: #2e7d32; color: white; font-weight: bold; "
+                "padding: 8px 16px; border-radius: 6px; font-size: 13px;}")
+            go_btn.clicked.connect(self._on_header_update_clicked)
+            x_btn = QPushButton("✖")
+            x_btn.setFixedWidth(36)
+            x_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            x_btn.clicked.connect(self._hide_update_toast)
+            row.addWidget(go_btn)
+            row.addWidget(x_btn)
+            lay.addLayout(row)
+            toast.adjustSize()
+            try:
+                geo = self.geometry()
+                x = geo.left() + 24
+                y = geo.bottom() - toast.sizeHint().height() - 60
+                toast.move(max(0, x), max(0, y))
+            except Exception:
+                pass
+            self._update_toast = toast
+            toast.show()
+        except Exception:
+            pass
+
+    def _hide_update_toast(self):
+        try:
+            if self._update_toast is not None:
+                self._update_toast.hide()
+                self._update_toast.deleteLater()
+        except Exception:
+            pass
+        self._update_toast = None
+
+    def _on_header_update_clicked(self):
+        info = getattr(self, "_pending_update_info", None)
+        if not info:
+            return
+        self._download_and_apply_update(info)
+
+    def _download_and_apply_update(self, info):
+        """دانلود خودکار فایل آپدیت + اعتبارسنجی + اعمال (فقط ادمین)."""
+        from PyQt6.QtWidgets import QProgressDialog
+        if not self._is_admin():
+            QMessageBox.warning(self, "دسترسی",
+                                "نصب آپدیت فقط برای ادمین مجاز است.")
+            return
+        ver = info.get("version", "")
+        notes = (info.get("notes", "") or "").strip()
+        msg = f"آپدیت جدید v{ver} منتشر شده است.\n\n"
+        if notes:
+            msg += notes[:500] + "\n\n"
+        msg += ("فایل آپدیت دانلود و بلافاصله اعمال می‌شود؛ "
+                "برنامه بسته و دوباره باز می‌شود.\nادامه می‌دهید؟")
+        if QMessageBox.question(
+                self, "⬆️ آپدیت جدید",
+                msg) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from updater import is_frozen
+            if not is_frozen():
+                QMessageBox.information(
+                    self, "حالت توسعه",
+                    "ℹ️ دانلود/اعمال خودکار آپدیت فقط در نسخه‌ی نصب‌شده کار می‌کند.")
+                return
+        except Exception:
+            pass
+        # --- دانلود با دیالوگ پیشرفت ---
+        import tempfile
+        dest = os.path.join(tempfile.gettempdir(),
+                            f"IAS-CMS-Update-v{ver}.zip")
+        dlg = QProgressDialog("در حال دانلود فایل آپدیت…", "انصراف",
+                              0, 100, self)
+        dlg.setWindowTitle("⬆️ دانلود آپدیت")
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setValue(0)
+
+        class _Cancelled(Exception):
+            pass
+
+        def _prog(p):
+            dlg.setValue(int(p))
+            QApplication.processEvents()
+            if dlg.wasCanceled():
+                raise _Cancelled()
+
+        try:
+            import update_checker
+            update_checker.download_update(info["download_url"], dest,
+                                           progress_cb=_prog)
+        except _Cancelled:
+            dlg.close()
+            return
+        except Exception as e:
+            dlg.close()
+            QMessageBox.warning(self, "خطا", f"⚠️ دانلود آپدیت ممکن نشد:\n{e}")
+            return
+        dlg.close()
+        # --- اعتبارسنجی فایل دانلودشده ---
+        try:
+            from updater import validate_update_zip, stage_and_launch_update
+            ok, _vinfo = validate_update_zip(dest)
+        except Exception as e:
+            QMessageBox.warning(self, "خطا",
+                                f"⚠️ فایل دانلودشده معتبر نیست:\n{e}")
+            return
+        if not ok:
+            QMessageBox.warning(self, "خطا",
+                                f"⚠️ فایل دانلودشده معتبر نیست:\n{_vinfo}")
+            return
+        # --- اعمال ---
+        status_dlg = QProgressDialog("در حال آماده‌سازی آپدیت…", None, 0, 0,
+                                     self)
+        status_dlg.setWindowTitle("⬆️ اعمال آپدیت")
+        status_dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        status_dlg.setMinimumDuration(0)
+        status_dlg.show()
+
+        def _st(t):
+            try:
+                status_dlg.setLabelText(str(t))
+                QApplication.processEvents()
+            except Exception:
+                pass
+
+        ok, msg2 = stage_and_launch_update(dest, status_cb=_st)
+        status_dlg.close()
+        if not ok:
+            QMessageBox.warning(self, "خطا", "⚠️ " + msg2)
+            return
+        QApplication.instance().quit()
+        os._exit(0)
 
     def _on_map_camera_click(self, cam):
         """دابل‌کلیک روی دوربین در صفحه‌ی «نقشه ساختمان»: باز شدن پنجره‌ی
@@ -5156,7 +5488,20 @@ if __name__ == "__main__":
 
     app = _SafeApplication(sys.argv)
     apply_theme(app)  # تم تیره‌ی سازگار با لوگوی IAS Viewer
-    window = MainWindow()
+    # (2.0.72-beta) دروازه‌ی ورود: نام‌کاربری + رمز عبور. در حالت موتور
+    # آپدیت (--apply-update بالاتر خارج شد) و در تست‌ها (IAS_SKIP_LOGIN=1)
+    # لاگین رد می‌شود.
+    current_user = None
+    if os.environ.get("IAS_SKIP_LOGIN") != "1":
+        try:
+            from login_dialog import run_login
+            current_user = run_login()
+        except Exception as e:
+            print("login failed:", e)
+            current_user = None
+        if current_user is None:
+            sys.exit(0)
+    window = MainWindow(current_user=current_user)
     # برنامه از ابتدا ماکسیمایز باز می‌شود (درخواست قبلی کاربر).
     window.showMaximized()
     sys.exit(app.exec())

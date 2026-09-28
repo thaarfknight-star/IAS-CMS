@@ -225,6 +225,164 @@ def safe_extract_zip(zip_path, dest_dir):
 
 # ------------------------------------------------- دیالوگ مدرن آپدیت ---
 
+def wait_updater_handshake(install_dir, proc, spawn_ts, pump_cb=None):
+    """انتظار حداکثر ~۱۵ ثانیه تا موتور آپدیت خط شروع را در update.log
+    بنویسد. خروجی: (ok, hint). نسخه‌ی ماژولارِ متد قبلی دیالوگ (بدون
+    وابستگی مستقیم به PyQt؛ pump_cb برای زنده نگه داشتن UI)."""
+    import time as _time
+    logf = install_dir / "update.log"
+    err_log = install_dir / "update_err.log"
+    for _ in range(150):
+        _time.sleep(0.1)
+        if pump_cb:
+            try:
+                pump_cb()
+            except Exception:
+                pass
+        if proc.poll() is not None:
+            hint = ("فرایند موتور آپدیت بلافاصله بسته شد "
+                    "(کد خروج: %s)." % (proc.poll(),))
+            try:
+                if err_log.is_file():
+                    tail = err_log.read_text(
+                        encoding="utf-8",
+                        errors="ignore").strip().splitlines()[-12:]
+                    if tail:
+                        hint += "\n\nجزئیات خطا:\n" + "\n".join(tail)
+            except Exception:
+                pass
+            return (False, hint)
+        try:
+            if logf.is_file() and logf.stat().st_mtime >= spawn_ts - 1:
+                tail = logf.read_text(
+                    encoding="utf-8", errors="ignore").splitlines()[-30:]
+                if any("updater started" in ln for ln in tail):
+                    return (True, "")
+        except Exception:
+            pass
+    return (False, "موتور آپدیت در ۱۵ ثانیه شروع به کار نکرد.")
+
+
+def stage_and_launch_update(zip_path, status_cb=None):
+    """هسته‌ی مشترک اعمال «فایل آپدیت» (دیالوگ دستی + آپدیت خودکار):
+    استخراج امن به pending_update → آماده‌سازی موتور (کپی exe) → اجرا →
+    انتظار handshake. ورودی باید قبلاً با validate_update_zip اعتبارسنجی
+    شده باشد. خروجی: (True, "") یا (False, پیام خطای فارسی).
+    در صورت موفقیت، فراخواننده باید برنامه را ببندد (quit + os._exit)."""
+
+    def _st(t):
+        if status_cb:
+            try:
+                status_cb(t)
+            except Exception:
+                pass
+
+    install_dir = get_install_dir()
+    pending = install_dir / "pending_update"
+    try:
+        if pending.exists():
+            shutil.rmtree(pending)
+        safe_extract_zip(zip_path, pending)
+    except Exception as e:
+        return False, f"استخراج فایل آپدیت ممکن نشد:\n{e}"
+
+    # موتور آپدیت = یک کپی از همین فایل اجرایی با پرچم --apply-update
+    # (موتور خالص پایتون در update_apply.py).
+    try:
+        import update_apply as _ua
+        src_exe = Path(sys.executable).resolve()
+        if not src_exe.is_file():
+            raise RuntimeError("فایل اجرایی برنامه پیدا نشد.")
+        exe_name = src_exe.name
+        upd_exe = install_dir / _ua.UPDATER_EXE_NAME
+        try:
+            if upd_exe.is_file():
+                upd_exe.unlink()
+        except Exception:
+            pass
+        shutil.copy2(src_exe, upd_exe)
+    except Exception as e:
+        shutil.rmtree(pending, ignore_errors=True)
+        return False, f"آماده‌سازی موتور آپدیت ممکن نشد:\n{e}"
+
+    try:
+        import time as _time
+        spawn_ts = _time.time()
+        err_log = install_dir / "update_err.log"
+        try:
+            if err_log.is_file():
+                err_log.unlink()
+        except Exception:
+            pass
+        _ef = open(err_log, "a", encoding="utf-8", errors="replace")
+
+        def _eflog(m):
+            try:
+                _ef.write("[launcher %s] %s\n"
+                          % (_time.strftime("%H:%M:%S"), m))
+                _ef.flush()
+            except Exception:
+                pass
+
+        cmd = [str(upd_exe), _ua.APPLY_FLAG, str(install_dir),
+               str(pending), str(os.getpid()), exe_name]
+        _eflog("spawning: %s" % (cmd,))
+        if os.name == "nt":
+            creationflags = getattr(subprocess, "DETACHED_PROCESS", 0)
+            creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            proc = subprocess.Popen(
+                cmd,
+                creationflags=creationflags,
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=_ef,
+                stderr=subprocess.STDOUT,
+            )
+        else:
+            proc = subprocess.Popen(
+                cmd,
+                close_fds=True,
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=_ef,
+                stderr=subprocess.STDOUT,
+            )
+        _eflog("spawned pid=%s" % (proc.pid,))
+    except Exception as e:
+        try:
+            _ef.close()
+        except Exception:
+            pass
+        shutil.rmtree(pending, ignore_errors=True)
+        return False, f"اجرای موتور آپدیت ممکن نشد:\n{e}"
+
+    _st("در حال راه‌اندازی موتور آپدیت…")
+    try:
+        from PyQt6.QtWidgets import QApplication as _QA
+        pump = _QA.processEvents
+    except Exception:
+        pump = None
+    handshake_ok, handshake_hint = wait_updater_handshake(
+        install_dir, proc, spawn_ts, pump_cb=pump)
+    try:
+        _ef.close()
+    except Exception:
+        pass
+    if not handshake_ok:
+        try:
+            if proc.poll() is None:
+                proc.kill()
+        except Exception:
+            pass
+        shutil.rmtree(pending, ignore_errors=True)
+        return False, ("موتور آپدیت راه‌اندازی نشد؛ برنامه بسته نشد.\n"
+                       f"{handshake_hint}\n"
+                       "اگر مشکل ادامه داشت، فایل update_err.log در پوشه‌ی نصب را بفرستید.")
+    return True, ""
+
+
+# ------------------------------------------------- دیالوگ مدرن آپدیت ---
+
 class UpdateDialog(__import__("PyQt6.QtWidgets", fromlist=["QDialog"]).QDialog):
     """دیالوگ «فایل آپدیت» — مدرن، راست‌چین و هماهنگ با تم برنامه."""
 
@@ -415,6 +573,8 @@ class UpdateDialog(__import__("PyQt6.QtWidgets", fromlist=["QDialog"]).QDialog):
         self.apply_btn.setEnabled(True)
 
     def _apply(self):
+        """اعمال «فایل آپدیت» انتخاب‌شده — روی هسته‌ی مشترک
+        stage_and_launch_update سوار است (همان منطق قبلی، بدون تغییر رفتار)."""
         from PyQt6.QtWidgets import QApplication
         if not self.zip_path or not self.info:
             return
@@ -427,163 +587,30 @@ class UpdateDialog(__import__("PyQt6.QtWidgets", fromlist=["QDialog"]).QDialog):
         self.apply_btn.setText("در حال آماده‌سازی…")
         QApplication.processEvents()
 
-        install_dir = get_install_dir()
-        pending = install_dir / "pending_update"
-        try:
-            if pending.exists():
-                shutil.rmtree(pending)
-            safe_extract_zip(self.zip_path, pending)
-        except Exception as e:
-            self.err_lbl.setText(f"⚠️ استخراج فایل آپدیت ممکن نشد:\n{e}")
+        def _fail(msg):
+            self.err_lbl.setText("⚠️ " + msg)
             self.err_card.setVisible(True)
             self.apply_btn.setEnabled(True)
             self.apply_btn.setText("⬆️ اعمال آپدیت")
-            return
 
-        # موتور آپدیت = یک کپی از همین فایل اجرایی با پرچم --apply-update
-        # (موتور خالص پایتون در update_apply.py). جایگزین updater.ps1 شد چون
-        # روی بعضی سیستم‌ها PowerShell اصلاً بالا نمی‌آمد و هیچ لاگی از علت
-        # نمی‌داد. خواندن/کپی فایل اجرایی در حال اجرا در ویندوز آزاد است.
-        try:
-            import update_apply as _ua
-            src_exe = Path(sys.executable).resolve()
-            if not src_exe.is_file():
-                raise RuntimeError("فایل اجرایی برنامه پیدا نشد.")
-            exe_name = src_exe.name
-            upd_exe = install_dir / _ua.UPDATER_EXE_NAME
-            try:
-                if upd_exe.is_file():
-                    upd_exe.unlink()
-            except Exception:
-                pass
-            shutil.copy2(src_exe, upd_exe)
-        except Exception as e:
-            shutil.rmtree(pending, ignore_errors=True)
-            self.err_lbl.setText(f"⚠️ آماده‌سازی موتور آپدیت ممکن نشد:\n{e}")
-            self.err_card.setVisible(True)
-            self.apply_btn.setEnabled(True)
-            self.apply_btn.setText("⬆️ اعمال آپدیت")
-            return
-
-        try:
-            import time as _time
-            spawn_ts = _time.time()
-            # update_err.log: لاگ لانچر (علت بالا نیامدن موتور) + خروجی موتور.
-            # اگر موتور بالا نیاید، علت دقیق همین‌جاست — دیگر «لاگ خالی» نیست.
-            err_log = install_dir / "update_err.log"
-            try:
-                if err_log.is_file():
-                    err_log.unlink()
-            except Exception:
-                pass
-            _ef = open(err_log, "a", encoding="utf-8", errors="replace")
-
-            def _eflog(m):
-                try:
-                    _ef.write("[launcher %s] %s\n"
-                              % (_time.strftime("%H:%M:%S"), m))
-                    _ef.flush()
-                except Exception:
-                    pass
-
-            cmd = [str(upd_exe), _ua.APPLY_FLAG, str(install_dir),
-                   str(pending), str(os.getpid()), exe_name]
-            _eflog("spawning: %s" % (cmd,))
-            if os.name == "nt":
-                creationflags = getattr(subprocess, "DETACHED_PROCESS", 0)
-                creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                proc = subprocess.Popen(
-                    cmd,
-                    creationflags=creationflags,
-                    close_fds=True,
-                    stdin=subprocess.DEVNULL,
-                    stdout=_ef,
-                    stderr=subprocess.STDOUT,
-                )
-            else:
-                proc = subprocess.Popen(
-                    cmd,
-                    close_fds=True,
-                    start_new_session=True,
-                    stdin=subprocess.DEVNULL,
-                    stdout=_ef,
-                    stderr=subprocess.STDOUT,
-                )
-            _eflog("spawned pid=%s" % (proc.pid,))
-        except Exception as e:
-            try:
-                _ef.close()
-            except Exception:
-                pass
-            shutil.rmtree(pending, ignore_errors=True)
-            self.err_lbl.setText(f"⚠️ اجرای موتور آپدیت ممکن نشد:\n{e}")
-            self.err_card.setVisible(True)
-            self.apply_btn.setEnabled(True)
-            self.apply_btn.setText("⬆️ اعمال آپدیت")
-            return
-
-        # دست‌تکان (handshake): مطمئن می‌شویم موتور آپدیت واقعاً بالا آمده
-        # و شروع به کار کرده، بعد برنامه را می‌بندیم. بدون این کنترل، اگر
-        # موتور بالا نیاید برنامه بسته می‌شود و «هیچ اتفاقی نمی‌افتد».
-        self.apply_btn.setText("در حال راه‌اندازی موتور آپدیت…")
-        handshake_ok, handshake_hint = self._wait_updater_handshake(
-            proc, install_dir, spawn_ts)
-        try:
-            _ef.close()
-        except Exception:
-            pass
-        if not handshake_ok:
-            try:
-                if proc.poll() is None:
-                    proc.kill()  # موتور گیر کرده؛ رهایش نکن
-            except Exception:
-                pass
-            shutil.rmtree(pending, ignore_errors=True)
-            self.err_lbl.setText(
-                "⚠️ موتور آپدیت راه‌اندازی نشد؛ برنامه بسته نشد.\n"
-                f"{handshake_hint}\n"
-                "اگر مشکل ادامه داشت، فایل update_err.log در پوشه‌ی نصب را بفرستید.")
-            self.err_card.setVisible(True)
-            self.apply_btn.setEnabled(True)
-            self.apply_btn.setText("⬆️ اعمال آپدیت")
+        ok, msg = stage_and_launch_update(
+            self.zip_path,
+            status_cb=lambda t: (self.apply_btn.setText(t),
+                                 QApplication.processEvents()))
+        if not ok:
+            _fail(msg)
             return
 
         self.accept()
         QApplication.instance().quit()
         os._exit(0)
 
+
     def _wait_updater_handshake(self, proc, install_dir, spawn_ts):
-        """انتظار حداکثر ~۱۵ ثانیه تا موتور آپدیت خط شروع را در update.log
-        بنویسد. خروجی: (ok, hint)."""
+        """سازگاری: حالا فقط پوشش نازکی روی wait_updater_handshake ماژولار است."""
         from PyQt6.QtWidgets import QApplication
-        import time as _time
-        logf = install_dir / "update.log"
-        err_log = install_dir / "update_err.log"
-        for _ in range(150):
-            _time.sleep(0.1)
-            QApplication.processEvents()
-            if proc.poll() is not None:
-                hint = ("فرایند موتور آپدیت بلافاصله بسته شد "
-                        "(کد خروج: %s)." % (proc.poll(),))
-                try:
-                    if err_log.is_file():
-                        tail = err_log.read_text(
-                            encoding="utf-8",
-                            errors="ignore").strip().splitlines()[-12:]
-                        if tail:
-                            hint += "\n\nجزئیات خطا:\n" + "\n".join(tail)
-                except Exception:
-                    pass
-                return (False, hint)
-            try:
-                if logf.is_file() and logf.stat().st_mtime >= spawn_ts - 1:
-                    tail = logf.read_text(
-                        encoding="utf-8", errors="ignore").splitlines()[-30:]
-                    if any("updater started" in ln for ln in tail):
-                        return (True, "")
-            except Exception:
-                pass
-        return (False, "موتور آپدیت در ۱۵ ثانیه شروع به کار نکرد.")
+        return wait_updater_handshake(install_dir, proc, spawn_ts,
+                                      pump_cb=QApplication.processEvents)
 
 
 def show_apply_update_dialog(parent=None):
