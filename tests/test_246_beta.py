@@ -22,11 +22,13 @@ def test_help_pages_mapping():
     from app_help import HELP_PAGES
     assert set(HELP_PAGES) == {"home", "fire", "face", "reports", "plate",
                                "person", "map", "ptz", "settings",
-                               "users", "autoupdate"}
-    # نگاشت 2.0.72: شروع هر بخش در آموزش ۵۱ صفحه‌ای قدم‌به‌قدم، بدون تکرار
+                               "faq", "users", "autoupdate"}
+    # نگاشت 2.0.74: شروع هر بخش در آموزش ۵۱ صفحه‌ای قدم‌به‌قدم، بدون تکرار
+    # (faq=48 قبلاً در PDF بود ولی در نگاشت جا افتاده بود)
     assert HELP_PAGES == {"home": 6, "fire": 14, "face": 17, "reports": 21,
                           "plate": 25, "person": 32, "map": 37, "ptz": 41,
-                          "settings": 42, "users": 50, "autoupdate": 51}
+                          "settings": 42, "faq": 48,
+                          "users": 50, "autoupdate": 51}
 
 
 def test_manual_pdf_exists_and_has_51_pages():

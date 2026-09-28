@@ -4797,9 +4797,23 @@ class MainWindow(QMainWindow):
 
     def open_help(self):
         """(2.0.53-beta) باز کردن کاتالوگ PDF «راهنمای کاربری» روی صفحه‌ی
-        مربوط به صفحه‌ی فعلی برنامه (دکمه‌ی «❓ راهنما» در هدر)."""
+        مربوط به صفحه‌ی فعلی برنامه (دکمه‌ی «❓ راهنما» در هدر).
+
+        (2.0.74-beta) راهنما به سطح دسترسی کاربر گره خورده است: کاربر
+        محدود (غیرادمین) نسخه‌ی فیلترشده‌ی راهنما را می‌بیند — فقط
+        بخش‌های صفحه‌هایی که به آن‌ها دسترسی دارد + صفحه‌های عمومی
+        (جلد/آشنایی/شروع سریع/عیب‌یابی)؛ بخش‌های مدیریتی (مدیریت
+        کاربران/آپدیت خودکار) و صفحه‌های غیرمجاز در آن نیست. ادمین و
+        حالت توسعه مثل قبل کل راهنما را می‌بینند."""
         from app_help import open_manual
-        open_manual(getattr(self, "_current_page_key", "home"), parent=self)
+        from user_manager import UserManager
+        user = self.current_user
+        if user is None or UserManager.is_admin(user):
+            allowed = None  # دسترسی کامل: کل راهنما
+        else:
+            allowed = set(UserManager.allowed_pages(user))
+        open_manual(getattr(self, "_current_page_key", "home"), parent=self,
+                    allowed_pages=allowed)
 
     def open_face_gallery(self):
         """گالری «🖼 دیدن تصاویر» بالای پنل رویدادها: چهره‌های
@@ -4881,6 +4895,11 @@ class MainWindow(QMainWindow):
                 channel=cam.get("channel"),
                 plate_display=data.get("plate_display", ""),
             )
+            # (2.0.74-beta) هر پلاک دیده‌شده (نه فقط تخلف‌ها) در «پنل
+            # رویدادها» هم ثبت می‌شود — حتی اگر کاربر جاری به صفحه‌ی
+            # «پلاک‌خوان» دسترسی نداشته باشد؛ کافی است ادمین پلاک‌خوان را
+            # روی این دوربین فعال کرده باشد.
+            self._push_plate_sighting_to_events(camera_name, data)
             # (2.0.15-beta) موتور قوانین جهت تردد: نقش ورود/خروج دوربین،
             # جهت مجاز مسیر، وضعیت داخل/خارج پلاک و ثبت تخلف در صورت نیاز.
             try:
@@ -4926,6 +4945,31 @@ class MainWindow(QMainWindow):
                 pass
         except Exception as e:
             print(f"خطا در ثبت رویداد پلاک: {e}")
+
+    def _push_plate_sighting_to_events(self, camera_name, data):
+        """(2.0.74-beta) ثبت «دیدن پلاک» در «پنل رویدادها»: ردیف با شماره‌ی
+        پلاک، دوربین و تصویر برش‌خورده‌ی پلاک. برخلاف تخلف‌ها که قرمزند،
+        این ردیف‌ها رنگ خنثی دارند. سقف ۳۰۰ ردیف مثل بقیه‌ی رویدادها."""
+        try:
+            data = data or {}
+            timestamp = time.strftime("%H:%M:%S")
+            plate_display = (data.get("plate_display")
+                             or data.get("plate_text") or "")
+            text = f"[{timestamp}] {camera_name}\n🚗 پلاک: {plate_display}"
+            item = QListWidgetItem(text)
+            try:
+                crop = data.get("crop")
+                pixmap = _bgr_to_pixmap(crop) if crop is not None else None
+                if pixmap is not None and not pixmap.isNull():
+                    item.setIcon(QIcon(pixmap))
+            except Exception:
+                pass
+            self.events_panel_list.insertItem(0, item)
+            while self.events_panel_list.count() > 300:
+                self.events_panel_list.takeItem(
+                    self.events_panel_list.count() - 1)
+        except Exception:
+            pass
 
     def _push_plate_violation_to_events(self, vid):
         """(2.0.56-beta) نمایش یک تخلف پلاک در «پنل رویدادها»: ردیف قرمز با
@@ -5269,6 +5313,12 @@ class MainWindow(QMainWindow):
             snapshot_bgr=snapshot_bgr)
         if viol is None:
             return  # داخل cooldown؛ قبلاً ثبت شده
+        # (2.0.74-beta) ثبت تخلف طبقاتی در «پنل رویدادها» — مثل بقیه‌ی
+        # هشدارهای فعالِ روی دوربین، حتی اگر کاربر جاری به صفحه‌ی
+        # «ردیابی اشخاص» دسترسی نداشته باشد.
+        self._push_floor_violation_to_events(camera_name, face_name,
+                                             person_id, floor_name,
+                                             snapshot_bgr)
         # هشدار صوتی تخلف طبقاتی — کاملاً مستقل از صدای حریق و ورود به محدوده
         # (تک‌بوق؛ آژیر ممتد آتش جداست و با تنظیم خودش کنترل می‌شود)
         try:
@@ -5280,6 +5330,32 @@ class MainWindow(QMainWindow):
             page = getattr(self, "person_page", None)
             if page is not None and hasattr(page, "refresh_violations"):
                 page.refresh_violations()
+        except Exception:
+            pass
+
+    def _push_floor_violation_to_events(self, camera_name, face_name,
+                                        person_id, floor_name, snapshot_bgr):
+        """(2.0.74-beta) ثبت «تخلف تردد طبقاتی» در «پنل رویدادها»: ردیف
+        قرمز با هویت شخص (یا «شخص ناشناس»)، دوربین، طبقه‌ی غیرمجاز و
+        تصویر لحظه‌ی تخلف در صورت وجود. سقف ۳۰۰ ردیف مثل بقیه."""
+        try:
+            timestamp = time.strftime("%H:%M:%S")
+            who = face_name or person_id or "شخص ناشناس"
+            text = (f"[{timestamp}] {camera_name}\n"
+                    f"🚫 تخلف تردد طبقاتی: {who} ← {floor_name}")
+            item = QListWidgetItem(text)
+            item.setForeground(QColor("#e74c3c"))
+            try:
+                pixmap = (_bgr_to_pixmap(snapshot_bgr)
+                          if snapshot_bgr is not None else None)
+                if pixmap is not None and not pixmap.isNull():
+                    item.setIcon(QIcon(pixmap))
+            except Exception:
+                pass
+            self.events_panel_list.insertItem(0, item)
+            while self.events_panel_list.count() > 300:
+                self.events_panel_list.takeItem(
+                    self.events_panel_list.count() - 1)
         except Exception:
             pass
 

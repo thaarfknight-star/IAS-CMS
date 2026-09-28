@@ -10,8 +10,10 @@
   14=اعلام حریق، 17=چهره‌ها، 21=گزارش‌ها، 25=پلاک‌خوان،
   32=ردیابی اشخاص، 37=نقشه ساختمان، 41=کنترل PTZ، 42=تنظیمات، 48=عیب‌یابی
 """
+import hashlib
 import os
 import sys
+import tempfile
 
 HELP_PAGES = {
     "home": 6,
@@ -23,9 +25,31 @@ HELP_PAGES = {
     "map": 37,
     "ptz": 41,
     "settings": 42,
+    "faq": 48,
     "users": 50,
     "autoupdate": 51,
 }
+
+# (2.0.74-beta) کلیدهایی که در راهنمای فیلترشده‌ی کاربرِ محدود، بخش
+# دارند. «users» و «autoupdate» فقط برای ادمین‌اند و هیچ‌وقت در نسخه‌ی
+# فیلترشده نمی‌آیند (مسیر ادمین allowed_pages=None می‌گیرد و کل PDF را
+# باز می‌کند). «ptz» زیرمجموعه‌ی «home» حساب می‌شود.
+FILTERABLE_KEYS = ("home", "fire", "face", "reports", "plate", "person",
+                   "map", "ptz", "settings", "faq")
+
+# صفحه‌های عمومی که در راهنمای فیلترشده برای همه می‌آید:
+# 1=جلد، 3=آشنایی، 5=شروع سریع (نصب/فهرست/مدیریت کاربران/آپدیت خودکار
+# فقط برای ادمین است).
+_GENERIC_FILTER_PAGES = (1, 3, 5)
+
+
+def _section_range(page_key, total_pages):
+    """بازه‌ی صفحه‌های PDF (1-based، شامل هر دو سر) برای یک بخش راهنما؛
+    پایان بخش از روی شروع بخش بعدی حساب می‌شود تا با رشد راهنما نشکند."""
+    starts = sorted(set(HELP_PAGES.values()) | {total_pages + 1})
+    s = HELP_PAGES[page_key]
+    e = min(x for x in starts if x > s) - 1
+    return (s, min(e, total_pages))
 
 _MANUAL_REL = os.path.join("assets", "help", "user-manual.pdf")
 
@@ -46,12 +70,76 @@ def manual_path():
     return alt if os.path.exists(alt) else here
 
 
-def open_manual(page_key=None, parent=None):
+def _filtered_manual_pdf(allowed_pages):
+    """(2.0.74-beta) ساخت نسخه‌ی فیلترشده‌ی «راهنمای کاربری» فقط با
+    بخش‌هایی که کاربر به آن‌ها دسترسی دارد (allowed_pages: مجموعه‌ای از
+    کلیدهای ACCESS_PAGES).
+
+    خروجی: (مسیر فایل PDF فیلترشده، نگاشت کلید بخش -> شماره‌ی صفحه در
+    PDF فیلترشده). فایل در پوشه‌ی موقت سیستم با هشِ مجموعه‌ی دسترسی‌ها
+    کش می‌شود تا در هر نشست فقط یک‌بار ساخته شود.
+    """
+    from pypdf import PdfReader, PdfWriter
+    src = manual_path()
+    reader = PdfReader(src)
+    total = len(reader.pages)
+
+    wanted = []  # [(شماره‌ی صفحه‌ی اصلی, کلید بخش یا None)]
+    for p in _GENERIC_FILTER_PAGES:
+        if p <= total:
+            wanted.append((p, None))
+    for key in FILTERABLE_KEYS:
+        if key == "home":
+            ok = "home" in allowed_pages
+        elif key == "ptz":
+            ok = "home" in allowed_pages  # کنترل PTZ بخشی از صفحه‌ی اصلی است
+        elif key == "faq":
+            ok = True  # عیب‌یابی عمومی برای همه
+        else:
+            ok = key in allowed_pages
+        if not ok:
+            continue
+        s, e = _section_range(key, total)
+        owner = "home" if key == "ptz" else key
+        wanted.extend((p, owner) for p in range(s, e + 1))
+
+    seen = set()
+    ordered = []
+    for p, owner in sorted(wanted):
+        if p not in seen:
+            seen.add(p)
+            ordered.append((p, owner))
+
+    writer = PdfWriter()
+    remap = {}
+    for new_idx, (p, owner) in enumerate(ordered, start=1):
+        writer.add_page(reader.pages[p - 1])
+        if owner and owner not in remap:
+            remap[owner] = new_idx
+
+    fingerprint = hashlib.sha256(
+        (",".join(sorted(allowed_pages)) + "|" +
+         str(os.path.getmtime(src))).encode("utf-8")).hexdigest()[:12]
+    out = os.path.join(tempfile.gettempdir(),
+                       f"IAS-manual-{fingerprint}.pdf")
+    if not os.path.exists(out):
+        with open(out, "wb") as f:
+            writer.write(f)
+    return out, remap
+
+
+def open_manual(page_key=None, parent=None, allowed_pages=None):
     """باز کردن PDF راهنما روی صفحه‌ی مربوط به page_key.
 
     بیشتر PDFخوان‌ها (Edge/Chrome/Adobe/Sumatra) قطعه‌ی ‎#page=N‎ را
     می‌فهمند و مستقیم به همان صفحه می‌روند؛ اگر PDFخوان آن را نفهمید،
     همان اول PDF باز می‌شود (بدون خطا).
+
+    (2.0.74-beta) allowed_pages: مجموعه‌ی کلیدهای صفحه‌های مجاز کاربر
+    (از user_manager.ACCESS_PAGES). اگر None باشد یعنی دسترسی کامل
+    (ادمین/حالت توسعه) و کل PDF مثل قبل باز می‌شود؛ وگرنه نسخه‌ی
+    فیلترشده‌ی راهنما (فقط بخش‌های مجاز + صفحه‌های عمومی) ساخته و باز
+    می‌شود تا کاربر محدود به «کل راهنما» دسترسی نداشته باشد.
     """
     from PyQt6.QtCore import QUrl
     from PyQt6.QtGui import QDesktopServices
@@ -64,7 +152,21 @@ def open_manual(page_key=None, parent=None):
             "اگر از روی سورس اجرا می‌کنید، مطمئن شوید پوشه‌ی assets کنار "
             "main.py است.")
         return False
-    page = HELP_PAGES.get(page_key or "home", 2)
+    key = page_key or "home"
+    if allowed_pages is None:
+        page = HELP_PAGES.get(key, 2)
+    else:
+        # Fail-closed: اگر pypdf در دسترس نباشد، به‌جای لو رفتن کل
+        # راهنما، خطا می‌دهیم و چیزی باز نمی‌کنیم.
+        try:
+            path, remap = _filtered_manual_pdf(set(allowed_pages))
+        except Exception as e:
+            print(f"خطا در ساخت راهنمای فیلترشده: {e}")
+            QMessageBox.warning(
+                parent, "خطا در راهنما",
+                "ساخت نسخه‌ی راهنمای متناسب با دسترسی شما ممکن نشد.")
+            return False
+        page = remap.get(key, 1)
     url = QUrl.fromLocalFile(os.path.abspath(path))
     url.setFragment(f"page={page}")
     return QDesktopServices.openUrl(url)
