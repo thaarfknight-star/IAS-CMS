@@ -111,14 +111,26 @@ class DeviceDetectThread(QThread):
         return True
 
     def run(self):
-        # ۱) سریع‌ترین و دقیق‌ترین روش: API وب سازنده.
+        """نقطه‌ی ورود ترد؛ هر خطای پیش‌بینی‌نشده به‌جای مرگ
+        بی‌صدای ترد (که UI را روی «در حال تشخیص...» قفل می‌کرد)
+        به‌صورت failed_signal گزارش می‌شود.»"""
+        try:
+            self._run_detection()
+        except Exception as exc:
+            try:
+                self.failed_signal.emit(
+                    f"خطای غیرمنتظره هنگام تشخیص دستگاه: {exc}")
+            except Exception:
+                pass
+
+    def _run_detection(self):
         self.progress_signal.emit("در حال بررسی API وب دستگاه...")
         if not self._is_cancelled and self._try_http_api():
             return
-
+    
         if self._is_cancelled:
             return
-
+    
         # ۲) تلاش با ONVIF: تعداد پروفایل‌ها مستقیماً نوع دستگاه را مشخص می‌کند.
         self.progress_signal.emit("در حال تشخیص نوع دستگاه (ONVIF)...")
         for onvif_port in self._onvif_candidate_ports():
@@ -135,10 +147,10 @@ class DeviceDetectThread(QThread):
                         "camera", {"path": "", "full_url": channels[0]["url"]}
                     )
                 return
-
+    
         if self._is_cancelled:
             return
-
+    
         # ۳) بدون ONVIF: کانال ۱ را با الگوهای هر برند تست می‌کن؛ به محض یافتن
         # الگوی برند درست، چند کانال بعدی همان برند را هم تست کن تا مشخص شود
         # تک‌کاناله است یا چندکاناله.
@@ -149,10 +161,10 @@ class DeviceDetectThread(QThread):
             path_ch1 = self._probe_channel(brand, 1)
             if not path_ch1:
                 continue
-
+    
             self.progress_signal.emit("دستگاه یافت شد، در حال بررسی تعداد کانال...")
             url_ch1 = build_rtsp_url(self.ip, self.rtsp_port, self.user, self.pwd, path_ch1)
-
+    
             # رفع باگ «دوربین تکی به‌اشتباه NVR تشخیص داده می‌شود»: صرف باز
             # شدن URL کانال ۲ (یا بعدی) کافی نیست - خیلی از دوربین‌های تکی
             # پارامتر channel را نادیده می‌گیرند و همیشه همان یک فید را
@@ -171,13 +183,13 @@ class DeviceDetectThread(QThread):
                 if not frames_look_identical(url_ch1, url_ch_n):
                     is_multi_channel = True
                     break
-
+    
             if is_multi_channel:
                 self.detected_signal.emit("nvr", {"brand": brand, "onvif_port": ""})
             else:
                 self.detected_signal.emit("camera", {"path": path_ch1, "full_url": None})
             return
-
+    
         self.failed_signal.emit(
             "تشخیص خودکار نوع دستگاه ممکن نشد. لطفاً نام کاربری/رمز عبور را بررسی "
             "کنید یا دستگاه را به‌صورت دستی (دوربین تکی یا NVR) اضافه کنید."

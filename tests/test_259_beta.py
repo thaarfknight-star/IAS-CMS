@@ -19,12 +19,12 @@ import zipfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
-VERSION = "2.0.72-beta"
+VERSION = "2.0.73-beta"
 
 
 def test_version_bumped():
     with open(os.path.join(REPO, "version.txt"), encoding="utf-8") as f:
-        assert f.read().strip() == VERSION, "version.txt باید 2.0.72-beta باشد"
+        assert f.read().strip() == VERSION, "version.txt باید 2.0.73-beta باشد"
 
 
 # ------------------------------------------------- user_manager (بدون Qt) --

@@ -12,6 +12,20 @@ COMMON_CCTV_PORTS = [554, 80, 8000, 37777, 8899]
 MAX_SCAN_HOSTS = 65534
 
 
+# نگاشت ارقام فارسی/عربی به انگلیسی: کاربر با کیبورد فارسی ممکن است رنج را
+# با ارقام «۱۹۲.۱۶۸.۱» وارد کند؛ بدون این نرمال‌سازی، ipaddress خطای
+# «رنج نامعتبر» می‌داد و کاربر گمان می‌کرد اسکن خراب است.
+_FA_AR_DIGITS = str.maketrans(
+    "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
+    "01234567890123456789",
+)
+
+
+def _normalize_range_text(text):
+    """ارقام فارسی/عربی متن رنج را به انگلیسی تبدیل می‌کند."""
+    return (text or "").translate(_FA_AR_DIGITS)
+
+
 def _parse_single_range(part):
     """یک تکه رنج (بدون ویرگول) را به لیست IP تبدیل می‌کند."""
     part = part.strip()
@@ -95,6 +109,7 @@ def parse_ip_range(text):
     """
     if not text or not text.strip():
         raise ValueError("رنج IP خالی است.")
+    text = _normalize_range_text(text)
     ips = []
     seen = set()
     for chunk in text.split(","):
@@ -200,7 +215,13 @@ class NetworkScanThread(QThread):
         self._is_cancelled = True
 
     def run(self):
-        devices = scan_subnet(self.subnet,
-                              cancel_check=lambda: self._is_cancelled)
+        # رفع باگ: اگر scan_subnet به هر دلیل پیش‌بینی‌نشده‌ای اکسپشن بدهد،
+        # ترد نباید بی‌صدا بمیرد؛ در غیر این صورت دکمه‌ی «اسکن شبکه» برای
+        # همیشه غیرفعال می‌ماند و کاربر گمان می‌کند اسکن خراب است.
+        try:
+            devices = scan_subnet(self.subnet,
+                                  cancel_check=lambda: self._is_cancelled)
+        except Exception:
+            devices = []
         if not self._is_cancelled:
             self.finished_signal.emit(devices)

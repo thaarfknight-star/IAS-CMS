@@ -11,7 +11,7 @@ import re
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PDF = os.path.join(REPO, "assets", "help", "user-manual.pdf")
-VERSION = "2.0.72-beta"
+VERSION = "2.0.73-beta"
 
 
 def _pdf_bytes():
@@ -22,7 +22,7 @@ def _pdf_bytes():
 
 def test_version_bumped():
     with open(os.path.join(REPO, "version.txt"), encoding="utf-8") as f:
-        assert f.read().strip() == VERSION, "version.txt باید 2.0.72-beta باشد"
+        assert f.read().strip() == VERSION, "version.txt باید 2.0.73-beta باشد"
 
 
 def test_pdf_version_in_metadata():

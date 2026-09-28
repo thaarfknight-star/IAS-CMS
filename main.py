@@ -4093,6 +4093,11 @@ class MainWindow(QMainWindow):
         if " " not in text:
             return
         ip = text.split(" ")[0]
+        # رفع باگ: ردیف‌های موقت («در حال اسکن...» / «هیچ دستگاهی یافت نشد.»)
+        # IP واقعی ندارند؛ فقط IPهایی که واقعاً در اسکن پیدا شده‌اند پردازش
+        # می‌شوند.
+        if ip not in self._scan_ports_by_ip:
+            return
 
         if self.detect_thread is not None and self.detect_thread.isRunning():
             return  # یک تشخیص در حال اجراست؛ منتظر پایان آن بمانیم.
@@ -4122,6 +4127,8 @@ class MainWindow(QMainWindow):
             if " " not in text:
                 continue
             ip = text.split(" ")[0]
+            if ip not in self._scan_ports_by_ip:
+                continue
             if ip not in ips:
                 ips.append(ip)
 
@@ -5339,6 +5346,10 @@ class MainWindow(QMainWindow):
             return
         self.scan_result_list.clear()
         self.scan_result_list.addItem(f"در حال اسکن {ip_count} آدرس...")
+        # رفع باگ: حین اسکن، لیست نتایج غیرفعال می‌شود تا دابل‌کلیک روی ردیف
+        # موقت «در حال اسکن...» (که IP واقعی نیست) تشخیص دستگاه را با IP
+        # نامعتبر شروع نکند.
+        self.scan_result_list.setEnabled(False)
         self.scan_btn.setEnabled(False)
 
         self.network_scan_thread = NetworkScanThread(subnet, self)
@@ -5347,6 +5358,7 @@ class MainWindow(QMainWindow):
 
     def _on_network_scan_finished(self, devices):
         self.scan_btn.setEnabled(True)
+        self.scan_result_list.setEnabled(True)
         self.scan_result_list.clear()
         self._scan_ports_by_ip = {}
         if not devices:
