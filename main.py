@@ -3954,12 +3954,12 @@ class MainWindow(QMainWindow):
             # (2.0.68-beta) کنترل PTZ/لنز موتورایزد
             ptz_action = QAction("🎮 کنترل PTZ", self)
             ptz_action.triggered.connect(lambda: self.open_ptz_control(data["id"]))
-            # (2.0.81-beta) صحبت با دوربین (اتصال به بلندگوی دوربین)
-            talk_action = QAction("🔊 صحبت با دوربین", self)
-            talk_action.triggered.connect(lambda: self.open_talk_dialog(data["id"]))
+            # (2.0.82-beta) شنیدن صدای دوربین (ترک صوتی RTSP)
+            listen_action = QAction("🎧 شنیدن صدای دوربین", self)
+            listen_action.triggered.connect(lambda: self.open_listen_dialog(data["id"]))
             menu.addAction(edit_action)
             menu.addAction(ptz_action)
-            menu.addAction(talk_action)
+            menu.addAction(listen_action)
             menu.addAction(group_action)
             menu.addAction(delete_action)
         elif data["type"] == "group":
@@ -4243,14 +4243,14 @@ class MainWindow(QMainWindow):
         dlg = PTZDialog(cam, on_detected=_save_info, parent=self)
         dlg.exec()
 
-    # (2.0.81-beta) صحبت با دوربین (اتصال به بلندگوی دوربین) -----------------
-    def open_talk_dialog(self, cam_id):
-        """باز کردن دیالوگ «صحبت با دوربین» (بک‌چنل صوتی ONVIF)."""
-        from talk_dialog import TalkDialog
+    # (2.0.82-beta) شنیدن صدای دوربین (ترک صوتی RTSP) -----------------------
+    def open_listen_dialog(self, cam_id):
+        """باز کردن دیالوگ «شنیدن صدای دوربین» (دریافت صدای دوربین)."""
+        from listen_dialog import ListenDialog
         cam = self.camera_store.get_camera(cam_id)
         if not cam:
             return
-        dlg = TalkDialog(cam, parent=self)
+        dlg = ListenDialog(cam, parent=self)
         dlg.exec()
 
     def _autodetect_ptz_async(self, cam_id):
