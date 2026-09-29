@@ -943,6 +943,25 @@ class PlateStore:
                 "SELECT * FROM plate_watchlist WHERE plate_text=?",
                 (canonical,)).fetchall()]
 
+    def watchlist_map(self, plate_texts):
+        """(2.0.77-beta) وضعیت تحت‌نظر چند پلاک با یک کوئری:
+        {متن کانونیکال: {'black','white'}} — برای ستون «وضعیت» گزارش عبور."""
+        out = {}
+        texts = []
+        for t in (plate_texts or []):
+            c = normalize_plate_text(t or "")
+            if c and c not in texts:
+                texts.append(c)
+        for i in range(0, len(texts), 900):
+            chunk = texts[i:i + 900]
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT plate_text, kind FROM plate_watchlist WHERE plate_text IN (%s)"
+                    % ",".join("?" * len(chunk)), chunk).fetchall()
+            for r in rows:
+                out.setdefault(r["plate_text"], set()).add(r["kind"])
+        return out
+
     def count_watchlist(self, kind=None):
         with self._lock:
             if kind:
@@ -1169,6 +1188,18 @@ class PlateStore:
                     "بررسی‌شده" if r.get("acknowledged") else "بررسی‌نشده",
                 ])
         return len(rows)
+
+
+def plate_status_label(plate_text, is_defined, watch_kinds=None):
+    """(2.0.77-beta) برچسب یکدست «وضعیت» پلاک — اولویت: لیست سیاه >
+    لیست سفید > تعریف‌شده/تعریف‌نشده. watch_kinds مجموعه‌ای مثل
+    {'black'} از watchlist_map یا find_watchlist است."""
+    kinds = watch_kinds or set()
+    if "black" in kinds:
+        return "⛔ ورود غیرمجاز"
+    if "white" in kinds:
+        return "⭐ لیست سفید"
+    return "✅ تعریف‌شده" if is_defined else "⚠️ تعریف‌نشده"
 
 
 # نمونه‌ی سراسری (مثل report_store): همه‌ی بخش‌های برنامه از همین استفاده می‌کنند.

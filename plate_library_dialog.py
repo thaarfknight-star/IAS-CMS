@@ -35,7 +35,7 @@ from PyQt6.QtWidgets import (
 from plate_store import (
     plate_store, normalize_plate_text, prettify_plate, prettify_plate_html,
     validate_iranian_plate, validate_motorcycle_plate, validate_phone,
-    detect_plate_kind, plate_kind_label,
+    detect_plate_kind, plate_kind_label, plate_status_label,
     IRANIAN_PLATE_LETTERS, VEHICLE_TYPES, VEHICLE_COLORS,
 )
 
@@ -667,7 +667,11 @@ class PlateEventDetailDialog(QDialog):
         layout.addWidget(img_label)
 
         info = QFormLayout()
-        status = "✅ تعریف‌شده" if event.get("is_defined") else "⚠️ تعریف‌نشده"
+        # (2.0.77-beta) وضعیت واقعی: لیست سیاه/سفید بر تعریف‌شده/نشده مقدم است.
+        wl_kinds = {w.get("kind") for w in plate_store.find_watchlist(
+            event.get("plate_text", ""))}
+        status = plate_status_label(
+            event.get("plate_text"), event.get("is_defined"), wl_kinds)
         info.addRow("وضعیت:", QLabel(status))
         info.addRow("پلاک خوانده‌شده:",
                    QLabel(prettify_plate_html(event.get("plate_text", ""))
@@ -1833,6 +1837,10 @@ class PlateLibraryPage(QWidget):
         f = self._current_report_filters()
         rows = plate_store.query_events(**f)
         self.events_table.setRowCount(0)
+        # (2.0.77-beta) وضعیت تحت‌نظر همه‌ی پلاک‌ها با یک کوئری — برای
+        # ستون «وضعیت»: لیست سیاه > لیست سفید > تعریف‌شده/تعریف‌نشده.
+        wl_map = plate_store.watchlist_map(
+            [ev.get("plate_text") for ev in rows])
         for ev in rows:
             r = self.events_table.rowCount()
             self.events_table.insertRow(r)
@@ -1862,10 +1870,18 @@ class PlateLibraryPage(QWidget):
             kind_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self.events_table.setItem(r, 5, kind_item)
             self.events_table.setItem(r, 6, QTableWidgetItem(ev.get("owner_name", "") or "—"))
-            st_item = QTableWidgetItem(
-                "✅ تعریف‌شده" if ev.get("is_defined") else "⚠️ تعریف‌نشده")
-            st_item.setForeground(Qt.GlobalColor.darkGreen if ev.get("is_defined")
-                                  else Qt.GlobalColor.darkRed)
+            # (2.0.77-beta) وضعیت واقعی پلاک: اگر در لیست سیاه/سفید است همان
+            # نشان داده می‌شود، نه «تعریف‌نشده».
+            wl_kinds = wl_map.get(ev.get("plate_text") or "", set())
+            st_text = plate_status_label(
+                ev.get("plate_text"), ev.get("is_defined"), wl_kinds)
+            st_item = QTableWidgetItem(st_text)
+            if st_text.startswith("✅"):
+                st_item.setForeground(Qt.GlobalColor.darkGreen)
+            elif st_text.startswith("⭐"):
+                st_item.setForeground(Qt.GlobalColor.darkYellow)
+            else:
+                st_item.setForeground(Qt.GlobalColor.darkRed)
             self.events_table.setItem(r, 7, st_item)
             conf = ev.get("confidence") or 0
             self.events_table.setItem(r, 8, QTableWidgetItem(f"{conf:.0%}"))

@@ -11,7 +11,7 @@ import re
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PDF = os.path.join(REPO, "assets", "help", "user-manual.pdf")
-VERSION = "2.0.76-beta"
+VERSION = "2.0.77-beta"
 
 
 def _pdf_bytes():
