@@ -617,23 +617,71 @@ class PlateOCR:
                 self._hezar_session = None
             return self._hezar_session
 
+    def _ocr_raw_line(self, sess, crop):
+        """اجرای خام مدل هزار روی یک کراپ تک‌سطری.
+        خروجی: (متن خام، اطمینان)."""
+        x = _hezar_preprocess(crop)
+        logits = sess.run(None, {"pixel_values": x})[0]  # (T,1,45)
+        ids = _hezar_ctc_decode(logits)[0]
+        text = "".join(_HEZAR_ID2LABEL[i] for i in ids)
+        text = _reverse_string_digits(text)
+        try:
+            conf = float(np.exp(logits).max(axis=-1)[:, 0].mean())
+        except Exception:
+            conf = 0.5
+        return text, conf
+
     def _read_hezar(self, crop):
         sess = self._get_hezar()
         if sess is None or cv2 is None:
             return []
         try:
-            x = _hezar_preprocess(crop)
-            logits = sess.run(None, {"pixel_values": x})[0]  # (T,1,45)
-            ids = _hezar_ctc_decode(logits)[0]
-            text = "".join(_HEZAR_ID2LABEL[i] for i in ids)
-            text = _reverse_string_digits(text)
-            try:
-                conf = float(np.exp(logits).max(axis=-1)[:, 0].mean())
-            except Exception:
-                conf = 0.5
+            text, conf = self._ocr_raw_line(sess, crop)
             c = canonicalize_ocr_text(text)
             if c:
                 return [(c, conf, "hezar-crnn-fa")]
+            return []
+        except Exception:
+            return []
+
+    def _read_hezar_tworow(self, crop):
+        """خوانش پلاک دوردیفه (موتورسیکلت ایرانی).
+
+        مدل هزار تک‌سطری آموزش دیده و ورودی‌اش همیشه به ‎(384, 32)‎
+        تغییراندازه می‌دهد؛ اگر کراپ مربعی پلاک موتور یک‌جا داده شود،
+        دو ردیف در هم له می‌شوند و چیزی خوانده نمی‌شود. پس کراپ از وسط
+        نصف می‌شود و هر نیمه جدا OCR می‌شود (هر نیمه برای مدل شبیه یک
+        پلاک تک‌سطری است). خروجی: ۸ رقم (۳ رقم ردیف بالا + ۵ رقم پایین).
+        """
+        sess = self._get_hezar()
+        if sess is None or cv2 is None:
+            return []
+        try:
+            h, w = crop.shape[:2]
+            if h < 12 or w < 12:
+                return []
+            mid = h // 2
+            pad = max(2, h // 10)
+            top_img = crop[0:mid + pad]
+            bot_img = crop[mid - pad:h]
+            t_text, t_conf = self._ocr_raw_line(sess, top_img)
+            b_text, b_conf = self._ocr_raw_line(sess, bot_img)
+
+            def _digits(s):
+                s = normalize_plate_text(s or "")
+                s = _correct_confusions(s)
+                return "".join(ch for ch in s if ch.isdigit())
+
+            t, b = _digits(t_text), _digits(b_text)
+            # ترتیب فیزیکی: بالا ۳ رقم، پایین ۵ رقم؛ اگر جابه‌جا خوانده
+            # شد (نیمه‌ها قاطی شدند) اصلاح شود
+            if len(t) == 5 and len(b) == 3:
+                t, b = b, t
+            if len(t) != 3 or len(b) != 5:
+                return []
+            c = canonicalize_ocr_text(t + b)
+            if c:
+                return [(c, min(t_conf, b_conf), "hezar-crnn-fa-2row")]
             return []
         except Exception:
             return []
@@ -669,6 +717,15 @@ class PlateOCR:
         # موتور هزار (CRNN مخصوص پلاک فارسی)؛ کراپ خام (بدون حاشیه/CLAHE)
         # می‌گیرد چون دقیقاً با همان پیش‌پردازش آموزش دیده است
         candidates.extend(self._read_hezar(crop_bgr))
+        # (2.0.79-beta) پلاک دوردیفه‌ی موتورسیکلت: کراپ مربعی‌شکل با مدل
+        # تک‌سطری له می‌شود و خوانده نمی‌شود؛ اگر نسبت ارتفاع به عرض
+        # مربعی است (پلاک خودرو کشیده است)، خوانش دوردیفه هم امتحان شود
+        try:
+            _h, _w = crop_bgr.shape[:2]
+            if _w > 0 and _h / _w > 0.45:
+                candidates.extend(self._read_hezar_tworow(crop_bgr))
+        except Exception:
+            pass
         # حذف تکراری‌ها (نگه‌داشتن بالاترین اطمینان برای هر متن)
         best = {}
         for text, conf, engine in candidates:
