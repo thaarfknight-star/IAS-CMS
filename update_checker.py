@@ -39,6 +39,22 @@ def is_newer(remote: str, current: str) -> bool:
     return parse_version(remote) > parse_version(current)
 
 
+def extract_version(tag: str) -> str:
+    """استخراج «X.Y.Z...» از تگ ریلیز؛ تگ‌های دستی مثل «IAS-Viewer-2.0.75»
+    یا «v2.0.75-beta» هم پشتیبانی می‌شوند (2.0.76-beta)."""
+    s = (tag or "").strip().lstrip("vV")
+    m = re.search(r"(\d+\.\d+\.\d+\S*)", s)
+    return m.group(1) if m else s
+
+
+def _asset_version(name: str) -> str:
+    """نسخه از روی نام فایل آپدیت، مثلاً
+    «IAS-CMS-Update-v2.0.75-beta.zip» → «2.0.75-beta»."""
+    m = re.search(r"ias-cms-update-v(.+?)\.zip\s*$",
+                  (name or "").strip(), re.IGNORECASE)
+    return m.group(1).strip() if m else ""
+
+
 def _api_get(url: str, timeout: int = 12):
     req = urllib.request.Request(url, headers={
         "User-Agent": _USER_AGENT,
@@ -58,26 +74,29 @@ def check_for_updates(current_version: str, timeout: int = 12):
         data = _api_get(RELEASES_API, timeout=timeout)
         if not isinstance(data, list):
             return None
-        # گیت‌هاب جدیدترین را اول می‌دهد؛ draftها رد، اولین Release جدیدترِ
-        # دارای فایل آپدیت برنده است.
+        # گیت‌هاب جدیدترین را اول می‌دهد؛ draftها رد می‌شوند. نسخه از روی
+        # نام فایل آپدیت استخراج می‌شود (دقیق‌تر) و اگر نشد از روی تگ —
+        # تا تگ‌های دستی مثل «IAS-Viewer-2.0.75» هم دیده شوند (2.0.76-beta).
         for rel in data:
             if not isinstance(rel, dict) or rel.get("draft"):
                 continue
-            tag = str(rel.get("tag_name", "")).strip().lstrip("vV")
-            if not tag or not is_newer(tag, current_version):
-                continue
-            # asset فایل آپدیت را پیدا کن
-            want = f"IAS-CMS-Update-v{tag}.zip".lower()
+            tag_name = str(rel.get("tag_name", "") or "").strip()
             dl_url = None
+            asset_name = ""
             for asset in rel.get("assets", []) or []:
-                name = str(asset.get("name", "")).lower()
-                if name == want or (name.startswith("ias-cms-update-v") and name.endswith(".zip")):
+                name = str(asset.get("name", "") or "")
+                nl = name.lower()
+                if nl.startswith("ias-cms-update-v") and nl.endswith(".zip"):
                     dl_url = asset.get("browser_download_url")
+                    asset_name = name
                     break
             if not dl_url:
                 continue  # این Release فایل آپدیت ندارد → بعدی
+            ver = _asset_version(asset_name) or extract_version(tag_name)
+            if not ver or not is_newer(ver, current_version):
+                continue
             return {
-                "version": tag,
+                "version": ver,
                 "download_url": dl_url,
                 "notes": str(rel.get("body", "") or "")[:2000],
                 "published_at": str(rel.get("published_at", "") or ""),

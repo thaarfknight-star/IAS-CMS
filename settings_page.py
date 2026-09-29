@@ -422,7 +422,7 @@ class SettingsPage(QWidget):
         desc.setWordWrap(True)
         ulay.addWidget(desc)
         # (2.0.72-beta) بررسی خودکار آپدیت جدید از GitHub Releases
-        self.auto_update_check = QCheckBox("🔔 بررسی خودکار آپدیت جدید (در شروع برنامه و هر ۶ ساعت)")
+        self.auto_update_check = QCheckBox("🔔 بررسی خودکار آپدیت جدید (در شروع برنامه و هر ۱ ساعت)")
         try:
             self.auto_update_check.setChecked(app_settings.get_auto_update_check())
         except Exception:

@@ -4560,11 +4560,11 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------- آپدیت خودکار --
     def _schedule_update_checks(self):
-        """بررسی خودکار: ۱۰ ثانیه بعد از بالا آمدن + هر ۶ ساعت."""
+        """بررسی خودکار: ۱۰ ثانیه بعد از بالا آمدن + هر ۱ ساعت."""
         try:
             QTimer.singleShot(10000, self._async_update_check)
             self._update_timer = QTimer(self)
-            self._update_timer.setInterval(6 * 3600 * 1000)
+            self._update_timer.setInterval(3600 * 1000)
             self._update_timer.timeout.connect(self._async_update_check)
             self._update_timer.start()
         except Exception:

@@ -19,7 +19,7 @@ import zipfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
-VERSION = "2.0.75-beta"
+VERSION = "2.0.76-beta"
 
 
 def test_version_bumped():
