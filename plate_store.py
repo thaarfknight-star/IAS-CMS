@@ -64,7 +64,8 @@ def prettify_plate(canonical):
     پلاک فیزیکی (از چپ‌به‌راست: ۲ رقم، حرف، ۳ رقم، کد ایران).
     - پلاک خودروی ایرانی: «۴۰ ۶۲۹ ن ۴۳» (logical؛ در UI راست‌به‌چپ به‌صورت
       «۴۳ ن ۶۲۹ ۴۰» دیده می‌شود، دقیقاً مثل پلاک واقعی)
-    - پلاک موتورسیکلت ایرانی (۳ رقم بالا + ۱ رقم و حرف پایین): «۱۲۳ ۴ب»
+    - پلاک موتورسیکلت ایرانی (۳ رقم ردیف بالا + ۵ رقم ردیف پایین؛ پلاک موتور
+      حرف ندارد): «۱۲۳ ۴۵۶۷۸»
     در غیر این صورت همان متن را برمی‌گرداند."""
     if not canonical:
         return ""
@@ -77,11 +78,11 @@ def prettify_plate(canonical):
         # دقیقاً مثل پلاک فیزیکی دیده شود (کد ایران سمت راست).
         return (f"{code.translate(fa)} {d2.translate(fa)} "
                 f"{letter} {d1.translate(fa)}")
-    m2 = re.match(r"^([0-9]{3})([0-9])([^0-9]{1,2})$", canonical)
+    m2 = re.match(r"^([0-9]{3})([0-9]{5})$", canonical)
     if m2:
-        top, bottom_digit, letter = m2.groups()
+        top, bottom = m2.groups()
         return (f"{top.translate(fa)} "
-                f"{bottom_digit.translate(fa)}{letter}")
+                f"{bottom.translate(fa)}")
     return canonical
 
 
@@ -157,8 +158,8 @@ def validate_phone(phone):
 # نوع پلاک: خودرو / موتورسیکلت / سایر
 # --------------------------------------------------------------------------
 
-# پلاک موتورسیکلت ایرانی: ۳ رقم در ردیف بالا + ۱ رقم و ۱ حرف در ردیف پایین
-# فرم کانونیکال: «1234ب» (سه رقم بالا، یک رقم پایین، حرف)
+# پلاک موتورسیکلت ایرانی: ۳ رقم در ردیف بالا + ۵ رقم در ردیف پایین
+# (پلاک موتور حرف ندارد). فرم کانونیکال: «12345678» (۸ رقم).
 PLATE_KIND_LABELS = {
     "car": "خودرو",
     "motorcycle": "موتورسیکلت",
@@ -173,7 +174,7 @@ def detect_plate_kind(canonical):
     c = (canonical or "").strip()
     if re.match(r"^[0-9]{2}[^0-9]{1,2}[0-9]{5}$", c):
         return "car"
-    if re.match(r"^[0-9]{4}[^0-9]{1,2}$", c):
+    if re.match(r"^[0-9]{8}$", c):
         return "motorcycle"
     return "other"
 
@@ -183,17 +184,16 @@ def plate_kind_label(kind):
     return PLATE_KIND_LABELS.get(kind or "other", "سایر")
 
 
-def validate_motorcycle_plate(d_top, d_bottom, letter):
+def validate_motorcycle_plate(d_top, d_bottom):
     """اعتبارسنجی بخش‌های پلاک موتورسیکلت ایرانی
-    (۳ رقم بالا + ۱ رقم پایین + حرف). خروجی: (معتبر؟, پیام خطا, کانونیکال)."""
+    (۳ رقم ردیف بالا + ۵ رقم ردیف پایین؛ پلاک موتور حرف ندارد).
+    خروجی: (معتبر؟, پیام خطا, کانونیکال)."""
     import re
     if not re.match(r"^[0-9۰-۹٠-٩]{3}$", d_top or ""):
-        return False, "سه رقم بالای پلاک موتور باید دقیقاً ۳ رقم باشد.", ""
-    if not re.match(r"^[0-9۰-۹٠-٩]{1}$", d_bottom or ""):
-        return False, "رقم پایین پلاک موتور باید دقیقاً ۱ رقم باشد.", ""
-    if not letter or letter not in IRANIAN_PLATE_LETTERS:
-        return False, "حرف پلاک معتبر نیست.", ""
-    canonical = normalize_plate_text(d_top + d_bottom + letter)
+        return False, "سه رقم ردیف بالای پلاک موتور باید دقیقاً ۳ رقم باشد.", ""
+    if not re.match(r"^[0-9۰-۹٠-٩]{5}$", d_bottom or ""):
+        return False, "پنج رقم ردیف پایین پلاک موتور باید دقیقاً ۵ رقم باشد.", ""
+    canonical = normalize_plate_text(d_top + d_bottom)
     return True, "", canonical
 
 

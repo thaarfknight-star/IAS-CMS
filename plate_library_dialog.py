@@ -155,7 +155,7 @@ class PlateSegmentInput(QWidget):
         seg_row.addStretch()
         ir_form.addRow("شماره پلاک:", seg_row)
         self.kind_tabs.addTab(ir_widget, "🚗 پلاک خودرو")
-        # --- پلاک موتورسیکلت ایرانی (بخش‌بندی‌شده: ۳ رقم بالا + ۱ رقم و حرف پایین)
+        # --- پلاک موتورسیکلت ایرانی (۳ رقم ردیف بالا + ۵ رقم ردیف پایین؛ بدون حرف)
         mc_widget = QWidget()
         mc_form = QFormLayout(mc_widget)
         mc_row = QHBoxLayout()
@@ -165,21 +165,17 @@ class PlateSegmentInput(QWidget):
         self.mc_top_input.setFixedWidth(70)
         self.mc_top_input.setPlaceholderText("۱۲۳")
         self.mc_bottom_digit = QLineEdit()
-        self.mc_bottom_digit.setMaxLength(1)
-        self.mc_bottom_digit.setFixedWidth(50)
-        self.mc_bottom_digit.setPlaceholderText("۴")
-        self.mc_letter_combo = QComboBox()
-        self.mc_letter_combo.addItems(IRANIAN_PLATE_LETTERS)
-        self.mc_letter_combo.setFixedWidth(70)
-        # ترتیب راست‌به‌چپ: ردیف بالا (۳ رقم) | ردیف پایین (۱ رقم + حرف)
+        self.mc_bottom_digit.setMaxLength(5)
+        self.mc_bottom_digit.setFixedWidth(90)
+        self.mc_bottom_digit.setPlaceholderText("۱۷۶۹۴")
+        # ترتیب راست‌به‌چپ: ردیف بالا (۳ رقم) | ردیف پایین (۵ رقم)
         mc_row.addWidget(QLabel("ردیف بالا:"))
         mc_row.addWidget(self.mc_top_input)
         mc_row.addWidget(QLabel("ردیف پایین:"))
         mc_row.addWidget(self.mc_bottom_digit)
-        mc_row.addWidget(self.mc_letter_combo)
         mc_row.addStretch()
         mc_form.addRow("شماره پلاک:", mc_row)
-        mc_hint = QLabel("قالب پلاک موتورسیکلت: ۳ رقم در ردیف بالا، ۱ رقم و ۱ حرف در ردیف پایین")
+        mc_hint = QLabel("قالب پلاک موتورسیکلت ایرانی: ۳ رقم در ردیف بالا و ۵ رقم در ردیف پایین (پلاک موتور حرف ندارد)")
         mc_hint.setStyleSheet("color: #9e9e9e; font-size: 11px;")
         mc_hint.setWordWrap(True)
         mc_form.addRow("", mc_hint)
@@ -203,7 +199,6 @@ class PlateSegmentInput(QWidget):
                   self.mc_top_input, self.mc_bottom_digit):
             w.textChanged.connect(self._on_changed)
         self.letter_combo.currentIndexChanged.connect(self._on_changed)
-        self.mc_letter_combo.currentIndexChanged.connect(self._on_changed)
         self.other_input.textChanged.connect(self._on_changed)
         self.kind_tabs.currentChanged.connect(self._on_changed)
         self.refresh_preview()
@@ -234,8 +229,7 @@ class PlateSegmentInput(QWidget):
         if tab == TAB_MOTORCYCLE:
             ok, err, canon = validate_motorcycle_plate(
                 self.mc_top_input.text().strip(),
-                self.mc_bottom_digit.text().strip(),
-                self.mc_letter_combo.currentText())
+                self.mc_bottom_digit.text().strip())
             return (canon, "motorcycle", err) if ok else ("", "motorcycle", err)
         canon = normalize_plate_text(self.other_input.text())
         if len(canon) < 3:
@@ -261,17 +255,11 @@ class PlateSegmentInput(QWidget):
             self.code_input.setText(code)
             self.kind_tabs.setCurrentIndex(TAB_CAR)
             return
-        mm = re.match(r"^([0-9]{3})([0-9])([^0-9]{1,2})$", canon)
+        mm = re.match(r"^([0-9]{8})$", canon)
         if mm:
-            top, bottom_digit, letter = mm.groups()
-            li = self.mc_letter_combo.findText(letter)
-            if li < 0:
-                self.other_input.setText(canon)
-                self.kind_tabs.setCurrentIndex(TAB_OTHER)
-                return
+            top, bottom = mm.group(1)[:3], mm.group(1)[3:]
             self.mc_top_input.setText(top)
-            self.mc_bottom_digit.setText(bottom_digit)
-            self.mc_letter_combo.setCurrentIndex(li)
+            self.mc_bottom_digit.setText(bottom)
             self.kind_tabs.setCurrentIndex(TAB_MOTORCYCLE)
         else:
             self.other_input.setText(canon)
@@ -283,14 +271,10 @@ class PlateSegmentInput(QWidget):
         canon = p.get("plate_text", "")
         kind = p.get("plate_type") or detect_plate_kind(canon)
         m = re.match(r"^([0-9]{2})([^0-9]{1,2})([0-9]{3})([0-9]{2})$", canon)
-        mm = re.match(r"^([0-9]{3})([0-9])([^0-9]{1,2})$", canon)
+        mm = re.match(r"^([0-9]{8})$", canon)
         if kind == "motorcycle" and mm:
-            top, bottom_digit, letter = mm.groups()
-            self.mc_top_input.setText(top)
-            self.mc_bottom_digit.setText(bottom_digit)
-            li = self.mc_letter_combo.findText(letter)
-            if li >= 0:
-                self.mc_letter_combo.setCurrentIndex(li)
+            self.mc_top_input.setText(mm.group(1)[:3])
+            self.mc_bottom_digit.setText(mm.group(1)[3:])
             self.kind_tabs.setCurrentIndex(TAB_MOTORCYCLE)
         elif m:
             d1, letter, d2, code = m.groups()
@@ -332,7 +316,6 @@ class PlateFormDialog(QDialog):
         self.code_input = self.plate_input.code_input
         self.mc_top_input = self.plate_input.mc_top_input
         self.mc_bottom_digit = self.plate_input.mc_bottom_digit
-        self.mc_letter_combo = self.plate_input.mc_letter_combo
         self.other_input = self.plate_input.other_input
         self.preview_label = self.plate_input.preview_label
         self.kind_tabs.currentChanged.connect(self._on_kind_tab_changed)
