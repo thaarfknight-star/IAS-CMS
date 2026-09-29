@@ -31,6 +31,11 @@ USERS_FILE = os.path.join(_DATA_DIR, "users.json")
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "Aa@@Sorena"
 
+# کاربر تست پیش‌فرض (درخواست طه، 2026-09-29) — فقط صفحه‌ی اصلی و تنظیمات.
+DEFAULT_TEST_USER = "Test"
+DEFAULT_TEST_PASS = "123456"
+TEST_USER_PAGES = ("home", "settings")
+
 _PBKDF2_ITERATIONS = 200_000
 _SALT_BYTES = 16
 
@@ -138,6 +143,34 @@ class UserManager:
         self.users[DEFAULT_ADMIN_USER] = rec
         self.save()
         return True
+
+    def ensure_test_user(self):
+        """اطمینان از وجود کاربر Test با دسترسی فقط به صفحه‌ی اصلی و تنظیمات.
+
+        اگر کاربر وجود نداشت با رمز پیش‌فرض (123456) ساخته می‌شود؛ اگر وجود
+        داشت رمزش دست نمی‌خورد ولی سطح دسترسی‌اش همیشه به home+settings
+        محدود می‌ماند (is_admin هم False می‌شود).
+        """
+        rec = self.users.get(DEFAULT_TEST_USER)
+        changed = False
+        if rec is None:
+            rec = _blank_user(DEFAULT_TEST_USER, is_admin=False)
+            salt, h = hash_password(DEFAULT_TEST_PASS)
+            rec["salt"] = salt
+            rec["pass_hash"] = h
+            rec["must_change_password"] = False
+            self.users[DEFAULT_TEST_USER] = rec
+            changed = True
+        want_perms = {k: (k in TEST_USER_PAGES) for k in PAGE_KEYS}
+        if rec.get("permissions") != want_perms:
+            rec["permissions"] = want_perms
+            changed = True
+        if rec.get("is_admin"):
+            rec["is_admin"] = False
+            changed = True
+        if changed:
+            self.save()
+        return changed
 
     def admins(self):
         return [u for u in self.users.values() if u.get("is_admin")]
