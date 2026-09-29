@@ -141,17 +141,23 @@ def _sine_ulaw_frames(freq=440.0, rate=8000, n_frames=40, amp=10000):
 
 
 class FakeRTSPAudioServer(threading.Thread):
-    """سرور RTSP حداقلی: چالش Digest در DESCRIBE، بعد استریم صوتی."""
+    """سرور RTSP حداقلی: چالش Digest در DESCRIBE، بعد استریم صوتی.
 
-    def __init__(self, with_audio=True):
+    اگر tcp_reject_461=True باشد، SETUP با Transport روی TCP را با کد ۴۶۱
+    رد می‌کند (شبیه دوربین طه) و فقط UDP را قبول می‌کند.
+    """
+
+    def __init__(self, with_audio=True, tcp_reject_461=False):
         super().__init__(daemon=True)
         self.with_audio = with_audio
+        self.tcp_reject_461 = tcp_reject_461
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(("127.0.0.1", 0))
         self.port = self.sock.getsockname()[1]
         self.sock.listen(1)
         self.frames = _sine_ulaw_frames()
+        self.udp_client_addr = None  # (ip, rtp_port) برای حالت UDP
 
     def _read_request(self, conn):
         data = b""
@@ -163,7 +169,7 @@ class FakeRTSPAudioServer(threading.Thread):
         head = data.decode("iso-8859-1")
         lines = head.split("\r\n")
         if not lines or " " not in lines[0]:
-            return "", "", "1", False
+            return "", "", "1", False, {}
         method, target = lines[0].split(" ", 2)[:2]
         headers = {}
         cseq = "1"
@@ -176,7 +182,7 @@ class FakeRTSPAudioServer(threading.Thread):
                 cseq = ln.split(":", 1)[1].strip()
             if ln.lower().startswith("authorization:"):
                 authed = True
-        return method, target, cseq, authed
+        return method, target, cseq, authed, headers
 
     def _respond(self, conn, cseq, code, msg, headers=None, body=b""):
         headers = headers or {}
@@ -194,7 +200,7 @@ class FakeRTSPAudioServer(threading.Thread):
             session = "12345678"
             while True:
                 try:
-                    method, target, cseq, authed = self._read_request(conn)
+                    method, target, cseq, authed, headers = self._read_request(conn)
                 except OSError:
                     break
                 if not method:
@@ -218,20 +224,49 @@ class FakeRTSPAudioServer(threading.Thread):
                                   {"Content-Type": "application/sdp"},
                                   sdp.encode())
                 elif method == "SETUP":
-                    self._respond(
-                        conn, cseq, 200, "OK",
-                        {"Session": session,
-                         "Transport": "RTP/AVP/TCP;unicast;interleaved=0-1"})
+                    transport_req = headers.get("transport", "")
+                    if self.tcp_reject_461 and "TCP" in transport_req.upper():
+                        self._respond(conn, cseq, 461, "Unsupported Transport")
+                        continue
+                    if "client_port=" in transport_req:
+                        import re as _re
+                        m = _re.search(r"client_port=(\d+)-(\d+)", transport_req)
+                        rtp_port = int(m.group(1))
+                        peer_ip = conn.getpeername()[0]
+                        self.udp_client_addr = (peer_ip, rtp_port)
+                        self._respond(
+                            conn, cseq, 200, "OK",
+                            {"Session": session,
+                             "Transport": transport_req +
+                             f";server_port={rtp_port + 10}-"
+                             f"{rtp_port + 11}"})
+                    else:
+                        self._respond(
+                            conn, cseq, 200, "OK",
+                            {"Session": session,
+                             "Transport": "RTP/AVP/TCP;unicast;interleaved=0-1"})
                 elif method == "PLAY":
                     self._respond(conn, cseq, 200, "OK",
                                   {"Session": session, "Range": "npt=0-"})
                     seq, ts, ssrc = 100, 2000, 4242
+                    udp_sock = None
+                    if self.udp_client_addr:
+                        udp_sock = socket.socket(socket.AF_INET,
+                                                 socket.SOCK_DGRAM)
                     for payload in self.frames:
                         rtp = build_rtp_packet(seq, ts, ssrc, payload)
-                        conn.sendall(b"$" + bytes((0,)) +
-                                     struct.pack(">H", len(rtp)) + rtp)
+                        if udp_sock:
+                            try:
+                                udp_sock.sendto(rtp, self.udp_client_addr)
+                            except OSError:
+                                pass  # سندباکس ممکن است UDP را ببندد
+                        else:
+                            conn.sendall(b"$" + bytes((0,)) +
+                                         struct.pack(">H", len(rtp)) + rtp)
                         seq = (seq + 1) & 0xFFFF
                         ts = (ts + 160) & 0xFFFFFFFF
+                    if udp_sock:
+                        udp_sock.close()
                     # اتصال را کمی باز نگه می‌داریم تا کلاینت بخواند
                     try:
                         self._read_request(conn)  # TEARDOWN
@@ -287,3 +322,58 @@ def test_e2e_no_audio_track_raises():
     finally:
         client.close()
         srv.join(timeout=10)
+
+
+def test_e2e_fallback_to_udp_after_461():
+    """دوربین ۴۶۱ می‌دهد ← کلاینت باید به UDP سوییچ کند (هندشیک)."""
+    srv = FakeRTSPAudioServer(with_audio=True, tcp_reject_461=True)
+    srv.start()
+    client = RTSPAudioClient(f"rtsp://127.0.0.1:{srv.port}/live",
+                             "admin", "1234", timeout=10)
+    try:
+        info = client.connect()
+        assert client._mode == "udp", f"حالت موردانتظار udp بود: {client._mode}"
+        assert info["codec"] == "PCMU"
+        # سرور باید SETUP با client_port دیده باشد
+        assert srv.udp_client_addr is not None, \
+            "کلاینت SETUP با client_port نفرستاد"
+        assert srv.udp_client_addr[1] % 2 == 0, "پورت RTP باید زوج باشد"
+        assert client.session_id, "Session تنظیم نشد"
+    finally:
+        client.close()
+        srv.join(timeout=10)
+
+
+class _FakeUDPSock:
+    """استاب سوکت UDP برای تست مسیر خواندن بدون شبکه‌ی واقعی."""
+
+    def __init__(self, datagrams):
+        self._datagrams = list(datagrams)
+
+    def recvfrom(self, _n):
+        if not self._datagrams:
+            raise TimeoutError("timed out")
+        return self._datagrams.pop(0), ("127.0.0.1", 6000)
+
+    def close(self):
+        pass
+
+
+def test_udp_read_path_parses_datagrams():
+    """خواندن RTP از دیتاگرام UDP: رد PT نامرتبط و بسته‌ی خراب."""
+    frames = _sine_ulaw_frames()
+    wrong_pt = bytearray(build_rtp_packet(2, 3, 3, frames[1]))
+    wrong_pt[1] = 0x80 | 96  # PT=96 به‌جای 0
+    datagrams = [build_rtp_packet(1, 2, 3, frames[0]),  # معتبر
+                 b"\x80",  # خراب — رد می‌شود
+                 bytes(wrong_pt),  # PT اشتباه — رد می‌شود
+                 build_rtp_packet(3, 4, 3, frames[2])]  # معتبر
+    client = RTSPAudioClient("rtsp://127.0.0.1:9/x", "u", "p", timeout=5)
+    client._mode = "udp"
+    client.audio = {"codec": "PCMU", "clock": 8000, "pt": 0,
+                    "control_url": "rtsp://127.0.0.1:9/x/audio"}
+    client._udp_sock = _FakeUDPSock(datagrams)
+    codec, clock, p1 = client.read_audio_frame()
+    assert codec == "PCMU" and clock == 8000 and p1 == frames[0]
+    codec, clock, p2 = client.read_audio_frame()
+    assert p2 == frames[2]

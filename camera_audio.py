@@ -18,6 +18,7 @@ QAudioSink نوشته می‌شوند. ولوم/میوت با QAudioSink.setVolu
 NVR)؛ اگر ترک صوتی نباشد پیام روشن نمایش داده می‌شود.
 """
 
+import re
 import socket
 import struct
 import time
@@ -237,6 +238,9 @@ class RTSPAudioClient:
         self.session_id = ""
         self._auth_header = ""
         self.audio = None  # dict ترک صوتی پس از connect
+        self._mode = "tcp"  # یا "udp" پس از fallback
+        self._rtp_channel = 0
+        self._udp_sock = None
 
     # -- سطح پایین ----------------------------------------------------------
     def _read_exactly(self, n: int) -> bytes:
@@ -309,6 +313,9 @@ class RTSPAudioClient:
         except OSError as e:
             raise RTSPError(f"اتصال به {self.host}:{self.port} نشد: {e}")
         self.sock.settimeout(self.timeout)
+        self._mode = "tcp"
+        self._rtp_channel = 0
+        self._udp_sock = None
 
         code, _, _ = self._request("OPTIONS")
         if code != 200:
@@ -322,30 +329,86 @@ class RTSPAudioClient:
         audio = parse_sdp_audio(sdp, self.url)
         if not audio:
             raise RTSPError("no_audio_track")
+        self.audio = audio
 
+        # بعضی دوربین‌ها RTP-over-TCP را قبول ندارند (خطای ۴۶۱)؛
+        # به‌ترتیب امتحان می‌کنیم: TCP/interleaved ← TCP ← UDP
+        transports = [
+            ("tcp", "RTP/AVP/TCP;unicast;interleaved=0-1"),
+            ("tcp", "RTP/AVP/TCP;unicast"),
+        ]
+        udp_sock, udp_port = self._open_udp_pair()
+        if udp_sock is not None:
+            transports.append(
+                ("udp", f"RTP/AVP;unicast;client_port={udp_port}-{udp_port + 1}"))
+        last_err = None
+        for mode, transport in transports:
+            try:
+                self._setup_audio_track(transport, mode, udp_sock, udp_port)
+                self._mode = mode
+                break
+            except RTSPError as e:
+                last_err = e
+                # فقط اگر مشکل Transport بود ادامه می‌دهیم
+                if "(کد 461)" not in str(e) and "(کد 4" not in str(e):
+                    raise
+        else:
+            raise last_err
+        if self._mode == "tcp" and udp_sock is not None:
+            try:
+                udp_sock.close()
+            except Exception:
+                pass
+
+        code, _, _ = self._request("PLAY", headers={"Range": "npt=0-"})
+        if code != 200:
+            raise RTSPError(f"PLAY رد شد (کد {code})")
+        return audio
+
+    def _open_udp_pair(self):
+        """سوکت UDP روی یک پورت زوج آزاد؛ خروجی (sock, port) یا (None, 0)."""
+        for port in range(50000, 50200, 2):
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.bind(("0.0.0.0", port))
+                s.settimeout(self.timeout)
+                return s, port
+            except OSError:
+                try:
+                    s.close()
+                except Exception:
+                    pass
+                continue
+        return None, 0
+
+    def _setup_audio_track(self, transport: str, mode: str,
+                           udp_sock=None, udp_port: int = 0):
         code, headers, _ = self._request(
-            "SETUP", url=audio["control_url"],
-            headers={"Transport": "RTP/AVP/TCP;unicast;interleaved=0-1"})
+            "SETUP", url=self.audio["control_url"],
+            headers={"Transport": transport})
         if code != 200:
             raise RTSPError(f"SETUP ترک صوتی رد شد (کد {code})")
         session = headers.get("session", "")
         self.session_id = session.split(";")[0].strip()
         if not self.session_id:
             raise RTSPError("دوربین Session برنگرداند")
-
-        code, _, _ = self._request("PLAY", headers={"Range": "npt=0-"})
-        if code != 200:
-            raise RTSPError(f"PLAY رد شد (کد {code})")
-
-        self.audio = audio
-        return audio
+        if mode == "udp":
+            self._udp_sock = udp_sock
+        else:
+            # کانال interleaved واقعی را از پاسخ دوربین می‌خوانیم
+            resp_transport = headers.get("transport", "")
+            m = re.search(r"interleaved=(\d+)", resp_transport)
+            if m:
+                self._rtp_channel = int(m.group(1))
 
     def read_audio_frame(self):
-        """خواندن یک فریم interleaved؛ خروجی (codec, clock, payload).
+        """خواندن یک فریم صوتی؛ خروجی (codec, clock, payload).
 
         فریم‌های غیرصوتی (RTCP/ویدیو) رد می‌شوند. timeout سوکت ←
         socket.timeout. بسته‌شدن اتصال ← RTSPError.
         """
+        if self._mode == "udp":
+            return self._read_audio_frame_udp()
         while True:
             first = self._read_exactly(1)
             if first != b"$":
@@ -357,8 +420,20 @@ class RTSPAudioClient:
             channel = self._read_exactly(1)[0]
             length = struct.unpack(">H", self._read_exactly(2))[0]
             pkt = self._read_exactly(length)
-            if channel != 0:
+            if channel != self._rtp_channel:
                 continue  # RTCP یا کانال دیگر
+            parsed = parse_rtp_packet(pkt)
+            if not parsed:
+                continue
+            pt, _seq, _ts, payload = parsed
+            if pt != self.audio["pt"]:
+                continue
+            return self.audio["codec"], self.audio["clock"], payload
+
+    def _read_audio_frame_udp(self):
+        """خواندن یک دیتاگرام UDP (هر دیتاگرام = یک بسته‌ی RTP)."""
+        while True:
+            pkt, _addr = self._udp_sock.recvfrom(65535)
             parsed = parse_rtp_packet(pkt)
             if not parsed:
                 continue
@@ -375,12 +450,14 @@ class RTSPAudioClient:
                 except Exception:
                     pass
         finally:
-            try:
-                if self.sock:
-                    self.sock.close()
-            except Exception:
-                pass
+            for s in (self.sock, getattr(self, "_udp_sock", None)):
+                try:
+                    if s:
+                        s.close()
+                except Exception:
+                    pass
             self.sock = None
+            self._udp_sock = None
             self.session_id = ""
             self._auth_header = ""
             self.audio = None
