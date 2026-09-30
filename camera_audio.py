@@ -9,6 +9,10 @@
   با همان Session. اگر آن هم ۴۶۱ بخورد، مسیر سوم (session-level
   aggregate) امتحان می‌شود: SETUP روی آدرس اصلی استریم و تفکیک صدا از
   ویدیو با payload-type.
+  (2.0.88-beta) سه بهبود handshake: هدر User-Agent مشابه FFmpeg/Lavf
+  (مسیر ویدیوی برنامه با همان هویت روی این دوربین‌ها کار می‌کند)، ثبت
+  آدرس دقیق SETUP در لاگ عیب‌یابی، و fallback آدرس ترک: اگر فرم کوتاه‌شده
+  ۴۶۱ خورد، فرم کامل (با query آدرس اصلی) هم امتحان می‌شود.
 - دیکد: G.711 μ-law (رایج‌ترین) و A-law به PCM16.
 - پخش: QAudioSink از PyQt6.QtMultimedia (از قبل برای صدای آژیر استفاده
   می‌شود؛ چیزی به requirements اضافه نشد) — ۸kHz مونو.
@@ -186,6 +190,7 @@ def _parse_sdp_section(sdp_text: str, base_url: str, media: str):
             control = sec["control"] or ""
             return {
                 "control_url": _resolve_control_url(control, base_url),
+                "control": control,  # خام؛ برای ساخت URL جایگزین در fallback
                 "pt": pt,
                 "codec": codec,
                 "clock": clock,
@@ -221,6 +226,10 @@ def _resolve_control_url(control: str, base_url: str) -> str:
     # query را از انتهای base حذف می‌کنیم
     base = base.split("?")[0]
     return f"{base}/{control}" if control else base_url
+
+
+# هویت کلاینتی که در هدر User-Agent معرفی می‌کنیم — رجوع به کامنت داخل _request.
+_RTSP_USER_AGENT = "Lavf/61.7.100"
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +312,10 @@ class RTSPAudioClient:
         self.cseq += 1
         target = url or self.url
         lines = [f"{method} {target} RTSP/1.0", f"CSeq: {self.cseq}"]
+        # بعضی فریمورها (مثل XM) به User-Agent حساس‌اند و کلاینت ناشناس را
+        # با ۴۶۱ رد می‌کنند؛ مسیر ویدیوی اصلی برنامه با FFmpeg/Lavf روی همین
+        # دوربین‌ها کار می‌کند، پس همان هویت را معرفی می‌کنیم.
+        lines.append(f"User-Agent: {_RTSP_USER_AGENT}")
         if self.session_id:
             lines.append(f"Session: {self.session_id}")
         if self._auth_header:
@@ -463,6 +476,7 @@ class RTSPAudioClient:
             "SETUP", url=video["control_url"],
             headers={"Transport": "RTP/AVP/TCP;unicast;interleaved=0-1"})
         if self._debug is not None:
+            self._debug.append(f"  setup url: {video['control_url']}")
             self._debug.append(f"  video SETUP -> {code}")
         if code != 200:
             raise RTSPError(f"SETUP ویدیو رد شد (کد {code})")
@@ -475,6 +489,7 @@ class RTSPAudioClient:
             "SETUP", url=audio["control_url"],
             headers={"Transport": "RTP/AVP/TCP;unicast;interleaved=2-3"})
         if self._debug is not None:
+            self._debug.append(f"  setup url: {audio['control_url']}")
             self._debug.append(f"  audio SETUP (aggregate) -> {code}")
             self._debug.append(
                 f"  transport recv: {headers.get('transport', '')}")
@@ -501,6 +516,7 @@ class RTSPAudioClient:
             "SETUP", url=self.url,
             headers={"Transport": "RTP/AVP/TCP;unicast;interleaved=0-1"})
         if self._debug is not None:
+            self._debug.append(f"  setup url: {self.url}")
             self._debug.append(f"  session SETUP -> {code}")
             self._debug.append(
                 f"  transport recv: {headers.get('transport', '')}")
@@ -514,15 +530,41 @@ class RTSPAudioClient:
         self._demux_by_pt = True
         self._mode = "tcp"
 
+    def _track_url_variants(self, track: dict):
+        """ترتیب امتحان آدرس‌های SETUP برای یک ترک.
+
+        بعضی فریمورها (مثل XM با آدرس‌های queryدار) فقط آدرسی را قبول
+        می‌کنند که query آدرس اصلی DESCRIBE را هم داشته باشد؛ بعضی دیگر
+        فقط فرم کوتاه‌شده. هر دو را به‌ترتیب امتحان می‌کنیم.
+        """
+        primary = track["control_url"]
+        yield primary
+        control = (track.get("control") or "").strip().strip("<>")
+        if control and "://" not in control:
+            variant = self.url.rstrip("/") + "/" + control.lstrip("/")
+            if variant != primary:
+                yield variant
+
     def _setup_audio_track(self, transport: str, mode: str,
                            udp_sock=None, udp_port: int = 0):
-        code, headers, _ = self._request(
-            "SETUP", url=self.audio["control_url"],
-            headers={"Transport": transport})
-        if self._debug is not None:
-            self._debug.append(f"  transport sent: {transport}")
-            self._debug.append(
-                f"  transport recv: {headers.get('transport', '')}")
+        last_code, last_headers = None, {}
+        for track_url in self._track_url_variants(self.audio):
+            code, headers, _ = self._request(
+                "SETUP", url=track_url,
+                headers={"Transport": transport})
+            if self._debug is not None:
+                self._debug.append(f"  setup url: {track_url}")
+                self._debug.append(f"  transport sent: {transport}")
+                self._debug.append(
+                    f"  transport recv: {headers.get('transport', '')}")
+            if code == 200:
+                last_code, last_headers = code, headers
+                break
+            last_code, last_headers = code, headers
+            # فقط ۴۶۱ (احتمال آدرس اشتباه ترک) ارزش امتحان URL بعدی را دارد
+            if code != 461:
+                break
+        code, headers = last_code, last_headers
         if code != 200:
             raise RTSPError(f"SETUP ترک صوتی رد شد (کد {code})")
         session = headers.get("session", "")
