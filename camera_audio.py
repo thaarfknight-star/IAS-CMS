@@ -222,7 +222,7 @@ class RTSPAudioClient:
     """
 
     def __init__(self, url: str, username: str = "", password: str = "",
-                 timeout: float = 8.0):
+                 timeout: float = 8.0, debug: bool = False):
         parsed = urlparse(url)
         self.host = parsed.hostname or ""
         self.port = parsed.port or 554
@@ -241,6 +241,8 @@ class RTSPAudioClient:
         self._mode = "tcp"  # یا "udp" پس از fallback
         self._rtp_channel = 0
         self._udp_sock = None
+        # لاگ عیب‌یابی handshake (بدون هدر Authorization و بدون رمز)
+        self._debug = [] if debug else None
 
     # -- سطح پایین ----------------------------------------------------------
     def _read_exactly(self, n: int) -> bytes:
@@ -279,7 +281,7 @@ class RTSPAudioClient:
             f.close()
 
     def _request(self, method: str, url: str = None, headers: dict = None,
-                 body: bytes = b"") -> tuple:
+                 body: bytes = b"", _auth_tries: int = 0) -> tuple:
         self.cseq += 1
         target = url or self.url
         lines = [f"{method} {target} RTSP/1.0", f"CSeq: {self.cseq}"]
@@ -294,13 +296,24 @@ class RTSPAudioClient:
         raw = ("\r\n".join(lines) + "\r\n\r\n").encode("utf-8") + body
         self.sock.sendall(raw)
         code, resp_headers, resp_body = self._read_response()
-        if code == 401 and not self._auth_header and self.username:
+        if self._debug is not None:
+            # فقط متد و کد پاسخ — هرگز هدر Authorization لاگ نمی‌شود
+            self._debug.append(f"{method} -> {code}")
+        if code == 401 and self.username and _auth_tries < 3:
+            # پاسخ Digest به متد و URI بستگی دارد؛ پس هدر کش‌شده‌ی DESCRIBE
+            # برای SETUP/PLAY معتبر نیست و بعضی دوربین‌ها با nonce تازه ۴۰۱
+            # می‌دهند — با چلنج جدید دوباره می‌سازیم.
             www = resp_headers.get("www-authenticate", "")
             if "digest" in www.lower():
                 challenge = _parse_challenge(www)
-                self._auth_header = build_digest_auth(
+                new_auth = build_digest_auth(
                     self.username, self.password, method, target, challenge)
-                return self._request(method, url, headers, body)
+                if new_auth != self._auth_header:
+                    self._auth_header = new_auth
+                    return self._request(method, url, headers, body,
+                                         _auth_tries + 1)
+                raise RTSPError(
+                    "احرازهویت دوربین رد شد (نام کاربری/رمز را بررسی کنید)")
             raise RTSPError("دوربین احرازهویت Basic می‌خواهد (پشتیبانی نمی‌شود)")
         return code, resp_headers, resp_body
 
@@ -318,11 +331,17 @@ class RTSPAudioClient:
         self._udp_sock = None
 
         code, _, _ = self._request("OPTIONS")
+        if code == 401:
+            raise RTSPError(
+                "احرازهویت دوربین رد شد (نام کاربری/رمز را بررسی کنید)")
         if code != 200:
             raise RTSPError(f"OPTIONS رد شد (کد {code})")
 
         code, _, body = self._request(
             "DESCRIBE", headers={"Accept": "application/sdp"})
+        if code == 401:
+            raise RTSPError(
+                "احرازهویت دوربین رد شد (نام کاربری/رمز را بررسی کنید)")
         if code != 200:
             raise RTSPError(f"DESCRIBE رد شد (کد {code})")
         sdp = body.decode("utf-8", errors="replace")
@@ -386,6 +405,10 @@ class RTSPAudioClient:
         code, headers, _ = self._request(
             "SETUP", url=self.audio["control_url"],
             headers={"Transport": transport})
+        if self._debug is not None:
+            self._debug.append(f"  transport sent: {transport}")
+            self._debug.append(
+                f"  transport recv: {headers.get('transport', '')}")
         if code != 200:
             raise RTSPError(f"SETUP ترک صوتی رد شد (کد {code})")
         session = headers.get("session", "")
@@ -516,13 +539,33 @@ class ListenSession:
                 except Exception:
                     pass
 
+            def _write_debug_log(self, client):
+                """ذخیره‌ی لاگ handshake برای عیب‌یابی (بدون رمز)."""
+                try:
+                    import os
+                    path = os.path.join(os.path.expanduser("~"),
+                                        "IAS-Viewer-listen-debug.log")
+                    with open(path, "a", encoding="utf-8") as f:
+                        f.write("\n=== %s ===\n"
+                                % time.strftime("%Y-%m-%d %H:%M:%S"))
+                        for line in client._debug or []:
+                            f.write(line + "\n")
+                    return path
+                except Exception:
+                    return ""
+
             def run(self):
-                client = RTSPAudioClient(self._url, self._user, self._pwd)
+                client = RTSPAudioClient(self._url, self._user, self._pwd,
+                                         debug=True)
                 self._client = client
                 try:
                     info = client.connect()
                 except RTSPError as e:
-                    self.failed.emit(str(e))
+                    path = self._write_debug_log(client)
+                    msg = str(e)
+                    if path:
+                        msg += f"\nلاگ عیب‌یابی: {path}"
+                    self.failed.emit(msg)
                     return
                 except Exception as e:  # noqa: BLE001
                     self.failed.emit(f"خطای اتصال: {e}"[:120])
