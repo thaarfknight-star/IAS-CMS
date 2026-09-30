@@ -117,6 +117,9 @@ class ListenDialog(QDialog):
     def _on_state(self, s: str):
         if s == "connecting":
             self.status_label.setText("در حال اتصال به دوربین…")
+        elif s.startswith("connecting:"):
+            step = s.split(":", 1)[1]
+            self.status_label.setText(f"در حال اتصال به دوربین… ({step})")
         elif s == "playing":
             self.status_label.setText("✓ در حال پخش صدای دوربین")
         elif s == "idle":

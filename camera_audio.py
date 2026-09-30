@@ -32,6 +32,11 @@ NVR)؛ اگر ترک صوتی نباشد پیام روشن نمایش داده �
 حالا برای هر دو SETUP هر دو فرم آدرس را امتحان می‌کند. فیکس بافر دریافت:
 بایت‌های RTP زودرسیده که _read_response بیشتر از هدرها می‌خواند دیگر گم
 نمی‌شوند.
+
+2.0.91-beta: دیالوگ حین اتصال مسیر فعلی را نشان می‌دهد (on_progress)؛
+لاگ عیب‌یابی تایم‌استمپ دارد؛ و اگر هیچ مسیری روی آدرس تنظیم‌شده صدا
+نداد، اسکن ONVIF (GetCapabilities ← GetProfiles ← GetStreamUri) اجرا
+می‌شود و URIهای متفاوتی که خود دوربین معرفی می‌کند امتحان می‌شوند.
 """
 
 import re
@@ -282,6 +287,24 @@ class RTSPAudioClient:
         self._rtp_total = 0
         # لاگ عیب‌یابی handshake (بدون هدر Authorization و بدون رمز)
         self._debug = [] if debug else None
+        self._t0 = None  # شروع connect() برای تایم‌استمپ لاگ
+        self._last_err = None  # آخرین خطای _try_all_paths
+        # کال‌بک پیشرفت: on_progress("aggregate") — دیالوگ مسیر فعلی را
+        # نشان می‌دهد تا «در حال اتصال» خشک به‌نظر نرسد
+        self.on_progress = None
+
+    def _log(self, msg: str):
+        if self._debug is not None:
+            dt = time.time() - self._t0 if self._t0 else 0.0
+            self._debug.append(f"[{dt:6.1f}s] {msg}")
+
+    def _progress(self, name: str):
+        self._log(f"── تلاش مسیر: {name} ──")
+        if self.on_progress:
+            try:
+                self.on_progress(name)
+            except Exception:
+                pass
 
     # -- سطح پایین ----------------------------------------------------------
     def _read_exactly(self, n: int) -> bytes:
@@ -354,7 +377,7 @@ class RTSPAudioClient:
         code, resp_headers, resp_body = self._read_response()
         if self._debug is not None:
             # فقط متد و کد پاسخ — هرگز هدر Authorization لاگ نمی‌شود
-            self._debug.append(f"{method} -> {code}")
+            self._log(f"{method} -> {code}")
         if code == 401 and self.username and _auth_tries < 3:
             # پاسخ Digest به متد و URI بستگی دارد؛ پس هدر کش‌شده‌ی DESCRIBE
             # برای SETUP/PLAY معتبر نیست و بعضی دوربین‌ها با nonce تازه ۴۰۱
@@ -375,7 +398,9 @@ class RTSPAudioClient:
 
     # -- handshake ----------------------------------------------------------
     def connect(self) -> dict:
-        """OPTIONS ← DESCRIBE ← SETUP ← PLAY. خروجی: dict ترک صوتی."""
+        """OPTIONS ← DESCRIBE ← SETUP ← PLAY (+ اسکن ONVIF). خروجی: dict ترک صوتی."""
+        self._t0 = time.time()
+        self._progress("شروع")
         try:
             self.sock = socket.create_connection(
                 (self.host, self.port), timeout=self.timeout)
@@ -386,57 +411,124 @@ class RTSPAudioClient:
         self._rtp_channel = 0
         self._udp_sock = None
 
+        audio, video = self._options_and_describe(self.url)
+        if not audio:
+            raise RTSPError("no_audio_track")
+        self.audio = audio
+
+        if self._try_all_paths(audio, video):
+            return self._finalize_ok()
+
+        # آدرس اصلی صدا نداد — اسکن ONVIF (استاندارد کشف دوربین): URIهای
+        # واقعی استریم را از خود دوربین می‌گیریم؛ اگر با آدرس تنظیم‌شده
+        # فرق داشتند، به‌عنوان کاندیدا امتحان می‌شوند.
+        self._progress("اسکن ONVIF")
+        onvif_uris = []
+        try:
+            from onvif_scan import onvif_get_stream_uris
+            onvif_uris = onvif_get_stream_uris(
+                self.host, self.username, self.password,
+                debug_log=self._log)
+        except Exception as e:  # noqa: BLE001
+            self._log(f"ONVIF: خطا در اسکن ({e})")
+
+        # کاندیداهای ONVIF که با آدرس اصلی فرق دارند
+        for uri in onvif_uris:
+            if self._same_rtsp_url(uri, self.url):
+                continue
+            self._progress(f"ONVIF: {uri}")
+            try:
+                audio2, video2 = self._describe_only(uri)
+            except RTSPError as e:
+                self._log(f"ONVIF: DESCRIBE ناموفق ({e})")
+                continue
+            if not audio2:
+                self._log("ONVIF: این URI ترک صوتی ندارد")
+                continue
+            orig_url = self.url
+            self.url = uri
+            try:
+                if self._try_all_paths(audio2, video2):
+                    self.audio = audio2
+                    return self._finalize_ok()
+            finally:
+                self.url = orig_url
+        raise self._last_err
+
+    def _finalize_ok(self):
+        if self._mode == "tcp" and self._udp_sock is not None:
+            try:
+                self._udp_sock.close()
+            except Exception:
+                pass
+            self._udp_sock = None
+        return self.audio
+
+    @staticmethod
+    def _same_rtsp_url(a: str, b: str) -> bool:
+        from urllib.parse import urlparse
+        pa, pb = urlparse(a), urlparse(b)
+        return ((pa.hostname or "").lower() == (pb.hostname or "").lower()
+                and (pa.port or 554) == (pb.port or 554)
+                and (pa.path or "/") == (pb.path or "/"))
+
+    def _options_and_describe(self, url: str):
+        """OPTIONS + DESCRIBE روی url. خروجی: (audio, video)."""
         code, _, _ = self._request("OPTIONS")
         if code == 401:
             raise RTSPError(
                 "احرازهویت دوربین رد شد (نام کاربری/رمز را بررسی کنید)")
         if code != 200:
             raise RTSPError(f"OPTIONS رد شد (کد {code})")
+        return self._describe_only(url)
 
+    def _describe_only(self, url: str):
+        """DESCRIBE روی url (روی اتصال فعلی). خروجی: (audio, video)."""
         code, _, body = self._request(
-            "DESCRIBE", headers={"Accept": "application/sdp"})
+            "DESCRIBE", url=url, headers={"Accept": "application/sdp"})
         if code == 401:
             raise RTSPError(
                 "احرازهویت دوربین رد شد (نام کاربری/رمز را بررسی کنید)")
         if code != 200:
             raise RTSPError(f"DESCRIBE رد شد (کد {code})")
         sdp = body.decode("utf-8", errors="replace")
-        if self._debug is not None:
-            # سکشن‌های صوتی/ویدیویی SDP — برای فهمیدن اینکه دوربین دقیقاً
-            # چه ترک‌هایی معرفی می‌کند (control URL، کدک، ...)
-            in_av = False
-            for line in sdp.splitlines():
-                ls = line.strip()
-                if ls.startswith("m="):
-                    in_av = ls.startswith("m=audio") or ls.startswith("m=video")
-                if in_av:
-                    self._debug.append(f"  sdp: {ls}")
-        tracks = parse_sdp_tracks(sdp, self.url)
-        audio, video = tracks["audio"], tracks["video"]
-        if not audio:
-            raise RTSPError("no_audio_track")
-        self.audio = audio
+        # سکشن‌های صوتی/ویدیویی SDP — برای فهمیدن اینکه دوربین دقیقاً
+        # چه ترک‌هایی معرفی می‌کند (control URL، کدک، ...)
+        in_av = False
+        for line in sdp.splitlines():
+            ls = line.strip()
+            if ls.startswith("m="):
+                in_av = ls.startswith("m=audio") or ls.startswith("m=video")
+            if in_av:
+                self._log(f"  sdp: {ls}")
+        tracks = parse_sdp_tracks(sdp, url)
+        return tracks["audio"], tracks["video"]
 
+    def _try_all_paths(self, audio: dict, video: dict) -> bool:
+        """همه‌ی مسیرها (مستقیم ← aggregate ← session-level) روی self.url
+        فعلی. خروجی True یعنی صدا وصل شد؛ وگرنه self._last_err تنظیم می‌شود."""
         # بعضی دوربین‌ها RTP-over-TCP را قبول ندارند (خطای ۴۶۱)؛
         # به‌ترتیب امتحان می‌کنیم: TCP/interleaved ← TCP ← UDP.
         # برای هر مسیر: SETUP ← PLAY ← راستی‌آزمایی جریان واقعی صوت.
         # (لاگ 2.0.89: SETUP مستقیم ۲۰۰ می‌دهد ولی دوربین فقط ویدیو
         # می‌فرستد — پس «۲۰۰ گرفتن» به‌تنهایی کافی نیست.)
         transports = [
-            ("tcp", "RTP/AVP/TCP;unicast;interleaved=0-1"),
-            ("tcp", "RTP/AVP/TCP;unicast"),
+            ("مستقیم (TCP)", "tcp", "RTP/AVP/TCP;unicast;interleaved=0-1"),
+            ("مستقیم (TCP)", "tcp", "RTP/AVP/TCP;unicast"),
         ]
         udp_sock, udp_port = self._open_udp_pair()
         if udp_sock is not None:
             transports.append(
-                ("udp", f"RTP/AVP;unicast;client_port={udp_port}-{udp_port + 1}"))
-        last_err = None
+                ("مستقیم (UDP)", "udp",
+                 f"RTP/AVP;unicast;client_port={udp_port}-{udp_port + 1}"))
+        self._last_err = None
         connected_ok = False
-        for mode, transport in transports:
+        for label, mode, transport in transports:
+            self._progress(label)
             try:
                 self._setup_audio_track(transport, mode, udp_sock, udp_port)
             except RTSPError as e:
-                last_err = e
+                self._last_err = e
                 # فقط اگر مشکل Transport بود ادامه می‌دهیم
                 if "(کد 461)" not in str(e) and "(کد 4" not in str(e):
                     raise
@@ -445,53 +537,47 @@ class RTSPAudioClient:
             if self._play_and_verify_audio("direct"):
                 connected_ok = True
                 break
-            last_err = RTSPError("no_audio_data")
+            self._last_err = RTSPError("no_audio_data")
             self._reset_for_retry()
         if not connected_ok:
             # مسیر دوم (aggregate، مثل VLC): بعضی فریمورها (مثل XM) ترک
             # صوتی را فقط داخل Session ساخته‌شده با SETUP ویدیو قبول
             # می‌کنند. (لاگ 2.0.89: SETUP مستقیم ۲۰۰ ولی بدون صدا.)
+            self._progress("aggregate (مثل VLC)")
             if udp_sock is not None:
                 try:
                     udp_sock.close()
                 except Exception:
                     pass
             if video is None:
-                raise last_err
+                raise self._last_err
             try:
                 self._connect_aggregate(video, audio)
             except RTSPError as e:
-                last_err = e
+                self._last_err = e
                 self._reset_for_retry()
             else:
                 if self._play_and_verify_audio("aggregate"):
                     connected_ok = True
                 else:
-                    last_err = RTSPError("no_audio_data")
+                    self._last_err = RTSPError("no_audio_data")
                     self._reset_for_retry()
         if not connected_ok:
             # مسیر سوم: session-level aggregate — بعضی فریمورها SETUP تکیِ
             # هیچ ترکی را قبول نمی‌کنند و فقط SETUP روی آدرس اصلی ارائه
             # (presentation URL) را می‌پذیرند؛ بعد از PLAY، صدا و ویدیو
             # قاطی می‌آیند و با payload-type جدا می‌شوند.
+            self._progress("session-level aggregate")
             try:
                 self._connect_aggregate_session()
             except RTSPError as e:
-                last_err = e
+                self._last_err = e
             else:
                 if self._play_and_verify_audio("session"):
                     connected_ok = True
                 else:
-                    last_err = RTSPError("no_audio_data")
-        if not connected_ok:
-            raise last_err
-        if self._mode == "tcp" and self._udp_sock is not None:
-            try:
-                self._udp_sock.close()
-            except Exception:
-                pass
-            self._udp_sock = None
-        return audio
+                    self._last_err = RTSPError("no_audio_data")
+        return connected_ok
 
     def _play_and_verify_audio(self, path_name: str,
                                timeout: float = 4.0) -> bool:
@@ -504,7 +590,7 @@ class RTSPAudioClient:
         code, _, _ = self._request("PLAY", headers={"Range": "npt=0-"})
         if code != 200:
             if self._debug is not None:
-                self._debug.append(f"PLAY -> {code} ({path_name})")
+                self._log(f"PLAY -> {code} ({path_name})")
             return False
         self._observed_pts = {}
         self._rtp_total = 0
@@ -527,13 +613,13 @@ class RTSPAudioClient:
                 except RTSPError:
                     break  # اتصال بسته شد
                 if self._debug is not None:
-                    self._debug.append(
+                    self._log(
                         f"{path_name}: audio packet OK "
                         f"(rtp={self._rtp_total} "
                         f"pts={dict(sorted(self._observed_pts.items()))})")
                 return True
             if self._debug is not None:
-                self._debug.append(
+                self._log(
                     f"{path_name}: no audio packet "
                     f"(rtp={self._rtp_total} "
                     f"pts={dict(sorted(self._observed_pts.items()))})")
@@ -603,15 +689,15 @@ class RTSPAudioClient:
         کامل را ۲۰۰.
         """
         if self._debug is not None:
-            self._debug.append("aggregate: video-first SETUP")
+            self._log("aggregate: video-first SETUP")
         session, last_code = "", None
         for vurl in self._track_url_variants(video):
             code, headers, _ = self._request(
                 "SETUP", url=vurl,
                 headers={"Transport": "RTP/AVP/TCP;unicast;interleaved=0-1"})
             if self._debug is not None:
-                self._debug.append(f"  setup url: {vurl}")
-                self._debug.append(f"  video SETUP -> {code}")
+                self._log(f"  setup url: {vurl}")
+                self._log(f"  video SETUP -> {code}")
             last_code = code
             if code == 200:
                 session = headers.get("session", "").split(";")[0].strip()
@@ -626,9 +712,9 @@ class RTSPAudioClient:
                 "SETUP", url=aurl,
                 headers={"Transport": "RTP/AVP/TCP;unicast;interleaved=2-3"})
             if self._debug is not None:
-                self._debug.append(f"  setup url: {aurl}")
-                self._debug.append(f"  audio SETUP (aggregate) -> {code}")
-                self._debug.append(
+                self._log(f"  setup url: {aurl}")
+                self._log(f"  audio SETUP (aggregate) -> {code}")
+                self._log(
                     f"  transport recv: {headers.get('transport', '')}")
             last_code = code
             if code == 200:
@@ -652,14 +738,14 @@ class RTSPAudioClient:
         می‌آیند؛ تفکیک با payload-type انجام می‌شود (نه شماره‌ی کانال).
         """
         if self._debug is not None:
-            self._debug.append("aggregate2: session-level SETUP")
+            self._log("aggregate2: session-level SETUP")
         code, headers, _ = self._request(
             "SETUP", url=self.url,
             headers={"Transport": "RTP/AVP/TCP;unicast;interleaved=0-1"})
         if self._debug is not None:
-            self._debug.append(f"  setup url: {self.url}")
-            self._debug.append(f"  session SETUP -> {code}")
-            self._debug.append(
+            self._log(f"  setup url: {self.url}")
+            self._log(f"  session SETUP -> {code}")
+            self._log(
                 f"  transport recv: {headers.get('transport', '')}")
         if code != 200:
             raise RTSPError(f"SETUP سشن رد شد (کد {code})")
@@ -694,9 +780,9 @@ class RTSPAudioClient:
                 "SETUP", url=track_url,
                 headers={"Transport": transport})
             if self._debug is not None:
-                self._debug.append(f"  setup url: {track_url}")
-                self._debug.append(f"  transport sent: {transport}")
-                self._debug.append(
+                self._log(f"  setup url: {track_url}")
+                self._log(f"  transport sent: {transport}")
+                self._log(
                     f"  transport recv: {headers.get('transport', '')}")
             if code == 200:
                 last_code, last_headers = code, headers
@@ -895,6 +981,11 @@ class ListenSession:
                 client = RTSPAudioClient(self._url, self._user, self._pwd,
                                          debug=True)
                 self._client = client
+                # پیشرفت مسیرها را به دیالوگ می‌فرستیم تا «در حال اتصال»
+                # خشک و بی‌خبر به‌نظر نرسد
+                client.on_progress = lambda name: (
+                    self.state_changed(f"connecting:{name}")
+                    if self.state_changed else None)
                 try:
                     info = client.connect()
                 except RTSPError as e:
