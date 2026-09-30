@@ -146,12 +146,25 @@ class VariantUrlServer(threading.Thread):
                 elif method == "PLAY":
                     self._respond(conn, cseq, 200, "OK",
                                   {"Session": "SES77"})
+                    # از 2.0.90: verify داخل connect() یک بسته مصرف می‌کند؛
+                    # چند بسته می‌فرستیم تا خواندن بعدی تست هم برسد.
                     try:
-                        conn.sendall(
-                            _interleaved(0, _rtp(8, b"\xCC" * 160)))
+                        for _ in range(4):
+                            conn.sendall(
+                                _interleaved(0, _rtp(8, b"\xCC" * 160)))
                     except OSError:
                         pass
-                    time.sleep(1.0)
+                    conn.settimeout(5)
+                    try:
+                        while True:
+                            method, _, cseq, _ = self._read_request(conn)
+                            if not method:
+                                break
+                            if method == "TEARDOWN":
+                                self._respond(conn, cseq, 200, "OK")
+                                break
+                    except OSError:
+                        pass
                     break
                 elif method == "TEARDOWN":
                     self._respond(conn, cseq, 200, "OK")

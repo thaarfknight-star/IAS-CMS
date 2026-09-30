@@ -87,50 +87,81 @@ class AggregateServer(threading.Thread):
         conn.sendall(("\r\n".join(out) + "\r\n\r\n").encode() + body)
 
     def run(self):
-        conn, _ = self.sock.accept()
-        with conn:
-            conn.settimeout(10)
-            while True:
+        # از 2.0.90: کلاینت بین مسیرها reconnect می‌کند — چند اتصال
+        # پشت سر هم را قبول می‌کنیم.
+        while True:
+            try:
+                self.sock.settimeout(0.5)
+                conn, _ = self.sock.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                with conn:
+                    self._serve(conn)
+            except OSError:
+                pass
+
+    def _serve(self, conn):
+        conn.settimeout(10)
+        while True:
+            try:
+                method, target, cseq, headers = self._read_request(conn)
+            except OSError:
+                break
+            if not method:
+                break
+            if method == "OPTIONS":
+                self._respond(conn, cseq, 200, "OK")
+            elif method == "DESCRIBE":
+                self._respond(conn, cseq, 200, "OK",
+                              {"Content-Type": "application/sdp"},
+                              SDP_XM.encode())
+            elif method == "SETUP":
+                if "trackID=0" in target:
+                    if self.reject_video:
+                        self._respond(conn, cseq, 461,
+                                      "Unsupported Transport")
+                    else:
+                        self._respond(
+                            conn, cseq, 200, "OK",
+                            {"Session": "SES123",
+                             "Transport": ("RTP/AVP/TCP;unicast;"
+                                           "interleaved=0-1")})
+                else:  # ترک صوتی
+                    if headers.get("session") == "SES123":
+                        self._respond(
+                            conn, cseq, 200, "OK",
+                            {"Session": "SES123",
+                             "Transport": ("RTP/AVP/TCP;unicast;"
+                                           "interleaved=2-3")})
+                    else:
+                        self._respond(conn, cseq, 461,
+                                      "Unsupported Transport")
+            elif method == "PLAY":
+                self._respond(conn, cseq, 200, "OK",
+                              {"Session": "SES123"})
+                # از 2.0.90: connect() جریان صوت را راستی‌آزمایی می‌کند؛
+                # صدا در aggregate روی کانال ۲ می‌آید (interleaved=2-3).
                 try:
-                    method, target, cseq, headers = self._read_request(conn)
+                    for _ in range(4):
+                        conn.sendall(_interleaved(2, _rtp(8, b"\xAA" * 160)))
                 except OSError:
-                    break
-                if not method:
-                    break
-                if method == "OPTIONS":
-                    self._respond(conn, cseq, 200, "OK")
-                elif method == "DESCRIBE":
-                    self._respond(conn, cseq, 200, "OK",
-                                  {"Content-Type": "application/sdp"},
-                                  SDP_XM.encode())
-                elif method == "SETUP":
-                    if "trackID=0" in target:
-                        if self.reject_video:
-                            self._respond(conn, cseq, 461,
-                                          "Unsupported Transport")
-                        else:
-                            self._respond(
-                                conn, cseq, 200, "OK",
-                                {"Session": "SES123",
-                                 "Transport": ("RTP/AVP/TCP;unicast;"
-                                               "interleaved=0-1")})
-                    else:  # ترک صوتی
-                        if headers.get("session") == "SES123":
-                            self._respond(
-                                conn, cseq, 200, "OK",
-                                {"Session": "SES123",
-                                 "Transport": ("RTP/AVP/TCP;unicast;"
-                                               "interleaved=2-3")})
-                        else:
-                            self._respond(conn, cseq, 461,
-                                          "Unsupported Transport")
-                elif method == "PLAY":
-                    self._respond(conn, cseq, 200, "OK",
-                                  {"Session": "SES123"})
-                    break
-                elif method == "TEARDOWN":
-                    self._respond(conn, cseq, 200, "OK")
-                    break
+                    pass
+                try:
+                    while True:
+                        method, _, cseq, _ = self._read_request(conn)
+                        if not method:
+                            break
+                        if method == "TEARDOWN":
+                            self._respond(conn, cseq, 200, "OK")
+                            break
+                except OSError:
+                    pass
+            elif method == "TEARDOWN":
+                self._respond(conn, cseq, 200, "OK")
+                break
 
     def join(self, timeout=None):
         super().join(timeout)

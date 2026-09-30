@@ -156,7 +156,9 @@ class FakeRTSPAudioServer(threading.Thread):
         self.sock.bind(("127.0.0.1", 0))
         self.port = self.sock.getsockname()[1]
         self.sock.listen(1)
-        self.frames = _sine_ulaw_frames()
+        # verify داخل connect() یک فریم مصرف می‌کند؛ تست ۴۰ فریم دیگر
+        # می‌خواند، پس بیشتر از ۴۱ فریم می‌فرستیم.
+        self.frames = _sine_ulaw_frames(n_frames=80)
         self.udp_client_addr = None  # (ip, rtp_port) برای حالت UDP
 
     def _read_request(self, conn):
@@ -325,11 +327,19 @@ def test_e2e_no_audio_track_raises():
 
 
 def test_e2e_fallback_to_udp_after_461():
-    """دوربین ۴۶۱ می‌دهد ← کلاینت باید به UDP سوییچ کند (هندشیک)."""
+    """دوربین ۴۶۱ می‌دهد ← کلاینت باید به UDP سوییچ کند (هندشیک + دیتا).
+
+    سندباکس تست UDP loopback را می‌بندد، پس دیتاگرام‌ها را با سوکت فیک
+    تزریق می‌کنیم؛ هندشیک (SETUP با client_port) با سرور واقعی است.
+    """
     srv = FakeRTSPAudioServer(with_audio=True, tcp_reject_461=True)
     srv.start()
     client = RTSPAudioClient(f"rtsp://127.0.0.1:{srv.port}/live",
                              "admin", "1234", timeout=10)
+    frames = _sine_ulaw_frames()
+    datagrams = [build_rtp_packet(i + 1, 2000 + i * 160, 4242, f)
+                 for i, f in enumerate(frames)]
+    client._open_udp_pair = lambda: (_FakeUDPSock(datagrams), 50000)
     try:
         info = client.connect()
         assert client._mode == "udp", f"حالت موردانتظار udp بود: {client._mode}"
@@ -357,6 +367,12 @@ class _FakeUDPSock:
 
     def close(self):
         pass
+
+    def settimeout(self, _t):
+        pass
+
+    def gettimeout(self):
+        return None
 
 
 def test_udp_read_path_parses_datagrams():

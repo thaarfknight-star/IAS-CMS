@@ -11,6 +11,7 @@
 """
 
 import socket
+import struct
 import threading
 
 import pytest
@@ -137,6 +138,16 @@ class StrictNonceServer(threading.Thread):
                 elif method == "PLAY":
                     self._respond(conn, cseq, 200, "OK",
                                   {"Session": "s1"})
+                    # از 2.0.90: connect() جریان واقعی صوت را راستی‌آزمایی
+                    # می‌کند — چند بسته‌ی PCMU روی کانال ۰ می‌فرستیم.
+                    try:
+                        for i in range(4):
+                            rtp = struct.pack(">BBHII", 0x80, 0, i, i, 7)
+                            conn.sendall(b"$" + bytes((0,)) +
+                                         struct.pack(">H", len(rtp) + 160) +
+                                         rtp + b"\xff" * 160)
+                    except OSError:
+                        pass
                     break
                 else:
                     self._respond(conn, cseq, 200, "OK")
