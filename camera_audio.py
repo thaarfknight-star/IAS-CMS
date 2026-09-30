@@ -268,6 +268,9 @@ class RTSPAudioClient:
         self._rtp_channel = 0
         self._demux_by_pt = False  # مسیر session-level: تفکیک فقط با payload-type
         self._udp_sock = None
+        # آمار بسته‌های RTP دیده‌شده (برای تشخیص «وصل شد ولی صدا نرسید»)
+        self._observed_pts = {}  # payload-type ← تعداد
+        self._rtp_total = 0
         # لاگ عیب‌یابی handshake (بدون هدر Authorization و بدون رمز)
         self._debug = [] if debug else None
 
@@ -605,6 +608,8 @@ class RTSPAudioClient:
             if not parsed:
                 continue
             pt, _seq, _ts, payload = parsed
+            self._rtp_total += 1
+            self._observed_pts[pt] = self._observed_pts.get(pt, 0) + 1
             if pt != self.audio["pt"]:
                 continue  # ویدیو یا ترک دیگر
             return self.audio["codec"], self.audio["clock"], payload
@@ -617,9 +622,21 @@ class RTSPAudioClient:
             if not parsed:
                 continue
             pt, _seq, _ts, payload = parsed
+            self._rtp_total += 1
+            self._observed_pts[pt] = self._observed_pts.get(pt, 0) + 1
             if pt != self.audio["pt"]:
                 continue
             return self.audio["codec"], self.audio["clock"], payload
+
+    def audio_stats(self):
+        """آمار بسته‌های RTP دیده‌شده برای عیب‌یابی (خطوط لاگ)."""
+        lines = [f"rtp packets seen: {self._rtp_total}",
+                 f"observed payload-types: {dict(sorted(self._observed_pts.items()))}"]
+        if self.audio:
+            lines.append(
+                f"expected audio pt={self.audio['pt']} codec={self.audio['codec']} "
+                f"clock={self.audio['clock']}")
+        return lines
 
     def close(self):
         try:
@@ -686,6 +703,7 @@ class ListenSession:
                 self._url, self._user, self._pwd = url, user, pwd
                 self._stop = False
                 self._client = None
+                self._info = None
 
             def request_stop(self):
                 self._stop = True
@@ -694,6 +712,26 @@ class ListenSession:
                         self._client.close()
                 except Exception:
                     pass
+
+            def _process_frame(self, codec, clock, payload, info):
+                """دیکد یک فریم و ارسال PCM (خطا ← نادیده)."""
+                try:
+                    pcm = decode_audio_payload(payload, codec)
+                    if clock != AUDIO_SAMPLE_RATE:
+                        pcm = resample_to_8k(pcm, clock)
+                    # استریو ← مونو (میانگین)
+                    info_ch = info.get("channels", 1)
+                    if info_ch > 1 and pcm:
+                        s = np.frombuffer(pcm, dtype="<i2").astype("float32")
+                        s = s.reshape(-1, info_ch).mean(axis=1)
+                        pcm = np.clip(s, -32768, 32767).astype("<i2").tobytes()
+                    self.pcm_ready.emit(pcm)
+                except Exception:
+                    pass
+
+            def _emit_first(self, first):
+                codec, clock, payload = first
+                self._process_frame(codec, clock, payload, self._info or {})
 
             def _write_debug_log(self, client):
                 """ذخیره‌ی لاگ handshake برای عیب‌یابی (بدون رمز)."""
@@ -706,6 +744,11 @@ class ListenSession:
                                 % time.strftime("%Y-%m-%d %H:%M:%S"))
                         for line in client._debug or []:
                             f.write(line + "\n")
+                        try:
+                            for line in client.audio_stats():
+                                f.write(line + "\n")
+                        except Exception:
+                            pass
                     return path
                 except Exception:
                     return ""
@@ -727,6 +770,41 @@ class ListenSession:
                     self.failed.emit(f"خطای اتصال: {e}"[:120])
                     return
                 self.connected.emit(info)
+                self._info = info
+                # انتظار برای اولین بسته‌ی صوتی واقعی (نه فقط اتصال RTSP)
+                deadline = time.time() + 6.0
+                first = None
+                fail_msg = None
+                while not self._stop and time.time() < deadline:
+                    try:
+                        first = client.read_audio_frame()
+                        break
+                    except RTSPError as e:
+                        fail_msg = str(e)
+                        break
+                    except OSError:
+                        continue  # timeout خواندن — هنوز منتظر می‌مانیم
+                    except Exception as e:  # noqa: BLE001
+                        fail_msg = f"خطا در دریافت صدا: {e}"[:100]
+                        break
+                if first is None and not self._stop:
+                    path = self._write_debug_log(client)
+                    msg = fail_msg or "no_audio_data"
+                    if path:
+                        msg += f"\nلاگ عیب‌یابی: {path}"
+                    self.failed.emit(msg)
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+                    return
+                if self._stop:
+                    try:
+                        client.close()
+                    except Exception:
+                        pass
+                    return
+                self._emit_first(first)
                 while not self._stop:
                     try:
                         codec, clock, payload = client.read_audio_frame()
@@ -740,19 +818,7 @@ class ListenSession:
                         if not self._stop:
                             self.failed.emit(f"خطا در دریافت صدا: {e}"[:100])
                         break
-                    try:
-                        pcm = decode_audio_payload(payload, codec)
-                        if clock != AUDIO_SAMPLE_RATE:
-                            pcm = resample_to_8k(pcm, clock)
-                        # استریو ← مونو (میانگین)
-                        info_ch = info.get("channels", 1)
-                        if info_ch > 1 and pcm:
-                            s = np.frombuffer(pcm, dtype="<i2").astype("float32")
-                            s = s.reshape(-1, info_ch).mean(axis=1)
-                            pcm = np.clip(s, -32768, 32767).astype("<i2").tobytes()
-                        self.pcm_ready.emit(pcm)
-                    except Exception:
-                        continue
+                    self._process_frame(codec, clock, payload, info)
                 try:
                     client.close()
                 except Exception:
@@ -797,6 +863,12 @@ class ListenSession:
     def _on_worker_failed(self, msg: str):
         if msg == "no_audio_track":
             self._emit_error("این دوربین صدا ندارد (ترک صوتی در استریم نیست).")
+        elif msg.startswith("no_audio_data"):
+            tail = msg[len("no_audio_data"):]
+            self._emit_error(
+                "به دوربین وصل شدیم ولی هیچ بسته‌ی صوتی نرسید. "
+                "احتمالاً میکروفون در تنظیمات وب دوربین خاموش است؛ "
+                "آن را روشن کنید و دوباره امتحان کنید." + tail)
         else:
             self._emit_error(msg)
         self._emit_state("error")
