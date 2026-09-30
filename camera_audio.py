@@ -4,7 +4,9 @@
 معماری (استاندارد و بدون وابستگی جدید):
 - دریافت صدا: RTSP استاندارد — OPTIONS ← DESCRIBE (پیداکردن ترک صوتی در
   SDP) ← SETUP ترک صوتی (RTP/AVP/TCP interleaved) ← PLAY ← بسته‌های RTP
-  صوتی روی همان اتصال TCP.
+  صوتی روی همان اتصال TCP. اگر دوربین SETUP تکیِ صدا را ۴۶۱ بدهد، مسیر
+  دوم (aggregate مثل VLC) امتحان می‌شود: اول SETUP ویدیو، بعد SETUP صدا
+  با همان Session.
 - دیکد: G.711 μ-law (رایج‌ترین) و A-law به PCM16.
 - پخش: QAudioSink از PyQt6.QtMultimedia (از قبل برای صدای آژیر استفاده
   می‌شود؛ چیزی به requirements اضافه نشد) — ۸kHz مونو.
@@ -128,11 +130,11 @@ def parse_rtp_packet(pkt: bytes):
 # پارس SDP — پیداکردن ترک صوتی
 # ---------------------------------------------------------------------------
 
-def parse_sdp_audio(sdp_text: str, base_url: str):
-    """پیداکردن اولین ترک صوتی قابل‌پخش در SDP.
+def _parse_sdp_section(sdp_text: str, base_url: str, media: str):
+    """پیداکردن اولین سکشن از نوع media («audio» یا «video») در SDP.
 
     خروجی: dict با کلیدهای control_url / pt / codec / clock / channels
-    یا None اگر ترک صوتی نباشد.
+    یا None اگر چنین سکشنی نباشد.
     """
     sections = []
     current = None
@@ -161,7 +163,7 @@ def parse_sdp_audio(sdp_text: str, base_url: str):
 
     for sec in sections:
         parts = sec["m"].split()
-        if len(parts) < 4 or parts[0].lower() != "audio":
+        if len(parts) < 4 or parts[0].lower() != media:
             continue
         pt_list = []
         for p in parts[3:]:
@@ -188,6 +190,19 @@ def parse_sdp_audio(sdp_text: str, base_url: str):
                 "channels": ch,
             }
     return None
+
+
+def parse_sdp_tracks(sdp_text: str, base_url: str) -> dict:
+    """سکشن‌های ویدیو و صدا: {"video": ...|None, "audio": ...|None}."""
+    return {
+        "video": _parse_sdp_section(sdp_text, base_url, "video"),
+        "audio": _parse_sdp_section(sdp_text, base_url, "audio"),
+    }
+
+
+def parse_sdp_audio(sdp_text: str, base_url: str):
+    """پیداکردن اولین ترک صوتی قابل‌پخش در SDP (سازگار با نسخه‌های قبل)."""
+    return parse_sdp_tracks(sdp_text, base_url)["audio"]
 
 
 def _resolve_control_url(control: str, base_url: str) -> str:
@@ -355,7 +370,8 @@ class RTSPAudioClient:
                     in_audio = ls.startswith("m=audio")
                 if in_audio:
                     self._debug.append(f"  sdp: {ls}")
-        audio = parse_sdp_audio(sdp, self.url)
+        tracks = parse_sdp_tracks(sdp, self.url)
+        audio, video = tracks["audio"], tracks["video"]
         if not audio:
             raise RTSPError("no_audio_track")
         self.audio = audio
@@ -382,7 +398,20 @@ class RTSPAudioClient:
                 if "(کد 461)" not in str(e) and "(کد 4" not in str(e):
                     raise
         else:
-            raise last_err
+            # مسیر دوم (aggregate، مثل VLC): بعضی فریمورها (مثل XM) SETUP
+            # تکیِ ترک صوتی را همیشه ۴۶۱ می‌دهند و صدا را فقط داخل Session
+            # ساخته‌شده با SETUP ویدیو قبول می‌کنند.
+            if udp_sock is not None:
+                try:
+                    udp_sock.close()
+                except Exception:
+                    pass
+            if video is None:
+                raise last_err
+            try:
+                self._connect_aggregate(video, audio)
+            except RTSPError:
+                raise last_err
         if self._mode == "tcp" and udp_sock is not None:
             try:
                 udp_sock.close()
@@ -409,6 +438,44 @@ class RTSPAudioClient:
                     pass
                 continue
         return None, 0
+
+    def _connect_aggregate(self, video: dict, audio: dict):
+        """مسیر aggregate (مثل VLC): SETUP ویدیو ← Session ← SETUP صدا.
+
+        بعضی فریمورها (مثل XM) SETUP تکیِ ترک صوتی را همیشه با ۴۶۱ رد
+        می‌کنند و ترک صوتی را فقط داخل Session ساخته‌شده با SETUP ویدیو
+        قبول می‌کنند. ویدیو روی کانال ۰-۱ و صدا روی ۲-۳ می‌آید؛ فریم‌های
+        ویدیو در read_audio_frame رد می‌شوند.
+        """
+        if self._debug is not None:
+            self._debug.append("aggregate: video-first SETUP")
+        code, headers, _ = self._request(
+            "SETUP", url=video["control_url"],
+            headers={"Transport": "RTP/AVP/TCP;unicast;interleaved=0-1"})
+        if self._debug is not None:
+            self._debug.append(f"  video SETUP -> {code}")
+        if code != 200:
+            raise RTSPError(f"SETUP ویدیو رد شد (کد {code})")
+        session = headers.get("session", "").split(";")[0].strip()
+        if not session:
+            raise RTSPError("دوربین Session برنگرداند")
+        # از اینجا _request خودش هدر Session را می‌فرستد
+        self.session_id = session
+        code, headers, _ = self._request(
+            "SETUP", url=audio["control_url"],
+            headers={"Transport": "RTP/AVP/TCP;unicast;interleaved=2-3"})
+        if self._debug is not None:
+            self._debug.append(f"  audio SETUP (aggregate) -> {code}")
+            self._debug.append(
+                f"  transport recv: {headers.get('transport', '')}")
+        if code != 200:
+            raise RTSPError(f"SETUP ترک صوتی رد شد (کد {code})")
+        session2 = headers.get("session", "").split(";")[0].strip()
+        if session2:
+            self.session_id = session2
+        m = re.search(r"interleaved=(\d+)", headers.get("transport", ""))
+        self._rtp_channel = int(m.group(1)) if m else 2
+        self._mode = "tcp"
 
     def _setup_audio_track(self, transport: str, mode: str,
                            udp_sock=None, udp_port: int = 0):
