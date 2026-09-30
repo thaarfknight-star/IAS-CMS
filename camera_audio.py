@@ -345,6 +345,16 @@ class RTSPAudioClient:
         if code != 200:
             raise RTSPError(f"DESCRIBE رد شد (کد {code})")
         sdp = body.decode("utf-8", errors="replace")
+        if self._debug is not None:
+            # سکشن صوتی SDP — برای فهمیدن اینکه دوربین دقیقاً چه ترکی
+            # معرفی می‌کند (control URL، کدک، ...)
+            in_audio = False
+            for line in sdp.splitlines():
+                ls = line.strip()
+                if ls.startswith("m="):
+                    in_audio = ls.startswith("m=audio")
+                if in_audio:
+                    self._debug.append(f"  sdp: {ls}")
         audio = parse_sdp_audio(sdp, self.url)
         if not audio:
             raise RTSPError("no_audio_track")
