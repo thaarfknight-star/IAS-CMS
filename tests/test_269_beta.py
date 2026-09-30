@@ -208,8 +208,8 @@ def test_debug_log_includes_sdp_audio_section():
         assert "sdp: m=audio 5004 RTP/AVP 0" in log
         assert "sdp: a=rtpmap:0 PCMU/8000" in log
         assert "sdp: a=control:trackID=1" in log
-        # سکشن ویدیو نباید لاگ شود
-        assert "sdp: m=video" not in log
+        # از 2.0.87: سکشن ویدیو هم لاگ می‌شود (تشخیص مسیر aggregate)
+        assert "sdp: m=video" in log
     finally:
         c.close()
     srv.join(timeout=5)
