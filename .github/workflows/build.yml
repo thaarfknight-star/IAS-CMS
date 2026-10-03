@@ -3,6 +3,9 @@ name: Build Desktop EXE
 on:
   push:
     branches: [ "main" ]
+    # مثل NerkhCheck: پوش تگ v* (مثلاً v2.0.93-beta) هم بیلد می‌گیرد و
+    # در انتها «فایل آپدیت» را خودکار در GitHub Release منتشر می‌کند.
+    tags: [ 'v*' ]
   workflow_dispatch:
     inputs:
       quick_test:
@@ -731,19 +734,25 @@ jobs:
         path: dist/manifest.json
         if-no-files-found: warn
 
-    # اتصال «فایل آپدیت» به GitHub Release — فقط با اجرای دستی ورک‌فلو و تیک
-    # publish_release. آپدیت خودکار برنامه (update_checker.py) نسخه‌ی جدید را
-    # از لیست Releaseها می‌خواند؛ بدون این قدم، هشدار آپدیت هیچ‌وقت نمی‌آید.
+    # اتصال «فایل آپدیت» به GitHub Release — خودکار وقتی تگ v* پوش می‌شود
+    # (مثل NerkhCheck)، یا با اجرای دستی ورک‌فلو + تیک publish_release.
+    # آپدیت خودکار برنامه (update_checker.py) نسخه‌ی جدید را از لیست
+    # Releaseها می‌خواند؛ بدون این قدم، هشدار آپدیت هیچ‌وقت نمی‌آید.
     # اگر Release آن نسخه از قبل ساخته شده باشد، فقط فایل جایگزین می‌شود.
     - name: Publish update package to GitHub Release
-      if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release == 'true' }}
+      if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release == 'true') }}
       shell: pwsh
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
         $ErrorActionPreference = "Stop"
-        $ver = (Get-Content version.txt -Raw).Trim()
-        $tag = "v$ver"
+        if ("${{ github.ref_type }}" -eq "tag") {
+          $tag = "${{ github.ref_name }}"
+          $ver = $tag -replace '^v',''
+        } else {
+          $ver = (Get-Content version.txt -Raw).Trim()
+          $tag = "v$ver"
+        }
         $zip = Get-ChildItem "dist/IAS-CMS-Update-v$ver.zip" | Select-Object -First 1
         if (-not $zip) { throw "update zip not found: dist/IAS-CMS-Update-v$ver.zip" }
         $notes = "IAS Viewer $ver — فایل آپدیت خودکار برنامه."
