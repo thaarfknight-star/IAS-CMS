@@ -398,8 +398,12 @@ class RTSPAudioClient:
             www = resp_headers.get("www-authenticate", "")
             if "digest" in www.lower():
                 challenge = _parse_challenge(www)
+                # اگر credential داخل URL بود، از uri دایجست حذفش می‌کنیم
+                # (سرورها userinfo را در uri دایجست قبول ندارند)
+                digest_target = self._strip_userinfo(target)
                 new_auth = build_digest_auth(
-                    self.username, self.password, method, target, challenge)
+                    self.username, self.password, method, digest_target,
+                    challenge)
                 if new_auth != self._auth_header:
                     self._auth_header = new_auth
                     return self._request(method, url, headers, body,
@@ -452,12 +456,25 @@ class RTSPAudioClient:
         for uri in onvif_uris:
             if self._same_rtsp_url(uri, self.url):
                 continue
-            self._progress(f"ONVIF: {uri}")
+            self._progress(f"ONVIF: {self._mask_creds(uri)}")
             try:
                 audio2, video2 = self._describe_only(uri)
             except RTSPError as e:
-                self._log(f"ONVIF: DESCRIBE ناموفق ({e})")
-                continue
+                # بعضی فریمورها (XM) برای مسیرهای ONVIF احراز هویت Digest
+                # را قبول نمی‌کنند ولی یوزر/پس داخل خود URL را می‌پذیرند —
+                # یک بار هم با credential داخل URL امتحان می‌کنیم.
+                if "احرازهویت" in str(e) and self.username:
+                    self._log("ONVIF: تلاش با یوزر/پس داخل URL…")
+                    try:
+                        uri_creds = self._embed_creds(uri)
+                        audio2, video2 = self._describe_only(uri_creds)
+                        uri = uri_creds
+                    except RTSPError as e2:
+                        self._log(f"ONVIF: DESCRIBE ناموفق ({e2})")
+                        continue
+                else:
+                    self._log(f"ONVIF: DESCRIBE ناموفق ({e})")
+                    continue
             if not audio2:
                 self._log("ONVIF: این URI ترک صوتی ندارد")
                 continue
@@ -470,6 +487,40 @@ class RTSPAudioClient:
             finally:
                 self.url = orig_url
         raise self._last_err
+
+    def _embed_creds(self, uri: str) -> str:
+        """جاسازی یوزر/پس داخل URL (برای فریمورهایی که Digest را روی
+        بعضی مسیرها قبول ندارند ولی credential داخل URL را می‌پذیرند)."""
+        from urllib.parse import urlparse, quote
+        p = urlparse(uri)
+        user = quote(self.username, safe="")
+        pwd = quote(self.password or "", safe="")
+        host = p.hostname or ""
+        port = f":{p.port}" if p.port else ""
+        rest = p.path or "/"
+        if p.query:
+            rest += "?" + p.query
+        return f"{p.scheme}://{user}:{pwd}@{host}{port}{rest}"
+
+    @staticmethod
+    def _strip_userinfo(url: str) -> str:
+        """حذف کامل userinfo از URL (برای uri دایجست)."""
+        from urllib.parse import urlparse
+        p = urlparse(url)
+        if "@" in (p.netloc or ""):
+            host = p.netloc.rsplit("@", 1)[1]
+            return url.replace(p.netloc, host, 1)
+        return url
+
+    @staticmethod
+    def _mask_creds(url: str) -> str:
+        """حذف یوزر/پس از URL برای لاگ (هرگز رمز لاگ نمی‌شود)."""
+        from urllib.parse import urlparse
+        p = urlparse(url)
+        if "@" in (p.netloc or ""):
+            host = p.netloc.rsplit("@", 1)[1]
+            return url.replace(p.netloc, "***@" + host, 1)
+        return url
 
     def _finalize_ok(self):
         if self._mode == "tcp" and self._udp_sock is not None:
@@ -883,7 +934,7 @@ class RTSPAudioClient:
                 "SETUP", url=track_url,
                 headers={"Transport": transport})
             if self._debug is not None:
-                self._log(f"  setup url: {track_url}")
+                self._log(f"  setup url: {self._mask_creds(track_url)}")
                 self._log(f"  transport sent: {transport}")
                 self._log(
                     f"  transport recv: {headers.get('transport', '')}")
