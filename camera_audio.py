@@ -1062,33 +1062,40 @@ def build_listen_url(cam) -> str:
 def build_nvr_proxy_listen_url(cam):
     """URLهای پروکسی NVR برای شنیدن صدای کانال (لیست به‌ترتیب اولویت).
 
-    بعضی NVRها در GetStreamUri آدرس RTSP مستقیم خودِ دوربین را
-    برمی‌گردانند (نه پروکسی NVR)؛ کانال با همان URL مستقیم ثبت می‌شود.
-    ولی اگر دوربین مستقیم صدا نفرستد و NVR صدا داشته باشد، برای «شنیدن
-    صدا» باید از پروکسی RTSP خودِ NVR استفاده کرد. چون فرمت آدرس NVRها
-    بر اساس برند فرق دارد، هر سه فرمت رایج را برمی‌گردانیم:
+    اگر کانال NVR باشد (nvr_id و channel داشته باشد)، کاندیداهای پروکسی
+    RTSP خودِ NVR را برمی‌گردانیم — چون فرمت آدرس NVRها بر اساس برند فرق
+    دارد، هر سه فرمت رایج را امتحان می‌کنیم:
     - XM: rtsp://NVR_IP:554/h264/chN/main/av_stream
     - Dahua: rtsp://NVR_IP:554/cam/realmonitor?channel=N&subtype=0
     - Hikvision: rtsp://NVR_IP:554/Streaming/Channels/N01
-    خروجی لیست خالی یعنی نیازی به fallback نیست (از قبل از طریق NVR است).
+    اگر آدرس اصلی از قبل به IP خودِ NVR اشاره کند، لیست خالی برمی‌گردد
+    (نیازی به پروکسی نیست).
     """
     nvr_id = cam.get("nvr_id")
     channel = cam.get("channel")
-    full_url = cam.get("full_url")
-    if not (nvr_id and channel and full_url):
+    if not (nvr_id and channel):
         return []
-    url_host = (urlparse(full_url).hostname or "").lower()
-    nvr_ip = (cam.get("ip") or "").lower()
-    if not url_host or not nvr_ip or url_host == nvr_ip:
-        return []  # از قبل از طریق NVR است
-    try:
-        port = int(cam.get("port") or 554)
-    except (TypeError, ValueError):
-        port = 554
     try:
         ch = int(channel)
     except (TypeError, ValueError):
         return []
+    # IP خودِ NVR: برای کانال‌ها، فیلد ip همان IP NVR است
+    nvr_ip = (cam.get("ip") or "").lower()
+    if not nvr_ip:
+        return []
+    # اگر آدرس اصلی از قبل به NVR اشاره می‌کند، پروکسی لازم نیست.
+    # (منطق ساده‌شده‌ی CameraStore.build_rtsp_url بدون import سنگین)
+    full_url = cam.get("full_url")
+    if full_url:
+        main_host = (urlparse(full_url).hostname or "").lower()
+    else:
+        main_host = nvr_ip  # بدون full_url، آدرس از ip ساخته می‌شود
+    if main_host == nvr_ip:
+        return []
+    try:
+        port = int(cam.get("port") or 554)
+    except (TypeError, ValueError):
+        port = 554
     base = f"rtsp://{nvr_ip}:{port}"
     return [
         f"{base}/h264/ch{ch}/main/av_stream",                    # XM
@@ -1358,10 +1365,26 @@ class ListenSession:
             return False
         self._emit_state("connecting")
         url = build_listen_url(cam)
+        # لاگ تشخیصی: ببینیم کانال NVR چه فیلدهایی دارد
+        nvr_urls = build_nvr_proxy_listen_url(cam)
+        try:
+            import os, time as _t
+            _dbg = os.path.join(os.path.expanduser("~"),
+                                "IAS-Viewer-listen-debug.log")
+            with open(_dbg, "a", encoding="utf-8") as _f:
+                _f.write(f"\n=== {_t.strftime('%Y-%m-%d %H:%M:%S')} "
+                         f"(NVR-probe) ===\n")
+                _f.write(f"cam ip={cam.get('ip')} port={cam.get('port')} "
+                         f"nvr_id={cam.get('nvr_id')} channel={cam.get('channel')} "
+                         f"camera_ip={cam.get('camera_ip')}\n")
+                _f.write(f"full_url={cam.get('full_url')}\n")
+                _f.write(f"listen url={url}\n")
+                _f.write(f"nvr proxy urls={nvr_urls}\n")
+        except Exception:
+            pass
         # اگر کانال NVR با URL مستقیم دوربین ثبت شده، اول کاندیداهای پروکسی
         # NVR را امتحان می‌کنیم (تایم‌اوت کوتاه ۴ ثانیه، فقط probe) و بعد
         # آدرس مستقیم را به‌عنوان fallback
-        nvr_urls = build_nvr_proxy_listen_url(cam)
         url_items = [(u, 4.0) for u in nvr_urls] + [(url, 8.0)]
         self._worker = self._Worker(url_items, cam.get("user", "") or "",
                                    cam.get("pass", "") or "")

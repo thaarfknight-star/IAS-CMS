@@ -195,11 +195,11 @@ def test_276_mask_and_embed_helpers():
 
 
 def test_276_nvr_proxy_listen_url():
-    """کانال NVR که با URL مستقیم دوربین ثبت شده → لیست URLهای پروکسی NVR
-    (XM/Dahua/Hikvision)؛ در غیر این صورت لیست خالی."""
+    """کانال NVR که آدرسش به دوربین (نه NVR) اشاره می‌کند → لیست URLهای
+    پروکسی NVR (XM/Dahua/Hikvision)؛ در غیر این صورت لیست خالی."""
     from camera_audio import build_nvr_proxy_listen_url
 
-    # حالت طه: full_url به IP دوربین اشاره می‌کند، نه NVR
+    # حالت طه: کانال NVR ولی آدرس مستقیم دوربین
     cam = {
         "nvr_id": "nvr-1",
         "channel": 3,
@@ -214,14 +214,19 @@ def test_276_nvr_proxy_listen_url():
         "rtsp://192.168.1.100:554/Streaming/Channels/301",
     ]
 
-    # از قبل از طریق NVR است → []
-    cam2 = dict(cam, full_url="rtsp://192.168.1.100:554/h264/ch3/main/av_stream")
-    assert build_nvr_proxy_listen_url(cam2) == []
+    # بدون full_url و با path روی خود NVR → [] (از قبل از طریق NVR است)
+    cam_noproxy = {"nvr_id": "nvr-1", "channel": 2, "ip": "192.168.1.100",
+                   "port": 554, "path": "h264/ch2/main/av_stream"}
+    assert build_nvr_proxy_listen_url(cam_noproxy) == []
+
+    # آدرس اصلی از قبل به NVR اشاره می‌کند → []
+    cam3 = {"nvr_id": "nvr-1", "channel": 2, "ip": "192.168.1.100",
+            "port": 554, "path": "h264/ch2/main/av_stream"}
+    assert build_nvr_proxy_listen_url(cam3) == []
 
     # دوربین عادی (بدون NVR) → []
     assert build_nvr_proxy_listen_url({"ip": "192.168.1.138"}) == []
 
     # بدون channel → []
     assert build_nvr_proxy_listen_url(
-        {"nvr_id": "nvr-1", "ip": "192.168.1.100",
-         "full_url": "rtsp://192.168.1.138:554/x"}) == []
+        {"nvr_id": "nvr-1", "ip": "192.168.1.100"}) == []
