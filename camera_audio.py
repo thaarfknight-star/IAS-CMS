@@ -1060,24 +1060,27 @@ def build_listen_url(cam) -> str:
 
 
 def build_nvr_proxy_listen_url(cam):
-    """URL پروکسی NVR برای شنیدن صدای کانال (fallback).
+    """URLهای پروکسی NVR برای شنیدن صدای کانال (لیست به‌ترتیب اولویت).
 
     بعضی NVRها در GetStreamUri آدرس RTSP مستقیم خودِ دوربین را
     برمی‌گردانند (نه پروکسی NVR)؛ کانال با همان URL مستقیم ثبت می‌شود.
     ولی اگر دوربین مستقیم صدا نفرستد و NVR صدا داشته باشد، برای «شنیدن
-    صدا» باید از پروکسی RTSP خودِ NVR استفاده کرد:
-    rtsp://NVR_IP:554/h264/chN/main/av_stream
-    خروجی None یعنی نیازی به fallback نیست (از قبل از طریق NVR است).
+    صدا» باید از پروکسی RTSP خودِ NVR استفاده کرد. چون فرمت آدرس NVRها
+    بر اساس برند فرق دارد، هر سه فرمت رایج را برمی‌گردانیم:
+    - XM: rtsp://NVR_IP:554/h264/chN/main/av_stream
+    - Dahua: rtsp://NVR_IP:554/cam/realmonitor?channel=N&subtype=0
+    - Hikvision: rtsp://NVR_IP:554/Streaming/Channels/N01
+    خروجی لیست خالی یعنی نیازی به fallback نیست (از قبل از طریق NVR است).
     """
     nvr_id = cam.get("nvr_id")
     channel = cam.get("channel")
     full_url = cam.get("full_url")
     if not (nvr_id and channel and full_url):
-        return None
+        return []
     url_host = (urlparse(full_url).hostname or "").lower()
     nvr_ip = (cam.get("ip") or "").lower()
     if not url_host or not nvr_ip or url_host == nvr_ip:
-        return None  # از قبل از طریق NVR است
+        return []  # از قبل از طریق NVR است
     try:
         port = int(cam.get("port") or 554)
     except (TypeError, ValueError):
@@ -1085,8 +1088,13 @@ def build_nvr_proxy_listen_url(cam):
     try:
         ch = int(channel)
     except (TypeError, ValueError):
-        return None
-    return f"rtsp://{nvr_ip}:{port}/h264/ch{ch}/main/av_stream"
+        return []
+    base = f"rtsp://{nvr_ip}:{port}"
+    return [
+        f"{base}/h264/ch{ch}/main/av_stream",                    # XM
+        f"{base}/cam/realmonitor?channel={ch}&subtype=0",        # Dahua
+        f"{base}/Streaming/Channels/{ch}01",                     # Hikvision
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1115,13 +1123,14 @@ class ListenSession:
             failed = pyqtSignal(str)
             connected = pyqtSignal(dict)
 
-            def __init__(self, urls, user, pwd):
+            def __init__(self, url_items, user, pwd):
                 super().__init__()
-                # urls: لیست آدرس‌ها به‌ترتیب اولویت (مثلاً اول پروکسی NVR،
-                # بعد آدرس مستقیم). برای سازگاری، رشته‌ی تکی هم قبول است.
-                if isinstance(urls, str):
-                    urls = [urls]
-                self._urls = urls
+                # url_items: لیست (url, timeout) به‌ترتیب اولویت — مثلاً اول
+                # کاندیداهای پروکسی NVR (تایم‌اوت کوتاه، فقط probe)، بعد
+                # آدرس مستقیم. برای سازگاری، رشته‌ی تکی هم قبول است.
+                if isinstance(url_items, str):
+                    url_items = [(url_items, 8.0)]
+                self._url_items = url_items
                 self._user, self._pwd = user, pwd
                 self._stop = False
                 self._client = None
@@ -1181,11 +1190,11 @@ class ListenSession:
                 try:
                     last_err, last_client = None, None
                     info = None
-                    for url in self._urls:
+                    for url, timeout in self._url_items:
                         if self._stop:
                             return
                         client = RTSPAudioClient(url, self._user, self._pwd,
-                                                 debug=True)
+                                                 debug=True, timeout=timeout)
                         self._client = client
                         last_client = client
                         # پیشرفت مسیرها را به دیالوگ می‌فرستیم تا «در حال اتصال»
@@ -1349,11 +1358,12 @@ class ListenSession:
             return False
         self._emit_state("connecting")
         url = build_listen_url(cam)
-        # اگر کانال NVR با URL مستقیم دوربین ثبت شده، اول پروکسی NVR را
-        # امتحان می‌کنیم (NVR صدا دارد)، بعد آدرس مستقیم را به‌عنوان fallback
-        nvr_url = build_nvr_proxy_listen_url(cam)
-        urls = [nvr_url, url] if nvr_url else [url]
-        self._worker = self._Worker(urls, cam.get("user", "") or "",
+        # اگر کانال NVR با URL مستقیم دوربین ثبت شده، اول کاندیداهای پروکسی
+        # NVR را امتحان می‌کنیم (تایم‌اوت کوتاه ۴ ثانیه، فقط probe) و بعد
+        # آدرس مستقیم را به‌عنوان fallback
+        nvr_urls = build_nvr_proxy_listen_url(cam)
+        url_items = [(u, 4.0) for u in nvr_urls] + [(url, 8.0)]
+        self._worker = self._Worker(url_items, cam.get("user", "") or "",
                                    cam.get("pass", "") or "")
         self._worker.pcm_ready.connect(self._on_pcm)
         self._worker.connected.connect(self._on_worker_connected)
