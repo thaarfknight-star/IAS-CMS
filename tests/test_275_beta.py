@@ -17,6 +17,11 @@
 2. fallback به URI متفاوت ONVIF وقتی آدرس اصلی صدا نمی‌دهد.
 3. on_progress در طول connect() صدا زده می‌شود.
 4. خطاهای لاگ تایم‌استمپ دارند.
+5. (2.0.92) RST وسط handshake (مثل WinError 10054): به RTSPError فارسی
+   تبدیل می‌شود، کلاینت reconnect می‌کند و مسیر بعدی را امتحان می‌کند؛
+   اگر همه RST بخورند، خطای فارسی + لاگ می‌دهد نه OSError خام.
+6. (2.0.92) بین مسیرها TEARDOWN روی همان اتصال (بدون reconnect) —
+   ملایم‌تر برای دوربین.
 """
 
 import re
@@ -274,3 +279,153 @@ def test_275_log_lines_have_timestamps():
     assert lines, "لاگ خالی است"
     for l in lines:
         assert re.match(r"\[\s*\d+\.\d+s\] ", l), f"بدون تایم‌استمپ: {l[:60]}"
+
+
+class RstServer(threading.Thread):
+    """اتصال اول را وسط SETUP با RST می‌بندد (شبیه WinError 10054)؛
+    اتصال بعدی عادی است و صدا می‌فرستد."""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.n_conn = 0
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(("127.0.0.1", 0))
+        self.port = self.sock.getsockname()[1]
+        self.sock.listen(5)
+
+    def _read_request(self, conn):
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = conn.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        head = data.decode("iso-8859-1")
+        return head.split(" ", 2)[0] if " " in head else ""
+
+    def _respond(self, conn, code, msg, headers=None, body=b""):
+        out = [f"RTSP/1.0 {code} {msg}", "CSeq: 1"]
+        for k, v in (headers or {}).items():
+            out.append(f"{k}: {v}")
+        if body:
+            out.append(f"Content-Length: {len(body)}")
+        conn.sendall(("\r\n".join(out) + "\r\n\r\n").encode() + body)
+
+    def _rst_close(self, conn):
+        import struct as _st
+        try:
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                            _st.pack("ii", 1, 0))
+        except OSError:
+            pass
+        conn.close()
+
+    def _handle(self, conn, kill_on_setup):
+        conn.settimeout(10)
+        try:
+            while True:
+                method = self._read_request(conn)
+                if not method:
+                    return
+                if method == "OPTIONS":
+                    self._respond(conn, 200, "OK")
+                elif method == "DESCRIBE":
+                    self._respond(conn, 200, "OK", body=SDP_XM.encode())
+                elif method == "SETUP":
+                    if kill_on_setup:
+                        self._rst_close(conn)
+                        return
+                    self._respond(conn, 200, "OK", headers={
+                        "Session": "S1",
+                        "Transport": "RTP/AVP/TCP;unicast;interleaved=0-1"})
+                elif method == "PLAY":
+                    self._respond(conn, 200, "OK", headers={"Session": "S1"})
+                    for i in range(2):
+                        conn.sendall(_interleaved(
+                            0, _rtp(8, b"\xE5" * 160, seq=i)))
+                    return
+                elif method == "TEARDOWN":
+                    self._respond(conn, 200, "OK")
+                    return
+        except OSError:
+            pass
+
+    def run(self):
+        while True:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            self.n_conn += 1
+            threading.Thread(target=self._handle,
+                             args=(conn, self.n_conn == 1),
+                             daemon=True).start()
+
+    def stop(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+def test_275_rst_mid_handshake_reconnects_and_succeeds(monkeypatch):
+    """RST وسط SETUP (مثل 10054 طه): خطا فارسی/لاگ‌دار می‌شود، کلاینت
+    reconnect می‌کند و مسیر بعدی موفق می‌شود — نه abort."""
+    monkeypatch.setattr(onvif_scan, "onvif_get_stream_uris",
+                        lambda *a, **k: [])
+    srv = RstServer()
+    srv.start()
+    c = RTSPAudioClient(f"rtsp://127.0.0.1:{srv.port}/live",
+                        "", "", timeout=6.0, debug=True)
+    orig = RTSPAudioClient._play_and_verify_audio
+    RTSPAudioClient._play_and_verify_audio = (
+        lambda self, name, timeout=1.5: orig(self, name, timeout))
+    try:
+        info = c.connect()
+        log = "\n".join(c._debug)
+    finally:
+        RTSPAudioClient._play_and_verify_audio = orig
+        try:
+            c.close()
+        except Exception:
+            pass
+        srv.stop()
+    assert info["codec"] == "PCMA"
+    # RST به RTSPError فارسی تبدیل شده (نه اکسپشن خام)
+    assert "SETUP -> قطع ارتباط" in log
+    assert "سوکت مرده، اتصال تازه" in log
+    assert srv.n_conn >= 2  # واقعاً reconnect شده
+
+
+def test_275_rst_everywhere_gives_rtsterror_with_log(monkeypatch):
+    """اگر همه‌ی اتصال‌ها RST بخورند: RTSPError (نه OSError خام) + لاگ."""
+    monkeypatch.setattr(onvif_scan, "onvif_get_stream_uris",
+                        lambda *a, **k: [])
+
+    class AlwaysRst(RstServer):
+        def run(self):
+            while True:
+                try:
+                    conn, _ = self.sock.accept()
+                except OSError:
+                    return
+                # RST فوری روی هر اتصال
+                self._rst_close(conn)
+
+    srv = AlwaysRst()
+    srv.start()
+    c = RTSPAudioClient(f"rtsp://127.0.0.1:{srv.port}/live",
+                        "", "", timeout=4.0, debug=True)
+    try:
+        with pytest.raises(RTSPError) as ei:
+            c.connect()
+        log = "\n".join(c._debug)
+    finally:
+        srv.stop()
+    # پیام فارسی و قابل‌فهم، نه OSError خام انگلیسی
+    assert isinstance(ei.value, RTSPError)
+    assert ("قطع ارتباط" in str(ei.value) or "نشد" in str(ei.value))
+    assert "WinError" not in str(ei.value)
+    assert "Errno" not in str(ei.value)
+    assert "قطع ارتباط" in log  # نقطه‌ی دقیق شکست در لاگ هست

@@ -37,6 +37,11 @@ NVR)؛ اگر ترک صوتی نباشد پیام روشن نمایش داده �
 لاگ عیب‌یابی تایم‌استمپ دارد؛ و اگر هیچ مسیری روی آدرس تنظیم‌شده صدا
 نداد، اسکن ONVIF (GetCapabilities ← GetProfiles ← GetStreamUri) اجرا
 می‌شود و URIهای متفاوتی که خود دوربین معرفی می‌کند امتحان می‌شوند.
+
+2.0.92-beta: قطع ارتباط وسط handshake (مثل WinError 10054) به‌جای
+OSError خام، خطای فارسی لاگ‌دار می‌دهد؛ بین مسیرها TEARDOWN روی همان
+اتصال نگه داشته می‌شود (reconnect کمتر) و اگر سوکت مرد، اتصال تازه با
+مکث کوتاه باز می‌شود.
 """
 
 import re
@@ -373,8 +378,16 @@ class RTSPAudioClient:
         if body:
             lines.append(f"Content-Length: {len(body)}")
         raw = ("\r\n".join(lines) + "\r\n\r\n").encode("utf-8") + body
-        self.sock.sendall(raw)
-        code, resp_headers, resp_body = self._read_response()
+        try:
+            self.sock.sendall(raw)
+            code, resp_headers, resp_body = self._read_response()
+        except OSError as e:
+            # قطع ارتباط وسط handshake (مثل WinError 10054: دوربین اتصال
+            # را بست) — به‌صورت RTSPError بالا می‌آید تا لاگ عیب‌یابی
+            # نوشته شود و پیام فارسی نمایش داده شود
+            self._log(f"{method} -> قطع ارتباط ({e})")
+            raise RTSPError(
+                f"قطع ارتباط حین {method} (دوربین اتصال را بست)")
         if self._debug is not None:
             # فقط متد و کد پاسخ — هرگز هدر Authorization لاگ نمی‌شود
             self._log(f"{method} -> {code}")
@@ -405,7 +418,10 @@ class RTSPAudioClient:
             self.sock = socket.create_connection(
                 (self.host, self.port), timeout=self.timeout)
         except OSError as e:
-            raise RTSPError(f"اتصال به {self.host}:{self.port} نشد: {e}")
+            self._log(f"create_connection -> شکست ({e})")
+            raise RTSPError(
+                f"اتصال به {self.host}:{self.port} نشد "
+                "(دوربین در دسترس نیست یا اتصال را بست)")
         self.sock.settimeout(self.timeout)
         self._mode = "tcp"
         self._rtp_channel = 0
@@ -527,18 +543,29 @@ class RTSPAudioClient:
             self._progress(label)
             try:
                 self._setup_audio_track(transport, mode, udp_sock, udp_port)
+                self._mode = mode
+                path_ok = self._play_and_verify_audio("direct")
             except RTSPError as e:
                 self._last_err = e
+                if self._is_conn_error(e):
+                    # سوکت مرده — اتصال تازه و ادامه‌ی مسیر بعدی
+                    self._log(f"{label}: سوکت مرده، اتصال تازه…")
+                    try:
+                        self._reset_for_retry()
+                    except RTSPError as e2:
+                        self._last_err = e2
+                        return False
+                    continue
                 # فقط اگر مشکل Transport بود ادامه می‌دهیم
                 if "(کد 461)" not in str(e) and "(کد 4" not in str(e):
                     raise
                 continue
-            self._mode = mode
-            if self._play_and_verify_audio("direct"):
+            if path_ok:
                 connected_ok = True
                 break
             self._last_err = RTSPError("no_audio_data")
-            self._reset_for_retry()
+            # TEARDOWN روی همان اتصال (بدون reconnect) — ملایم‌تر برای دوربین
+            self._teardown_keepalive()
         if not connected_ok:
             # مسیر دوم (aggregate، مثل VLC): بعضی فریمورها (مثل XM) ترک
             # صوتی را فقط داخل Session ساخته‌شده با SETUP ویدیو قبول
@@ -551,32 +578,41 @@ class RTSPAudioClient:
                     pass
             if video is None:
                 raise self._last_err
+            setup_ok, path_ok = False, False
             try:
                 self._connect_aggregate(video, audio)
+                setup_ok = True
+                path_ok = self._play_and_verify_audio("aggregate")
             except RTSPError as e:
                 self._last_err = e
-                self._reset_for_retry()
-            else:
-                if self._play_and_verify_audio("aggregate"):
-                    connected_ok = True
-                else:
-                    self._last_err = RTSPError("no_audio_data")
-                    self._reset_for_retry()
+                if self._is_conn_error(e):
+                    try:
+                        self._reset_for_retry()
+                    except RTSPError as e2:
+                        self._last_err = e2
+            if path_ok:
+                connected_ok = True
+            elif setup_ok:
+                # SETUP موفق بود ولی صدا نرسید
+                self._last_err = RTSPError("no_audio_data")
+                self._teardown_keepalive()
         if not connected_ok:
             # مسیر سوم: session-level aggregate — بعضی فریمورها SETUP تکیِ
             # هیچ ترکی را قبول نمی‌کنند و فقط SETUP روی آدرس اصلی ارائه
             # (presentation URL) را می‌پذیرند؛ بعد از PLAY، صدا و ویدیو
             # قاطی می‌آیند و با payload-type جدا می‌شوند.
             self._progress("session-level aggregate")
+            setup_ok, path_ok = False, False
             try:
                 self._connect_aggregate_session()
+                setup_ok = True
+                path_ok = self._play_and_verify_audio("session")
             except RTSPError as e:
                 self._last_err = e
-            else:
-                if self._play_and_verify_audio("session"):
-                    connected_ok = True
-                else:
-                    self._last_err = RTSPError("no_audio_data")
+            if path_ok:
+                connected_ok = True
+            elif setup_ok:
+                self._last_err = RTSPError("no_audio_data")
         return connected_ok
 
     def _play_and_verify_audio(self, path_name: str,
@@ -633,6 +669,61 @@ class RTSPAudioClient:
             except Exception:
                 pass
 
+    @staticmethod
+    def _is_conn_error(e: Exception) -> bool:
+        msg = str(e)
+        return ("قطع ارتباط" in msg or "بسته شد" in msg
+                or "نشد" in msg)
+
+    def _teardown_keepalive(self):
+        """پایان Session ولی نگه‌داشتن اتصال TCP برای مسیر بعدی.
+
+        اتصال‌های پشت‌سرهم بعضی دوربین‌ها را به قطع ارتباط (RST) وامی‌دارد؛
+        پس بین مسیرها حتی‌المقدور reconnect نمی‌کنیم. ولی اگر سرور اتصال
+        را بعد از TEARDOWN بست/رها کرد، با ping سبک OPTIONS می‌فهمیم و
+        اتصال تازه باز می‌کنیم.
+        """
+        try:
+            if self.session_id:
+                self._request("TEARDOWN")
+        except Exception:
+            pass
+        self.session_id = ""
+        self._rx_buf = b""
+        # خالی‌کردن بسته‌های سرراهیِ مسیر قبلی (حداکثر ۱ ثانیه)
+        if self.sock is not None:
+            try:
+                self.sock.settimeout(0.3)
+                deadline = time.time() + 1.0
+                while time.time() < deadline:
+                    try:
+                        if not self.sock.recv(4096):
+                            break
+                    except OSError:
+                        break
+            except Exception:
+                pass
+        # زنده‌سنجی اتصال با OPTIONS سبک (تایم‌اوت کوتاه)
+        alive = False
+        if self.sock is not None:
+            try:
+                self.sock.settimeout(1.5)
+                self._request("OPTIONS")
+                alive = True
+            except Exception:
+                alive = False
+            finally:
+                try:
+                    self.sock.settimeout(self.timeout)
+                except Exception:
+                    pass
+        if not alive:
+            self._log("keepalive: اتصال مرده، reconnect…")
+            try:
+                self._reset_for_retry()
+            except RTSPError:
+                pass
+
     def _reset_for_retry(self):
         """بستن سشن فعلی و باز کردن اتصال TCP تازه برای مسیر بعدی.
 
@@ -645,14 +736,23 @@ class RTSPAudioClient:
             pass
         try:
             if self.sock is not None:
+                try:
+                    self.sock.shutdown(socket.SHUT_RDWR)
+                except Exception:
+                    pass
                 self.sock.close()
         except Exception:
             pass
+        # مکث کوتاه: اتصال فوریِ پشت‌سرهم بعضی فریمورها را به RST وامی‌دارد
+        time.sleep(1.0)
         try:
             self.sock = socket.create_connection(
                 (self.host, self.port), timeout=self.timeout)
         except OSError as e:
-            raise RTSPError(f"اتصال مجدد به {self.host}:{self.port} نشد: {e}")
+            self._log(f"reconnect -> شکست ({e})")
+            raise RTSPError(
+                f"اتصال مجدد به {self.host}:{self.port} نشد "
+                "(دوربین اتصال را می‌بندد)")
         self.sock.settimeout(self.timeout)
         self.session_id = ""
         self._rx_buf = b""
