@@ -1059,6 +1059,36 @@ def build_listen_url(cam) -> str:
     return f"rtsp://{host}:{port}{path}"
 
 
+def build_nvr_proxy_listen_url(cam):
+    """URL پروکسی NVR برای شنیدن صدای کانال (fallback).
+
+    بعضی NVRها در GetStreamUri آدرس RTSP مستقیم خودِ دوربین را
+    برمی‌گردانند (نه پروکسی NVR)؛ کانال با همان URL مستقیم ثبت می‌شود.
+    ولی اگر دوربین مستقیم صدا نفرستد و NVR صدا داشته باشد، برای «شنیدن
+    صدا» باید از پروکسی RTSP خودِ NVR استفاده کرد:
+    rtsp://NVR_IP:554/h264/chN/main/av_stream
+    خروجی None یعنی نیازی به fallback نیست (از قبل از طریق NVR است).
+    """
+    nvr_id = cam.get("nvr_id")
+    channel = cam.get("channel")
+    full_url = cam.get("full_url")
+    if not (nvr_id and channel and full_url):
+        return None
+    url_host = (urlparse(full_url).hostname or "").lower()
+    nvr_ip = (cam.get("ip") or "").lower()
+    if not url_host or not nvr_ip or url_host == nvr_ip:
+        return None  # از قبل از طریق NVR است
+    try:
+        port = int(cam.get("port") or 554)
+    except (TypeError, ValueError):
+        port = 554
+    try:
+        ch = int(channel)
+    except (TypeError, ValueError):
+        return None
+    return f"rtsp://{nvr_ip}:{port}/h264/ch{ch}/main/av_stream"
+
+
 # ---------------------------------------------------------------------------
 # نشست شنیدن (ترد ورکر + پخش در ترد اصلی) — Qt
 # ---------------------------------------------------------------------------
@@ -1085,9 +1115,14 @@ class ListenSession:
             failed = pyqtSignal(str)
             connected = pyqtSignal(dict)
 
-            def __init__(self, url, user, pwd):
+            def __init__(self, urls, user, pwd):
                 super().__init__()
-                self._url, self._user, self._pwd = url, user, pwd
+                # urls: لیست آدرس‌ها به‌ترتیب اولویت (مثلاً اول پروکسی NVR،
+                # بعد آدرس مستقیم). برای سازگاری، رشته‌ی تکی هم قبول است.
+                if isinstance(urls, str):
+                    urls = [urls]
+                self._urls = urls
+                self._user, self._pwd = user, pwd
                 self._stop = False
                 self._client = None
                 self._info = None
@@ -1141,23 +1176,38 @@ class ListenSession:
                     return ""
 
             def run(self):
-                client = RTSPAudioClient(self._url, self._user, self._pwd,
-                                         debug=True)
-                self._client = client
-                # پیشرفت مسیرها را به دیالوگ می‌فرستیم تا «در حال اتصال»
-                # خشک و بی‌خبر به‌نظر نرسد
-                client.on_progress = lambda name: (
-                    self.state_changed(f"connecting:{name}")
-                    if self.state_changed else None)
+                # چند آدرس را به‌ترتیب امتحان می‌کنیم (مثلاً اول پروکسی NVR
+                # بعد مستقیم)؛ لاگ عیب‌یابی همه‌ی تلاش‌ها ذخیره می‌شود.
                 try:
-                    info = client.connect()
-                except RTSPError as e:
-                    path = self._write_debug_log(client)
-                    msg = str(e)
-                    if path:
-                        msg += f"\nلاگ عیب‌یابی: {path}"
-                    self.failed.emit(msg)
-                    return
+                    last_err, last_client = None, None
+                    info = None
+                    for url in self._urls:
+                        if self._stop:
+                            return
+                        client = RTSPAudioClient(url, self._user, self._pwd,
+                                                 debug=True)
+                        self._client = client
+                        last_client = client
+                        # پیشرفت مسیرها را به دیالوگ می‌فرستیم تا «در حال اتصال»
+                        # خشک و بی‌خبر به‌نظر نرسد
+                        client.on_progress = lambda name: (
+                            self.state_changed(f"connecting:{name}")
+                            if self.state_changed else None)
+                        try:
+                            info = client.connect()
+                            last_err = None
+                            break
+                        except RTSPError as e:
+                            last_err = e
+                            # آدرس بعدی را امتحان می‌کنیم
+                            continue
+                    if last_err is not None:
+                        path = self._write_debug_log(last_client)
+                        msg = str(last_err)
+                        if path:
+                            msg += f"\nلاگ عیب‌یابی: {path}"
+                        self.failed.emit(msg)
+                        return
                 except Exception as e:  # noqa: BLE001
                     self.failed.emit(f"خطای اتصال: {e}"[:120])
                     return
@@ -1299,7 +1349,11 @@ class ListenSession:
             return False
         self._emit_state("connecting")
         url = build_listen_url(cam)
-        self._worker = self._Worker(url, cam.get("user", "") or "",
+        # اگر کانال NVR با URL مستقیم دوربین ثبت شده، اول پروکسی NVR را
+        # امتحان می‌کنیم (NVR صدا دارد)، بعد آدرس مستقیم را به‌عنوان fallback
+        nvr_url = build_nvr_proxy_listen_url(cam)
+        urls = [nvr_url, url] if nvr_url else [url]
+        self._worker = self._Worker(urls, cam.get("user", "") or "",
                                    cam.get("pass", "") or "")
         self._worker.pcm_ready.connect(self._on_pcm)
         self._worker.connected.connect(self._on_worker_connected)

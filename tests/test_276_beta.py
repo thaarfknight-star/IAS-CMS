@@ -192,3 +192,32 @@ def test_276_mask_and_embed_helpers():
     # بدون credential دست‌نخورده برمی‌گردد
     assert c._mask_creds(uri) == uri
     assert c._strip_userinfo(uri) == uri
+
+
+def test_276_nvr_proxy_listen_url():
+    """کانال NVR که با URL مستقیم دوربین ثبت شده → URL پروکسی NVR ساخته
+    می‌شود؛ در غیر این صورت None."""
+    from camera_audio import build_nvr_proxy_listen_url
+
+    # حالت طه: full_url به IP دوربین اشاره می‌کند، نه NVR
+    cam = {
+        "nvr_id": "nvr-1",
+        "channel": 3,
+        "ip": "192.168.1.100",      # IP خود NVR
+        "port": 554,
+        "full_url": "rtsp://192.168.1.138:554/h264/ch1/main/av_stream",
+    }
+    assert build_nvr_proxy_listen_url(cam) == \
+        "rtsp://192.168.1.100:554/h264/ch3/main/av_stream"
+
+    # از قبل از طریق NVR است → None
+    cam2 = dict(cam, full_url="rtsp://192.168.1.100:554/h264/ch3/main/av_stream")
+    assert build_nvr_proxy_listen_url(cam2) is None
+
+    # دوربین عادی (بدون NVR) → None
+    assert build_nvr_proxy_listen_url({"ip": "192.168.1.138"}) is None
+
+    # بدون channel → None
+    assert build_nvr_proxy_listen_url(
+        {"nvr_id": "nvr-1", "ip": "192.168.1.100",
+         "full_url": "rtsp://192.168.1.138:554/x"}) is None
