@@ -429,3 +429,121 @@ def test_275_rst_everywhere_gives_rtsterror_with_log(monkeypatch):
     assert "WinError" not in str(ei.value)
     assert "Errno" not in str(ei.value)
     assert "قطع ارتباط" in log  # نقطه‌ی دقیق شکست در لاگ هست
+
+
+class EndlessVideoServer(threading.Thread):
+    """بعد از PLAY ویدیو را بی‌وقفه می‌فرستد (مثل دوربین طه در لاگ ششم)
+    — راستی‌آزمایی باید سر timeout خودش برگردد، نه تا قطع شدن ویدیو."""
+
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(("127.0.0.1", 0))
+        self.port = self.sock.getsockname()[1]
+        self.sock.listen(5)
+
+    def _read_request(self, conn):
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = conn.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        head = data.decode("iso-8859-1")
+        return head.split(" ", 2)[0] if " " in head else ""
+
+    def _respond(self, conn, code, msg, headers=None, body=b""):
+        out = [f"RTSP/1.0 {code} {msg}", "CSeq: 1"]
+        for k, v in (headers or {}).items():
+            out.append(f"{k}: {v}")
+        if body:
+            out.append(f"Content-Length: {len(body)}")
+        conn.sendall(("\r\n".join(out) + "\r\n\r\n").encode() + body)
+
+    def _handle(self, conn):
+        conn.settimeout(10)
+        try:
+            while True:
+                method = self._read_request(conn)
+                if not method:
+                    return
+                if method == "OPTIONS":
+                    self._respond(conn, 200, "OK")
+                elif method == "DESCRIBE":
+                    self._respond(conn, 200, "OK", body=SDP_XM.encode())
+                elif method == "SETUP":
+                    self._respond(conn, 200, "OK", headers={
+                        "Session": "S1",
+                        "Transport": "RTP/AVP/TCP;unicast;interleaved=0-1"})
+                elif method == "PLAY":
+                    self._respond(conn, 200, "OK", headers={"Session": "S1"})
+                    seq = 0
+                    # ویدیوی بی‌وقفه — حداقل ۳۰ ثانیه
+                    end = time.time() + 30
+                    while time.time() < end:
+                        try:
+                            conn.sendall(_interleaved(
+                                0, _rtp(96, b"\x11" * 200, seq=seq)))
+                        except OSError:
+                            return
+                        seq += 1
+                    return
+                elif method == "TEARDOWN":
+                    self._respond(conn, 200, "OK")
+                    return
+        except OSError:
+            pass
+
+    def run(self):
+        while True:
+            try:
+                conn, _ = self.sock.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._handle, args=(conn,),
+                             daemon=True).start()
+
+    def stop(self):
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+
+
+def test_275_verify_timeout_with_endless_video(monkeypatch):
+    """ویدیوی بی‌وقفه نباید راستی‌آزمایی را از timeout خودش (۴ثانیه)
+    فراتر ببرد — باگ لاگ ششم طه (۲۸ ثانیه به‌جای ۴ ثانیه)."""
+    monkeypatch.setattr(onvif_scan, "onvif_get_stream_uris",
+                        lambda *a, **k: [])
+    srv = EndlessVideoServer()
+    srv.start()
+    c = RTSPAudioClient(f"rtsp://127.0.0.1:{srv.port}/live",
+                        "", "", timeout=6.0, debug=True)
+    try:
+        # handshake دستی تا PLAY
+        import socket as _socket
+        c.sock = _socket.create_connection(("127.0.0.1", srv.port),
+                                           timeout=6.0)
+        c.sock.settimeout(6.0)
+        c._t0 = time.time()
+        audio, video = c._options_and_describe(c.url)
+        assert audio is not None
+        c.audio = audio
+        c._setup_audio_track("RTP/AVP/TCP;unicast;interleaved=0-1",
+                             "tcp")
+        t0 = time.time()
+        ok = c._play_and_verify_audio("direct", timeout=4.0)
+        dt = time.time() - t0
+        log = "\n".join(c._debug)
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+        srv.stop()
+    assert ok is False
+    assert "no audio packet" in log
+    # باید حدود ۴ ثانیه طول بکشد، نه ۳۰ ثانیه
+    assert dt < 10, f"verify took {dt:.1f}s (expected ~4s)"
+    assert c._rtp_total > 100  # ویدیو واقعاً می‌آمد

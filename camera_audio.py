@@ -643,7 +643,10 @@ class RTSPAudioClient:
             deadline = time.time() + timeout
             while time.time() < deadline:
                 try:
-                    self.read_audio_frame()
+                    # timeout داخلی تا حلقه‌ی read_audio_frame (که ویدیوها
+                    # را رد می‌کند) ددلاین بیرونی را دور نزند
+                    self.read_audio_frame(
+                        timeout=max(0.5, deadline - time.time()))
                 except OSError:
                     continue  # timeout — هنوز منتظر می‌مانیم
                 except RTSPError:
@@ -907,15 +910,22 @@ class RTSPAudioClient:
             if m:
                 self._rtp_channel = int(m.group(1))
 
-    def read_audio_frame(self):
+    def read_audio_frame(self, timeout=None):
         """خواندن یک فریم صوتی؛ خروجی (codec, clock, payload).
 
         فریم‌های غیرصوتی (RTCP/ویدیو) رد می‌شوند. timeout سوکت ←
         socket.timeout. بسته‌شدن اتصال ← RTSPError.
+        timeout (ثانیه، اختیاری): سقف انتظار برای یک فریم صوتی؛ با تمام
+        شدن TimeoutError می‌دهد تا حلقه‌ی بیرونی (راستی‌آزمایی) بتواند
+        ددلاین خودش را چک کند — بدون این، وقتی ویدیو مداوم می‌آید حلقه‌ی
+        داخلی هیچ‌وقت برنمی‌گردد و ددلاین بیرونی بی‌اثر می‌شود.
         """
+        deadline = time.time() + timeout if timeout else None
         if self._mode == "udp":
-            return self._read_audio_frame_udp()
+            return self._read_audio_frame_udp(deadline)
         while True:
+            if deadline is not None and time.time() >= deadline:
+                raise TimeoutError("پایان مهلت انتظار بسته‌ی صوتی")
             first = self._read_exactly(1)
             if first != b"$":
                 # پاسخ متنی RTSP وسط استریم — خط را می‌خوانیم و رد می‌شویم
@@ -938,9 +948,11 @@ class RTSPAudioClient:
                 continue  # ویدیو یا ترک دیگر
             return self.audio["codec"], self.audio["clock"], payload
 
-    def _read_audio_frame_udp(self):
+    def _read_audio_frame_udp(self, deadline=None):
         """خواندن یک دیتاگرام UDP (هر دیتاگرام = یک بسته‌ی RTP)."""
         while True:
+            if deadline is not None and time.time() >= deadline:
+                raise TimeoutError("پایان مهلت انتظار بسته‌ی صوتی")
             pkt, _addr = self._udp_sock.recvfrom(65535)
             parsed = parse_rtp_packet(pkt)
             if not parsed:
@@ -1106,7 +1118,8 @@ class ListenSession:
                 fail_msg = None
                 while not self._stop and time.time() < deadline:
                     try:
-                        first = client.read_audio_frame()
+                        first = client.read_audio_frame(
+                            timeout=max(0.5, deadline - time.time()))
                         break
                     except RTSPError as e:
                         fail_msg = str(e)
