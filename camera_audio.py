@@ -1174,8 +1174,10 @@ class ListenSession:
                 codec, clock, payload = first
                 self._process_frame(codec, clock, payload, self._info or {})
 
-            def _write_debug_log(self, client):
-                """ذخیره‌ی لاگ handshake برای عیب‌یابی (بدون رمز)."""
+            def _write_debug_log(self, client, all_debug=None):
+                """ذخیره‌ی لاگ handshake برای عیب‌یابی (بدون رمز).
+                all_debug: لیست (url, debug_lines) همه‌ی تلاش‌ها — اگر داده
+                شود، لاگ همه‌ی آدرس‌های امتحان‌شده ذخیره می‌شود نه فقط آخری."""
                 try:
                     import os
                     path = os.path.join(os.path.expanduser("~"),
@@ -1183,8 +1185,14 @@ class ListenSession:
                     with open(path, "a", encoding="utf-8") as f:
                         f.write("\n=== %s ===\n"
                                 % time.strftime("%Y-%m-%d %H:%M:%S"))
-                        for line in client._debug or []:
-                            f.write(line + "\n")
+                        if all_debug:
+                            for url, lines in all_debug:
+                                f.write(f"── تلاش آدرس: {url} ──\n")
+                                for line in lines or []:
+                                    f.write(line + "\n")
+                        else:
+                            for line in client._debug or []:
+                                f.write(line + "\n")
                         try:
                             for line in client.audio_stats():
                                 f.write(line + "\n")
@@ -1200,6 +1208,7 @@ class ListenSession:
                 try:
                     last_err, last_client = None, None
                     info = None
+                    all_debug = []  # (url, debug_lines) همه‌ی تلاش‌ها برای لاگ
                     for url, timeout in self._url_items:
                         if self._stop:
                             return
@@ -1215,13 +1224,15 @@ class ListenSession:
                         try:
                             info = client.connect()
                             last_err = None
+                            all_debug.append((url, list(client._debug or [])))
                             break
                         except RTSPError as e:
                             last_err = e
+                            all_debug.append((url, list(client._debug or [])))
                             # آدرس بعدی را امتحان می‌کنیم
                             continue
                     if last_err is not None:
-                        path = self._write_debug_log(last_client)
+                        path = self._write_debug_log(last_client, all_debug)
                         msg = str(last_err)
                         if path:
                             msg += f"\nلاگ عیب‌یابی: {path}"
@@ -1250,7 +1261,7 @@ class ListenSession:
                         fail_msg = f"خطا در دریافت صدا: {e}"[:100]
                         break
                 if first is None and not self._stop:
-                    path = self._write_debug_log(client)
+                    path = self._write_debug_log(client, all_debug)
                     msg = fail_msg or "no_audio_data"
                     if path:
                         msg += f"\nلاگ عیب‌یابی: {path}"
