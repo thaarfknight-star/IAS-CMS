@@ -246,6 +246,21 @@ def test_276_nvr_proxy_listen_url():
         "rtsp://admin:p%40ss%3A123@192.168.1.100:554/h264/ch2/main/av_stream"
     assert "channel=2" in urls_auth[1]
 
+    # یوزر/پس دوربین هم به‌عنوان کاندیدای دوم می‌آید (اگر با NVR فرق کند)
+    cam_both = dict(cam_auth)
+    cam_both["user"] = "camadmin"
+    cam_both["pass"] = "cam123"
+    urls_both = build_nvr_proxy_listen_url(cam_both)
+    assert len(urls_both) == 6  # ۳ تا با یوزر NVR + ۳ تا با یوزر دوربین
+    assert urls_both[3] == \
+        "rtsp://camadmin:cam123@192.168.1.100:554/h264/ch2/main/av_stream"
+
+    # اگر یوزر/پس دوربین همان NVR باشد، تکراری نمی‌شود
+    cam_same = dict(cam_auth)
+    cam_same["user"] = "admin"
+    cam_same["pass"] = "p@ss:123"
+    assert len(build_nvr_proxy_listen_url(cam_same)) == 3
+
     # بدون full_url و با path روی خود NVR → [] (از قبل از طریق NVR است)
     cam_noproxy = {"nvr_id": "nvr-1", "channel": 2, "ip": "192.168.1.100",
                    "port": 554, "path": "h264/ch2/main/av_stream"}

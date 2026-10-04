@@ -1099,21 +1099,34 @@ def build_nvr_proxy_listen_url(cam):
         port = int(port)
     except (TypeError, ValueError):
         port = 554
-    # credential های NVR (لاگ ۱۵ نشان داد NVR روی DESCRIBE 401 می‌دهد —
-    # بدون یوزر/پس پروکسی کار نمی‌کند)
+    # credential ها: اول یوزر/پس NVR، بعد یوزر/پس خودِ دوربین (خیلی وقت‌ها
+    # NVR و دوربین credential مشترک دارند). هر کدام با هر سه فرمت برند.
     from urllib.parse import quote
+    def _auth(user, pwd):
+        if not user:
+            return ""
+        return f"{quote(user, safe='')}:{quote(pwd or '', safe='')}@"
+    creds = []
     nvr_user = cam.get("_nvr_user", "")
     nvr_pass = cam.get("_nvr_pass", "")
     if nvr_user:
-        auth = f"{quote(nvr_user, safe='')}:{quote(nvr_pass, safe='')}@"
-    else:
-        auth = ""
-    base = f"rtsp://{auth}{nvr_ip}:{port}"
-    return [
-        f"{base}/h264/ch{ch}/main/av_stream",                    # XM
-        f"{base}/cam/realmonitor?channel={ch}&subtype=0",        # Dahua
-        f"{base}/Streaming/Channels/{ch}01",                     # Hikvision
-    ]
+        creds.append((nvr_user, nvr_pass))
+    cam_user = cam.get("user", "")
+    cam_pass = cam.get("pass", "")
+    if cam_user and (cam_user, cam_pass) not in creds:
+        creds.append((cam_user, cam_pass))
+    if not creds:
+        creds.append(("", ""))
+    urls = []
+    for user, pwd in creds:
+        auth = _auth(user, pwd)
+        base = f"rtsp://{auth}{nvr_ip}:{port}"
+        urls += [
+            f"{base}/h264/ch{ch}/main/av_stream",                # XM
+            f"{base}/cam/realmonitor?channel={ch}&subtype=0",    # Dahua
+            f"{base}/Streaming/Channels/{ch}01",                 # Hikvision
+        ]
+    return urls
 
 
 # ---------------------------------------------------------------------------
