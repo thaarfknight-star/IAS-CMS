@@ -1099,7 +1099,16 @@ def build_nvr_proxy_listen_url(cam):
         port = int(port)
     except (TypeError, ValueError):
         port = 554
-    base = f"rtsp://{nvr_ip}:{port}"
+    # credential های NVR (لاگ ۱۵ نشان داد NVR روی DESCRIBE 401 می‌دهد —
+    # بدون یوزر/پس پروکسی کار نمی‌کند)
+    from urllib.parse import quote
+    nvr_user = cam.get("_nvr_user", "")
+    nvr_pass = cam.get("_nvr_pass", "")
+    if nvr_user:
+        auth = f"{quote(nvr_user, safe='')}:{quote(nvr_pass, safe='')}@"
+    else:
+        auth = ""
+    base = f"rtsp://{auth}{nvr_ip}:{port}"
     return [
         f"{base}/h264/ch{ch}/main/av_stream",                    # XM
         f"{base}/cam/realmonitor?channel={ch}&subtype=0",        # Dahua
@@ -1395,7 +1404,11 @@ class ListenSession:
                          f"_nvr_rtsp_port={cam.get('_nvr_rtsp_port')}\n")
                 _f.write(f"full_url={cam.get('full_url')}\n")
                 _f.write(f"listen url={url}\n")
-                _f.write(f"nvr proxy urls={nvr_urls}\n")
+                # رمز را در لاگ مخفی می‌کنیم
+                import re as _re
+                _masked = [_re.sub(r"://[^@]+@", "://***:***@", u)
+                           for u in nvr_urls]
+                _f.write(f"nvr proxy urls={_masked}\n")
         except Exception:
             pass
         # اگر کانال NVR با URL مستقیم دوربین ثبت شده، اول کاندیداهای پروکسی

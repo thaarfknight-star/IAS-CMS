@@ -4260,6 +4260,8 @@ class MainWindow(QMainWindow):
                 cam = dict(cam)
                 cam["_nvr_ip"] = nvr.get("ip")
                 cam["_nvr_rtsp_port"] = nvr.get("rtsp_port") or 554
+                cam["_nvr_user"] = nvr.get("user", "")
+                cam["_nvr_pass"] = nvr.get("pass", "")
         dlg = ListenDialog(cam, parent=self)
         dlg.exec()
 
