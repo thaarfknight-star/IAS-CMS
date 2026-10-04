@@ -1079,8 +1079,10 @@ def build_nvr_proxy_listen_url(cam):
         ch = int(channel)
     except (TypeError, ValueError):
         return []
-    # IP خودِ NVR: برای کانال‌ها، فیلد ip همان IP NVR است
-    nvr_ip = (cam.get("ip") or "").lower()
+    # IP خودِ NVR: اول از فیلد تزریق‌شده (_nvr_ip)، بعد از ip رکورد.
+    # (کانال ممکن است با «اتصال مستقیم» به IP دوربین ثبت شده باشد؛ در این
+    # صورت ip رکورد، IP دوربین است نه NVR — _nvr_ip از store خوانده می‌شود)
+    nvr_ip = (cam.get("_nvr_ip") or cam.get("ip") or "").lower()
     if not nvr_ip:
         return []
     # اگر آدرس اصلی از قبل به NVR اشاره می‌کند، پروکسی لازم نیست.
@@ -1089,11 +1091,12 @@ def build_nvr_proxy_listen_url(cam):
     if full_url:
         main_host = (urlparse(full_url).hostname or "").lower()
     else:
-        main_host = nvr_ip  # بدون full_url، آدرس از ip ساخته می‌شود
+        main_host = (cam.get("ip") or "").lower()
     if main_host == nvr_ip:
         return []
+    port = cam.get("_nvr_rtsp_port") or cam.get("port") or 554
     try:
-        port = int(cam.get("port") or 554)
+        port = int(port)
     except (TypeError, ValueError):
         port = 554
     base = f"rtsp://{nvr_ip}:{port}"
@@ -1376,7 +1379,9 @@ class ListenSession:
                          f"(NVR-probe) ===\n")
                 _f.write(f"cam ip={cam.get('ip')} port={cam.get('port')} "
                          f"nvr_id={cam.get('nvr_id')} channel={cam.get('channel')} "
-                         f"camera_ip={cam.get('camera_ip')}\n")
+                         f"camera_ip={cam.get('camera_ip')} "
+                         f"_nvr_ip={cam.get('_nvr_ip')} "
+                         f"_nvr_rtsp_port={cam.get('_nvr_rtsp_port')}\n")
                 _f.write(f"full_url={cam.get('full_url')}\n")
                 _f.write(f"listen url={url}\n")
                 _f.write(f"nvr proxy urls={nvr_urls}\n")

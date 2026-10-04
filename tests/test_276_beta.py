@@ -199,13 +199,17 @@ def test_276_nvr_proxy_listen_url():
     پروکسی NVR (XM/Dahua/Hikvision)؛ در غیر این صورت لیست خالی."""
     from camera_audio import build_nvr_proxy_listen_url
 
-    # حالت طه: کانال NVR ولی آدرس مستقیم دوربین
+    # حالت طه: کانال با «اتصال مستقیم» ثبت شده (ip همان IP دوربین است)
+    # ولی _nvr_ip از store تزریق شده
     cam = {
         "nvr_id": "nvr-1",
         "channel": 3,
-        "ip": "192.168.1.100",      # IP خود NVR
+        "ip": "192.168.1.138",      # IP دوربین (اتصال مستقیم)
         "port": 554,
-        "full_url": "rtsp://192.168.1.138:554/h264/ch1/main/av_stream",
+        "camera_ip": "192.168.1.138",
+        "_nvr_ip": "192.168.1.100",  # IP خود NVR از store
+        "_nvr_rtsp_port": 554,
+        "path": "h264/ch1/main/av_stream",
     }
     urls = build_nvr_proxy_listen_url(cam)
     assert urls == [
@@ -213,6 +217,17 @@ def test_276_nvr_proxy_listen_url():
         "rtsp://192.168.1.100:554/cam/realmonitor?channel=3&subtype=0",
         "rtsp://192.168.1.100:554/Streaming/Channels/301",
     ]
+
+    # حالت قدیمی: full_url به IP دوربین اشاره می‌کند
+    cam2 = {
+        "nvr_id": "nvr-1",
+        "channel": 3,
+        "ip": "192.168.1.100",
+        "port": 554,
+        "full_url": "rtsp://192.168.1.138:554/h264/ch1/main/av_stream",
+    }
+    assert build_nvr_proxy_listen_url(cam2)[0] == \
+        "rtsp://192.168.1.100:554/h264/ch3/main/av_stream"
 
     # بدون full_url و با path روی خود NVR → [] (از قبل از طریق NVR است)
     cam_noproxy = {"nvr_id": "nvr-1", "channel": 2, "ip": "192.168.1.100",

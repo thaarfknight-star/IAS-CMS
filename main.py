@@ -4250,6 +4250,16 @@ class MainWindow(QMainWindow):
         cam = self.camera_store.get_camera(cam_id)
         if not cam:
             return
+        # اگر کانال NVR است، IP و پورت RTSP خودِ NVR را هم به رکورد اضافه
+        # می‌کنیم تا «شنیدن صدا» بتواند پروکسی NVR را امتحان کند (حتی اگر
+        # کانال با «اتصال مستقیم» به IP دوربین ثبت شده باشد)
+        nvr_id = cam.get("nvr_id")
+        if nvr_id:
+            nvr = self.camera_store.get_nvr(nvr_id)
+            if nvr and nvr.get("ip"):
+                cam = dict(cam)
+                cam["_nvr_ip"] = nvr.get("ip")
+                cam["_nvr_rtsp_port"] = nvr.get("rtsp_port") or 554
         dlg = ListenDialog(cam, parent=self)
         dlg.exec()
 
