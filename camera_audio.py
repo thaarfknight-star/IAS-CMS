@@ -274,8 +274,14 @@ class RTSPAudioClient:
         if parsed.query:
             path += "?" + parsed.query
         self.url = f"rtsp://{self.host}:{self.port}{path}"
-        self.username = username or (parsed.username or "")
-        self.password = password or (parsed.password or "")
+        # اگر URL خودش credential داشت (مثل پروکسی NVR)، اون اولویت دارد؛
+        # وگرنه از یوزر/پس پاس‌داده‌شده استفاده می‌شود.
+        # نکته: urlparse کاراکترهای %XX را decode نمی‌کند — دستی unquote می‌کنیم
+        from urllib.parse import unquote
+        url_user = unquote(parsed.username or "")
+        url_pwd = unquote(parsed.password or "")
+        self.username = url_user or username or ""
+        self.password = url_pwd or password or ""
         self.timeout = timeout
         self.sock = None
         self.cseq = 0
