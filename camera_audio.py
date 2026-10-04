@@ -1189,6 +1189,10 @@ class ListenSession:
                 شود، لاگ همه‌ی آدرس‌های امتحان‌شده ذخیره می‌شود نه فقط آخری."""
                 try:
                     import os
+                    import re as _re
+                    def _mask(u):
+                        # مخفی کردن یوزر/پس داخل URL
+                        return _re.sub(r"://[^@]+@", "://***:***@", u or "")
                     path = os.path.join(os.path.expanduser("~"),
                                         "IAS-Viewer-listen-debug.log")
                     with open(path, "a", encoding="utf-8") as f:
@@ -1196,7 +1200,7 @@ class ListenSession:
                                 % time.strftime("%Y-%m-%d %H:%M:%S"))
                         if all_debug:
                             for url, lines in all_debug:
-                                f.write(f"── تلاش آدرس: {url} ──\n")
+                                f.write(f"── تلاش آدرس: {_mask(url)} ──\n")
                                 for line in lines or []:
                                     f.write(line + "\n")
                         else:
