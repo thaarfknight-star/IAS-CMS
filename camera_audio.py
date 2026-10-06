@@ -1256,10 +1256,14 @@ class ListenSession:
             def run(self):
                 # چند آدرس را به‌ترتیب امتحان می‌کنیم (مثلاً اول پروکسی NVR
                 # بعد مستقیم)؛ لاگ عیب‌یابی همه‌ی تلاش‌ها ذخیره می‌شود.
+                # (2.0.109-beta) اگر آدرسی وصل شد ولی بسته‌ی صوتی نرسید،
+                # می‌رویم سراغ آدرس بعدی (قبلاً کلاً بی‌خیال می‌شد).
                 try:
                     last_err, last_client = None, None
                     info = None
+                    client = None
                     all_debug = []  # (url, debug_lines) همه‌ی تلاش‌ها برای لاگ
+                    first = None
                     for url, timeout in self._url_items:
                         if self._stop:
                             return
@@ -1274,18 +1278,53 @@ class ListenSession:
                             if self.state_changed else None)
                         try:
                             info = client.connect()
-                            last_err = None
-                            all_debug.append((url, list(client._debug or [])))
-                            self._connected_url = url
-                            break
                         except RTSPError as e:
                             last_err = e
                             all_debug.append((url, list(client._debug or [])))
                             # آدرس بعدی را امتحان می‌کنیم
+                            try:
+                                client.close()
+                            except Exception:
+                                pass
                             continue
-                    if last_err is not None:
+                        # وصل شد — حالا منتظر اولین بسته‌ی صوتی واقعی می‌مانیم
+                        # (نه فقط اتصال RTSP)
+                        last_err = None
+                        all_debug.append((url, list(client._debug or [])))
+                        self._connected_url = url
+                        self.connected.emit(info)
+                        self._info = info
+                        deadline = time.time() + 4.0
+                        first = None
+                        fail_msg = None
+                        while not self._stop and time.time() < deadline:
+                            try:
+                                first = client.read_audio_frame(
+                                    timeout=max(0.5, deadline - time.time()))
+                                break
+                            except RTSPError as e:
+                                fail_msg = str(e)
+                                break
+                            except OSError:
+                                continue  # timeout خواندن — هنوز منتظر می‌مانیم
+                            except Exception as e:  # noqa: BLE001
+                                fail_msg = f"خطا در دریافت صدا: {e}"[:100]
+                                break
+                        if first is not None:
+                            # صدا آمد! از حلقه‌ی آدرس‌ها خارج می‌شویم.
+                            break
+                        # صدا نیامد — این آدرس را می‌بندیم و سراغ بعدی می‌رویم
+                        last_err = RTSPError(fail_msg or "no_audio_data")
+                        try:
+                            client.close()
+                        except Exception:
+                            pass
+                        continue
+                    # پایان حلقه‌ی آدرس‌ها
+                    if first is None:
+                        # هیچ آدرسی صدا نداد
                         path = self._write_debug_log(last_client, all_debug)
-                        msg = str(last_err)
+                        msg = str(last_err) if last_err else "no_audio_data"
                         if path:
                             msg += f"\nلاگ عیب‌یابی: {path}"
                         self.failed.emit(msg)
@@ -1293,42 +1332,18 @@ class ListenSession:
                 except Exception as e:  # noqa: BLE001
                     self.failed.emit(f"خطای اتصال: {e}"[:120])
                     return
-                self.connected.emit(info)
-                self._info = info
-                # انتظار برای اولین بسته‌ی صوتی واقعی (نه فقط اتصال RTSP)
-                deadline = time.time() + 6.0
-                first = None
-                fail_msg = None
-                while not self._stop and time.time() < deadline:
-                    try:
-                        first = client.read_audio_frame(
-                            timeout=max(0.5, deadline - time.time()))
-                        break
-                    except RTSPError as e:
-                        fail_msg = str(e)
-                        break
-                    except OSError:
-                        continue  # timeout خواندن — هنوز منتظر می‌مانیم
-                    except Exception as e:  # noqa: BLE001
-                        fail_msg = f"خطا در دریافت صدا: {e}"[:100]
-                        break
-                if first is None and not self._stop:
-                    path = self._write_debug_log(client, all_debug)
-                    msg = fail_msg or "no_audio_data"
-                    if path:
-                        msg += f"\nلاگ عیب‌یابی: {path}"
-                    self.failed.emit(msg)
-                    try:
-                        client.close()
-                    except Exception:
-                        pass
-                    return
                 if self._stop:
                     try:
                         client.close()
                     except Exception:
                         pass
                     return
+                # صدا تأیید شد — URL موفق را اعلام می‌کنیم تا کش شود
+                if self._connected_url:
+                    try:
+                        self.audio_confirmed.emit(self._connected_url)
+                    except Exception:
+                        pass
                 # صدا تأیید شد — URL موفق را اعلام می‌کنیم تا کش شود
                 if self._connected_url:
                     try:
