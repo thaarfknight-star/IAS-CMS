@@ -603,8 +603,11 @@ class CameraSlotWidget(QWidget):
     def __init__(self, on_clicked, on_close_requested, on_double_clicked=None,
                  on_slot_drag_swap=None, on_camera_drag_drop=None, on_region_alert=None,
                  on_fire_event=None, on_plate_event=None, on_person_event=None,
+                 on_audio_url_found=None,
                  parent=None):
         super().__init__(parent)
+        # (2.0.106-beta) کال‌بک ذخیره‌ی مسیر صوتی موفق (cam_id, url)
+        self._on_audio_url_found_cb = on_audio_url_found
         self.cam = None
         self.stream_thread = None
         self.latest_raw_frame = None
@@ -781,6 +784,26 @@ class CameraSlotWidget(QWidget):
         header.addWidget(self.name_label, 1)
         header.addWidget(self.people_count_label)
         header.addWidget(self.net_label)
+        # (2.0.106-beta) دکمه‌ی صدا و اسلایدر ولوم روی کادر دوربین —
+        # بدون نیاز به راست‌کلیک و دیالوگ جدا.
+        self.audio_btn = QPushButton("🔊")
+        self.audio_btn.setFixedSize(18, 18)
+        self.audio_btn.setStyleSheet(_zoom_style)
+        self.audio_btn.setToolTip("شنیدن صدای دوربین")
+        self.audio_btn.setVisible(False)
+        self.audio_btn.clicked.connect(self._toggle_audio)
+        self.volume_slider = QSlider(Qt.Orientation.Horizontal)
+        self.volume_slider.setRange(0, 100)
+        self.volume_slider.setValue(80)
+        self.volume_slider.setFixedWidth(60)
+        self.volume_slider.setToolTip("ولوم صدا")
+        self.volume_slider.setVisible(False)
+        self.volume_slider.valueChanged.connect(self._on_volume_changed)
+        # نشست شنیدن صدا (بدون دیالوگ)
+        self._listen_session = None
+        self._on_audio_url_found = None
+        header.addWidget(self.audio_btn)
+        header.addWidget(self.volume_slider)
         header.addWidget(self.zoom_in_btn)
         header.addWidget(self.zoom_out_btn)
         header.addWidget(self.zoom_reset_btn)
@@ -1317,6 +1340,8 @@ class CameraSlotWidget(QWidget):
         else:
             self._set_name_text(cam_name)
         self.close_btn.setVisible(True)
+        # (2.0.106-beta) دکمه‌ی صدا با شروع پخش نمایش داده می‌شود.
+        self.audio_btn.setVisible(True)
         self.status_label.setText("در حال اتصال...")
         self.video_label.setText("در انتظار تصویر...")
         # (2.0.61-beta) ریست ردیاب قطع تصویر برای استریم جدید
@@ -1687,6 +1712,10 @@ class CameraSlotWidget(QWidget):
             self.stream_thread.stop()
         self.stream_thread = None
         self.cam = None
+        # (2.0.106-beta) توقف صدا و مخفی کردن دکمه/ولوم.
+        self._stop_audio()
+        self.audio_btn.setVisible(False)
+        self.volume_slider.setVisible(False)
         self.latest_raw_frame = None
         # (2.0.61-beta) ریست ردیاب قطع تصویر
         self._last_stream_state = ""
@@ -1711,6 +1740,64 @@ class CameraSlotWidget(QWidget):
         self.pending_points = None
         self.regions = []
         self._editing_region_id = None
+
+    # -- صدای دوربین روی کادر (2.0.106-beta) ---------------------------------
+    def _toggle_audio(self):
+        """روشن/خاموش کردن صدای دوربین بدون دیالوگ."""
+        if self._listen_session is not None:
+            self._stop_audio()
+            return
+        if not self.cam:
+            return
+        try:
+            from camera_audio import ListenSession
+            session = ListenSession()
+            # ولوم اولیه از اسلایدر
+            try:
+                session.set_volume(self.volume_slider.value() / 100.0)
+            except Exception:
+                pass
+            cam = dict(self.cam)
+            # برای کانال NVR، اطلاعات NVR را هم اضافه می‌کنیم (مثل دیالوگ)
+            ok = session.start(cam, on_url_found=self._on_audio_url_found)
+            if ok:
+                self._listen_session = session
+                self.audio_btn.setText("🎧")
+                self.audio_btn.setToolTip("قطع صدای دوربین")
+                self.volume_slider.setVisible(True)
+            # اگر start ناموفق بود، خطا از طریق state_changed می‌آید
+        except Exception:
+            pass
+
+    def _stop_audio(self):
+        try:
+            if self._listen_session is not None:
+                self._listen_session.stop()
+        except Exception:
+            pass
+        self._listen_session = None
+        try:
+            self.audio_btn.setText("🔊")
+            self.audio_btn.setToolTip("شنیدن صدای دوربین")
+            self.volume_slider.setVisible(False)
+        except Exception:
+            pass
+
+    def _on_volume_changed(self, v: int):
+        if self._listen_session is not None:
+            try:
+                self._listen_session.set_volume(v / 100.0)
+            except Exception:
+                pass
+
+    def _on_audio_url_found(self, url: str):
+        """مسیر صوتی موفق پیدا شد — برای کش کردن به MainWindow اطلاع می‌دهیم."""
+        cb = getattr(self, "_on_audio_url_found_cb", None)
+        if cb and self.cam:
+            try:
+                cb(self.cam.get("id"), url)
+            except Exception:
+                pass
         self.video_label.set_pending_points_norm(None)
         self.video_label.set_confirmed_regions([])
         self.video_label.set_draw_mode(False)
@@ -1940,7 +2027,7 @@ class CameraGridWidget(QWidget):
 
     def __init__(self, face_engine: FaceEngine, on_face_event, on_external_camera_drop=None,
                  on_region_alert=None, on_fire_event=None, on_plate_event=None,
-                 on_person_event=None, parent=None):
+                 on_person_event=None, on_audio_url_found=None, parent=None):
         super().__init__(parent)
         self.face_engine = face_engine
         self.on_face_event = on_face_event
@@ -1963,6 +2050,8 @@ class CameraGridWidget(QWidget):
         # یک خانه رها (drop) شود، این callback (در MainWindow) صدا زده می‌شود
         # تا رمز عبور را در صورت نیاز بپرسد و آدرس RTSP را بسازد.
         self.on_external_camera_drop = on_external_camera_drop
+        # (2.0.106-beta) کال‌بک ذخیره‌ی مسیر صوتی موفق هر خانه.
+        self.on_audio_url_found = on_audio_url_found
         self.slots = []
         self.selected_index = None
         # کادرهای دوربین «سیال»‌اند: اندازه‌ی هر کادر از چیدمان (QGridLayout)
@@ -2024,6 +2113,7 @@ class CameraGridWidget(QWidget):
                     on_fire_event=self.on_fire_event,
                     on_plate_event=self.on_plate_event,
                     on_person_event=self.on_person_event,
+                    on_audio_url_found=self.on_audio_url_found,
                 )
                 slot.slot_index = len(self.slots)
                 slot.tripwire_changed.connect(self.tripwire_changed.emit)
@@ -2704,6 +2794,8 @@ class MainWindow(QMainWindow):
             on_fire_event=self.on_fire_event,
             on_plate_event=self.on_plate_event,
             on_person_event=self.on_person_event,
+            on_audio_url_found=lambda cam_id, url: self.camera_store.update_camera(
+                cam_id, audio_url=url),
         )
         self.camera_grid.selection_changed.connect(lambda _idx: self._refresh_line_buttons())
         self.camera_grid.tripwire_changed.connect(self._refresh_line_buttons)
@@ -4273,7 +4365,10 @@ class MainWindow(QMainWindow):
                 cam["_nvr_rtsp_port"] = nvr.get("rtsp_port") or 554
                 cam["_nvr_user"] = nvr.get("user", "")
                 cam["_nvr_pass"] = nvr.get("pass", "")
-        dlg = ListenDialog(cam, parent=self)
+        dlg = ListenDialog(
+            cam, parent=self,
+            on_url_found=lambda url: self.camera_store.update_camera(
+                cam_id, audio_url=url))
         dlg.exec()
 
     def _autodetect_ptz_async(self, cam_id):

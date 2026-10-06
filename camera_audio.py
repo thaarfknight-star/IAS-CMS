@@ -1177,6 +1177,7 @@ class ListenSession:
             pcm_ready = pyqtSignal(bytes)
             failed = pyqtSignal(str)
             connected = pyqtSignal(dict)
+            audio_confirmed = pyqtSignal(str)  # URL موفق (بعد از اولین بسته صوتی)
 
             def __init__(self, url_items, user, pwd):
                 super().__init__()
@@ -1190,6 +1191,7 @@ class ListenSession:
                 self._stop = False
                 self._client = None
                 self._info = None
+                self._connected_url = None
 
             def request_stop(self):
                 self._stop = True
@@ -1274,6 +1276,7 @@ class ListenSession:
                             info = client.connect()
                             last_err = None
                             all_debug.append((url, list(client._debug or [])))
+                            self._connected_url = url
                             break
                         except RTSPError as e:
                             last_err = e
@@ -1326,6 +1329,12 @@ class ListenSession:
                     except Exception:
                         pass
                     return
+                # صدا تأیید شد — URL موفق را اعلام می‌کنیم تا کش شود
+                if self._connected_url:
+                    try:
+                        self.audio_confirmed.emit(self._connected_url)
+                    except Exception:
+                        pass
                 self._emit_first(first)
                 while not self._stop:
                     try:
@@ -1420,13 +1429,17 @@ class ListenSession:
         self._io = self._sink.start()
         return True
 
-    def start(self, cam: dict) -> bool:
-        """شروع اتصال و پخش (غیربلاکینگ)."""
+    def start(self, cam: dict, on_url_found=None) -> bool:
+        """شروع اتصال و پخش (غیربلاکینگ).
+        on_url_found: کال‌بک اختیاری (url) که وقتی مسیر صوتی موفق پیدا و
+        تأیید شد صدا می‌شود — برای کش کردن مسیر در camera_store."""
         if self._worker:
             return False
         if not self._open_output():
             return False
         self._emit_state("connecting")
+        self._on_url_found = on_url_found
+        self._cam_id = cam.get("id")
         url = build_listen_url(cam)
         # لاگ تشخیصی: ببینیم کانال NVR چه فیلدهایی دارد
         nvr_urls = build_nvr_proxy_listen_url(cam)
@@ -1451,20 +1464,35 @@ class ListenSession:
                 _f.write(f"nvr proxy urls={_masked}\n")
         except Exception:
             pass
-        # اگر کانال NVR با URL مستقیم دوربین ثبت شده، اول کاندیداهای پروکسی
-        # NVR را امتحان می‌کنیم (تایم‌اوت کوتاه ۴ ثانیه، فقط probe) و بعد
-        # آدرس مستقیم را به‌عنوان fallback؛ در آخر هم فرمت‌های جایگزین
-        # (مثل Sunell /snl/live) را امتحان می‌کنیم
+        # (2.0.106-beta) اگر مسیر صوتی موفق قبلاً کش شده، اول همان را
+        # امتحان می‌کنیم (سریع)؛ بعد بقیه‌ی کاندیداها.
+        # ترتیب: کش‌شده (۲ثانیه) ← پروکسی NVR (۲ثانیه) ← مستقیم (۴ثانیه) ←
+        # فرمت‌های جایگزین Sunell (۳ثانیه)
+        url_items = []
+        cached = (cam.get("audio_url") or "").strip()
+        if cached:
+            url_items.append((cached, 2.0))
         sunell_urls = build_direct_url_variants(cam)
-        url_items = ([(u, 4.0) for u in nvr_urls] + [(url, 8.0)] +
-                     [(u, 6.0) for u in sunell_urls])
+        url_items += ([(u, 2.0) for u in nvr_urls] + [(url, 4.0)] +
+                      [(u, 3.0) for u in sunell_urls
+                       if u != cached and u != url])
         self._worker = self._Worker(url_items, cam.get("user", "") or "",
                                    cam.get("pass", "") or "")
         self._worker.pcm_ready.connect(self._on_pcm)
         self._worker.connected.connect(self._on_worker_connected)
+        self._worker.audio_confirmed.connect(self._on_audio_confirmed)
         self._worker.failed.connect(self._on_worker_failed)
         self._worker.start()
         return True
+
+    def _on_audio_confirmed(self, url: str):
+        """مسیر صوتی موفق پیدا شد — برای کش کردن به کال‌بک اطلاع می‌دهیم."""
+        cb = getattr(self, "_on_url_found", None)
+        if cb:
+            try:
+                cb(url)
+            except Exception:
+                pass
 
     def set_volume(self, v: float):
         self._volume = max(0.0, min(1.0, v))

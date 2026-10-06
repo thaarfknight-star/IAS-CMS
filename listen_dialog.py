@@ -26,9 +26,10 @@ class ListenDialog(QDialog):
     _sig_error = pyqtSignal(str)
     _sig_level = pyqtSignal(float)
 
-    def __init__(self, cam: dict, parent=None):
+    def __init__(self, cam: dict, parent=None, on_url_found=None):
         super().__init__(parent)
         self._cam = dict(cam)
+        self._on_url_found = on_url_found
         self._session = ListenSession()
         self._session.state_changed = self._sig_state.emit
         self._session.error_occurred = self._sig_error.emit
@@ -96,7 +97,8 @@ class ListenDialog(QDialog):
 
         # شروع اتصال
         self._session.set_volume(0.8)
-        if not self._session.start(self._cam):
+        if not self._session.start(self._cam,
+                                   on_url_found=self._on_url_found):
             # خطا از طریق _on_error نمایش داده شده است
             pass
 
