@@ -407,33 +407,31 @@ class RTSPAudioClient:
                 # اگر credential داخل URL بود، از uri دایجست حذفش می‌کنیم
                 # (سرورها userinfo را در uri دایجست قبول ندارند)
                 digest_target = self._strip_userinfo(target)
-                new_auth = build_digest_auth(
-                    self.username, self.password, method, digest_target,
-                    challenge)
-                if new_auth != self._auth_header:
-                    self._auth_header = new_auth
-                    return self._request(method, url, headers, body,
-                                         _auth_tries + 1)
-                # (2.0.113-beta) بعضی دوربین‌ها (مثل Sunell) در uri دایجست
+                # (2.0.114-beta) بعضی دوربین‌ها (مثل Sunell) در uri دایجست
                 # فقط path را قبول می‌کنند نه URL کامل (VLC همین کار را
-                # می‌کند). اگر دایجست با URL کامل رد شد، با path-only
-                # امتحان می‌کنیم.
+                # می‌کند). از همان تلاش دوم، هر دو حالت را امتحان می‌کنیم:
+                # اول path-only، بعد URL کامل.
+                candidates = []
                 try:
                     from urllib.parse import urlparse as _up
                     _p = _up(digest_target)
                     _path_only = (_p.path or "/") + (
                         ("?" + _p.query) if _p.query else "")
                     if _path_only != digest_target:
-                        _alt_auth = build_digest_auth(
-                            self.username, self.password, method,
-                            _path_only, challenge)
-                        if _alt_auth != self._auth_header:
-                            self._auth_header = _alt_auth
-                            self._log(f"{method} -> تلاش مجدد دایجست با path-only")
-                            return self._request(method, url, headers, body,
-                                                 _auth_tries + 1)
+                        candidates.append(_path_only)
                 except Exception:
                     pass
+                candidates.append(digest_target)
+                for _cand in candidates:
+                    new_auth = build_digest_auth(
+                        self.username, self.password, method, _cand,
+                        challenge)
+                    if new_auth != self._auth_header:
+                        self._auth_header = new_auth
+                        if _cand != digest_target:
+                            self._log(f"{method} -> دایجست با path-only")
+                        return self._request(method, url, headers, body,
+                                             _auth_tries + 1)
                 raise RTSPError(
                     "احرازهویت دوربین رد شد (نام کاربری/رمز را بررسی کنید)")
             raise RTSPError("دوربین احرازهویت Basic می‌خواهد (پشتیبانی نمی‌شود)")
