@@ -1916,6 +1916,13 @@ class CameraSlotWidget(QWidget):
 
     def _on_audio_url_found(self, url: str):
         """مسیر صوتی موفق پیدا شد — برای کش کردن به MainWindow اطلاع می‌دهیم."""
+        # (2.0.112-beta) خودِ self.cam را هم به‌روز می‌کنیم تا دفعه‌ی بعد
+        # کش استفاده شود (قبلاً فقط در store ذخیره می‌شد).
+        try:
+            if self.cam is not None:
+                self.cam["audio_url"] = url
+        except Exception:
+            pass
         cb = getattr(self, "_on_audio_url_found_cb", None)
         if cb and self.cam:
             try:

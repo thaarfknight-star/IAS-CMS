@@ -1057,7 +1057,7 @@ def build_listen_url(cam) -> str:
     from camera_store import CameraStore
     url = CameraStore.build_rtsp_url(cam)
     parsed = urlparse(url)
-    path = parsed.path or "/"
+    path = _clean_path(parsed.path or "/")
     if parsed.query:
         path += "?" + parsed.query
     host = parsed.hostname or (cam.get("camera_ip") or cam.get("ip") or "")
@@ -1070,6 +1070,7 @@ def build_direct_url_variants(cam):
 
     دوربین‌های Sunell (مثل IAS.NB-Q2501F) از فرمت /snl/live/<ch>/<stream>
     استفاده می‌کنند که صدا را هم می‌فرستد؛ فرمت XM (/h264/...) فقط ویدیو می‌دهد.
+    (2.0.112-beta) اگر path اشتباهاً URL کامل باشد، فقط path را جدا می‌کنیم.
     """
     ip = cam.get("camera_ip") or cam.get("ip") or ""
     port = int(cam.get("port") or 554)
@@ -1080,6 +1081,23 @@ def build_direct_url_variants(cam):
         f"{base}/snl/live/{ch}/2",   # Sunell sub1
         f"{base}/snl/live/{ch}/3",   # Sunell sub2
     ]
+
+
+def _clean_path(path: str) -> str:
+    """اگر path اشتباهاً URL کامل باشد (مثل rtsp://ip:port/path)، فقط
+    path را برمی‌گرداند. (2.0.112-beta)"""
+    if not path:
+        return "/"
+    p = path.strip()
+    if "://" in p:
+        try:
+            from urllib.parse import urlparse as _up
+            parsed = _up(p)
+            q = ("?" + parsed.query) if parsed.query else ""
+            return (parsed.path or "/") + q
+        except Exception:
+            pass
+    return p if p.startswith("/") else "/" + p
 
 
 def build_nvr_proxy_listen_url(cam):
