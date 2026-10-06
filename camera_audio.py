@@ -373,7 +373,7 @@ class RTSPAudioClient:
         # (2.0.117-beta) لاگ یوزرنیم برای عیب‌یابی (فقط طول، نه مقدار)
         if _auth_tries == 0 and self.username:
             try:
-                self._log(f"{method} -> یوزر: {self.username[:2]}*** (طول {len(self.username)})")
+                self._log(f"{method} -> یوزر: {self.username[:2]}*** (طول {len(self.username)}), پسورد طول {len(self.password or '')}")
             except Exception:
                 pass
         lines = [f"{method} {target} RTSP/1.0", f"CSeq: {self.cseq}"]
