@@ -604,11 +604,13 @@ class CameraSlotWidget(QWidget):
     def __init__(self, on_clicked, on_close_requested, on_double_clicked=None,
                  on_slot_drag_swap=None, on_camera_drag_drop=None, on_region_alert=None,
                  on_fire_event=None, on_plate_event=None, on_person_event=None,
-                 on_audio_url_found=None,
+                 on_audio_url_found=None, on_audio_creds_save=None,
                  parent=None):
         super().__init__(parent)
         # (2.0.106-beta) کال‌بک ذخیره‌ی مسیر صوتی موفق (cam_id, url)
         self._on_audio_url_found_cb = on_audio_url_found
+        # (2.0.110-beta) کال‌بک ذخیره‌ی یوزر/پس جدید صدا (cam_id, user, pass)
+        self._on_audio_creds_save_cb = on_audio_creds_save
         self.cam = None
         self.stream_thread = None
         self.latest_raw_frame = None
@@ -1792,6 +1794,47 @@ class CameraSlotWidget(QWidget):
             pass
 
     def _on_audio_error(self, msg: str):
+        # (2.0.110-beta) اگر خطا احرازهویت باشد، مثل VLC پنجره‌ی
+        # یوزرنیم/پسورد باز می‌کنیم تا کاربر رمز درست را بدهد و دوباره
+        # تلاش می‌کنیم.
+        is_auth_error = False
+        try:
+            low = (msg or "").lower()
+            is_auth_error = ("احرازهویت" in (msg or "") or "401" in low
+                             or "unauthorized" in low)
+        except Exception:
+            pass
+        if is_auth_error and not getattr(self, "_audio_auth_asked", False):
+            self._audio_auth_asked = True
+            try:
+                self._stop_audio()
+            except Exception:
+                pass
+            creds = self._ask_audio_credentials()
+            # فلگ را ریست می‌کنیم تا دفعه‌ی بعد دوباره بپرسد
+            self._audio_auth_asked = False
+            if creds:
+                user, pwd = creds
+                try:
+                    if self.cam is not None:
+                        self.cam["user"] = user
+                        self.cam["pass"] = pwd
+                    # رمز جدید را در store هم ذخیره می‌کنیم تا دفعه‌ی بعد
+                    # لازم نباشد دوباره پرسیده شود.
+                    save_cb = getattr(self, "_on_audio_creds_save_cb", None)
+                    if save_cb and self.cam:
+                        try:
+                            save_cb(self.cam.get("id"), user, pwd)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                try:
+                    self.status_label.setText("تلاش مجدد با رمز جدید...")
+                except Exception:
+                    pass
+                self._toggle_audio()
+                return
         try:
             # فقط خط اول پیام را نشان می‌دهیم
             line = (msg or "").split("\n")[0][:80]
@@ -1803,6 +1846,52 @@ class CameraSlotWidget(QWidget):
             self._stop_audio()
         except Exception:
             pass
+
+    def _ask_audio_credentials(self):
+        """دیالوگ یوزرنیم/پسورد به سبک VLC برای اتصال صدا.
+        خروجی: (user, password) یا None اگر انصراف."""
+        try:
+            from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, \
+                QLabel, QLineEdit, QDialogButtonBox
+            from PyQt6.QtCore import Qt
+            cam_name = ""
+            try:
+                cam_name = (self.cam or {}).get("name", "")
+            except Exception:
+                pass
+            dlg = QDialog(self)
+            dlg.setWindowTitle("🔐 احرازهویت صدای دوربین")
+            dlg.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+            dlg.setMinimumWidth(320)
+            lay = QVBoxLayout(dlg)
+            lay.addWidget(QLabel(
+                f"برای اتصال به صدای «{cam_name}» نام کاربری و رمز را وارد کنید:"))
+            user_edit = QLineEdit()
+            user_edit.setPlaceholderText("نام کاربری")
+            try:
+                user_edit.setText((self.cam or {}).get("user", "") or "")
+            except Exception:
+                pass
+            pass_edit = QLineEdit()
+            pass_edit.setPlaceholderText("رمز عبور")
+            pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            lay.addWidget(QLabel("نام کاربری:"))
+            lay.addWidget(user_edit)
+            lay.addWidget(QLabel("رمز عبور:"))
+            lay.addWidget(pass_edit)
+            btns = QDialogButtonBox(
+                QDialogButtonBox.StandardButton.Ok |
+                QDialogButtonBox.StandardButton.Cancel)
+            btns.button(QDialogButtonBox.StandardButton.Ok).setText("اتصال")
+            btns.button(QDialogButtonBox.StandardButton.Cancel).setText("انصراف")
+            btns.accepted.connect(dlg.accept)
+            btns.rejected.connect(dlg.reject)
+            lay.addWidget(btns)
+            if dlg.exec() == QDialog.DialogCode.Accepted:
+                return (user_edit.text().strip(), pass_edit.text())
+            return None
+        except Exception:
+            return None
 
     def _stop_audio(self):
         try:
@@ -2062,7 +2151,8 @@ class CameraGridWidget(QWidget):
 
     def __init__(self, face_engine: FaceEngine, on_face_event, on_external_camera_drop=None,
                  on_region_alert=None, on_fire_event=None, on_plate_event=None,
-                 on_person_event=None, on_audio_url_found=None, parent=None):
+                 on_person_event=None, on_audio_url_found=None,
+                 on_audio_creds_save=None, parent=None):
         super().__init__(parent)
         self.face_engine = face_engine
         self.on_face_event = on_face_event
@@ -2087,6 +2177,8 @@ class CameraGridWidget(QWidget):
         self.on_external_camera_drop = on_external_camera_drop
         # (2.0.106-beta) کال‌بک ذخیره‌ی مسیر صوتی موفق هر خانه.
         self.on_audio_url_found = on_audio_url_found
+        # (2.0.110-beta) کال‌بک ذخیره‌ی یوزر/پس جدید صدا.
+        self.on_audio_creds_save = on_audio_creds_save
         self.slots = []
         self.selected_index = None
         # کادرهای دوربین «سیال»‌اند: اندازه‌ی هر کادر از چیدمان (QGridLayout)
@@ -2149,6 +2241,7 @@ class CameraGridWidget(QWidget):
                     on_plate_event=self.on_plate_event,
                     on_person_event=self.on_person_event,
                     on_audio_url_found=self.on_audio_url_found,
+                    on_audio_creds_save=self.on_audio_creds_save,
                 )
                 slot.slot_index = len(self.slots)
                 slot.tripwire_changed.connect(self.tripwire_changed.emit)
@@ -2831,6 +2924,7 @@ class MainWindow(QMainWindow):
             on_person_event=self.on_person_event,
             on_audio_url_found=lambda cam_id, url: self.camera_store.update_camera(
                 cam_id, audio_url=url),
+            on_audio_creds_save=self._save_audio_creds,
         )
         self.camera_grid.selection_changed.connect(lambda _idx: self._refresh_line_buttons())
         self.camera_grid.tripwire_changed.connect(self._refresh_line_buttons)
@@ -3865,6 +3959,13 @@ class MainWindow(QMainWindow):
             for cam in added_cams:
                 self._auto_display_camera(cam)
             QMessageBox.information(self, "بازخوانی کامل شد", f"{len(added_cams)} کانال جدید اضافه شد.")
+
+    def _save_audio_creds(self, cam_id, user, pwd):
+        """(2.0.110-beta) ذخیره‌ی یوزر/پس جدیدی که کاربر برای صدا وارد کرد."""
+        try:
+            self.camera_store.update_camera(cam_id, **{"user": user, "pass": pwd})
+        except Exception:
+            pass
 
     def delete_nvr(self, nvr_id):
         confirm = QMessageBox.question(
