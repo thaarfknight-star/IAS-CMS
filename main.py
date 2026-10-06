@@ -16,7 +16,8 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLineEdit, QLabel, QListWidget, QListWidgetItem, QMessageBox,
     QGroupBox, QMenu, QTreeWidget, QTreeWidgetItem, QInputDialog, QDialog,
-    QGridLayout, QComboBox, QScrollArea, QSizePolicy, QSplitter, QStackedWidget
+    QGridLayout, QComboBox, QScrollArea, QSizePolicy, QSplitter, QStackedWidget,
+    QSlider
 )
 from PyQt6.QtGui import QImage, QPixmap, QAction, QIcon, QDrag, QFontMetrics, QPainter, QPen, QColor, QPolygonF
 from PyQt6.QtCore import Qt, QSize, QMimeData, QPointF, QRectF, QTimer, QEvent, pyqtSignal
