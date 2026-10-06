@@ -3744,7 +3744,18 @@ class MainWindow(QMainWindow):
             self, "تأیید حذف", "آیا از حذف این NVR و همه‌ی کانال‌های ثبت‌شده‌ی آن مطمئن هستید؟"
         )
         if confirm == QMessageBox.StandardButton.Yes:
+            # (2.0.105-beta) قبل از حذف، شناسه‌ی دوربین‌های این NVR را نگه
+            # می‌داریم تا خانه‌های لایوی که آن‌ها را نشان می‌دهند متوقف شوند.
+            cam_ids = {c.get("id") for c in
+                       self.camera_store.cameras_for_nvr(nvr_id)}
             self.camera_store.remove_nvr(nvr_id, cascade=True)
+            # توقف خانه‌های لایو که دوربین‌های حذف‌شده را نشان می‌دادند.
+            try:
+                for slot in self.camera_grid.slots:
+                    if slot.cam and slot.cam.get("id") in cam_ids:
+                        slot.stop()
+            except Exception:
+                pass
             self.reload_camera_list()
 
     def edit_nvr_playback_template(self, nvr_id):
@@ -4842,35 +4853,25 @@ class MainWindow(QMainWindow):
                     allowed_pages=allowed)
 
     def open_face_gallery(self):
-        """گالری «🖼 دیدن تصاویر» بالای پنل رویدادها: چهره‌های
-        تشخیص‌داده‌شده‌ی همین نشست (از حافظه) به‌صورت شبکه‌ای با تصویر
-        بزرگ‌تر؛ کلیک روی هر عکس → نمایش بزرگ."""
-        events = []
-        for ev in list(getattr(self, "_recent_face_events", []) or []):
-            pix = ev.get("pixmap")
-            try:
-                if pix is not None and not pix.isNull():
-                    pix = pix.scaled(320, 320,
-                                     Qt.AspectRatioMode.KeepAspectRatio,
-                                     Qt.TransformationMode.SmoothTransformation)
-                else:
-                    pix = None
-            except Exception:
-                pix = None
-            events.append({
-                "pixmap": pix,
-                "camera": ev.get("camera", ""),
-                "time": ev.get("time", ""),
-                "name": ev.get("name", ""),
-                "known": bool(ev.get("known")),
-            })
-        DetectedFacesDialog(events, parent=self).exec()
+        """(2.0.105-beta) دکمه‌ی «🖼 دیدن تصاویر» حالا پوشه‌ای را در اکسپلورر
+        باز می‌کند که برنامه تصاویر رویدادها (چهره‌ها، پلاک‌ها و...) را در آن
+        ذخیره می‌کند (report_images)."""
+        try:
+            import os
+            from PyQt6.QtCore import QUrl
+            from PyQt6.QtGui import QDesktopServices
+            images_dir = report_store.IMAGES_DIR
+            os.makedirs(images_dir, exist_ok=True)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(images_dir))
+        except Exception:
+            pass
 
     def on_face_event(self, cam, person, crop_frame):
         """برای هر چهره‌ای که هر یک از دوربین‌ها ببیند (شناخته‌شده یا
-        تعریف‌نشده) فراخوانی می‌شود. (2.0.56-beta) چهره‌ها دیگر در «پنل
-        رویدادها» نمایش داده نمی‌شوند؛ فقط برای گالری «دیدن تصاویر» در
-        حافظه نگه داشته و مثل قبل به‌صورت دائمی در گزارش‌ها ثبت می‌شوند.
+        تعریف‌نشده) فراخوانی می‌شود. (2.0.105-beta) چهره‌ها دوباره در «پنل
+        رویدادها» نمایش داده می‌شوند (با تصویر بندانگشتی)؛ همچنین برای گالری
+        «دیدن تصاویر» در حافظه نگه داشته و مثل قبل به‌صورت دائمی در گزارش‌ها
+        ثبت می‌شوند.
         ``cam``: کل دیکشنری دوربین (نه فقط اسم) تا nvr_id/channel هم
         برای لینک «پخش ویدیوی NVR» در دیالوگ گزارش‌ها ذخیره شود."""
         # گیت لایسنس: اگر قابلیت چهره‌خوان فعال نباشد، چهره‌ای شناسایی
@@ -4900,6 +4901,23 @@ class MainWindow(QMainWindow):
         # (report_store.py).
         report_store.log_face_event(camera_name, person, crop_frame,
                                      nvr_id=cam.get("nvr_id"), channel=cam.get("channel"))
+
+        # (2.0.105-beta) نمایش در «پنل رویدادها» با تصویر بندانگشتی.
+        try:
+            name = person.get("name", "") if person else ""
+            if name:
+                text = f"[{timestamp}] {camera_name}\n👤 {name}"
+            else:
+                text = f"[{timestamp}] {camera_name}\n❓ چهره ناشناس"
+            item = QListWidgetItem(text)
+            if pixmap is not None and not pixmap.isNull():
+                item.setIcon(QIcon(pixmap))
+            self.events_panel_list.insertItem(0, item)
+            while self.events_panel_list.count() > 300:
+                self.events_panel_list.takeItem(
+                    self.events_panel_list.count() - 1)
+        except Exception:
+            pass
 
     # ------------------------------------------------------ plate reader ---
 
