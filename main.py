@@ -1753,20 +1753,54 @@ class CameraSlotWidget(QWidget):
         try:
             from camera_audio import ListenSession
             session = ListenSession()
+            # نمایش وضعیت/خطا روی همین کادر
+            try:
+                session.state_changed = self._on_audio_state
+                session.error_occurred = self._on_audio_error
+            except Exception:
+                pass
             # ولوم اولیه از اسلایدر
             try:
                 session.set_volume(self.volume_slider.value() / 100.0)
             except Exception:
                 pass
             cam = dict(self.cam)
-            # برای کانال NVR، اطلاعات NVR را هم اضافه می‌کنیم (مثل دیالوگ)
             ok = session.start(cam, on_url_found=self._on_audio_url_found)
             if ok:
                 self._listen_session = session
                 self.audio_btn.setText("🎧")
                 self.audio_btn.setToolTip("قطع صدای دوربین")
                 self.volume_slider.setVisible(True)
-            # اگر start ناموفق بود، خطا از طریق state_changed می‌آید
+                self.status_label.setText("در حال اتصال صدا...")
+            else:
+                self.status_label.setText("خطا در شروع صدا")
+        except Exception as e:
+            try:
+                self.status_label.setText(f"خطای صدا: {e}"[:60])
+            except Exception:
+                pass
+
+    def _on_audio_state(self, state: str):
+        try:
+            if state == "playing":
+                self.status_label.setText("🔊 صدا وصل است")
+            elif state.startswith("connecting"):
+                self.status_label.setText("در حال اتصال صدا...")
+            elif state == "error":
+                pass  # خطا از _on_audio_error می‌آید
+        except Exception:
+            pass
+
+    def _on_audio_error(self, msg: str):
+        try:
+            # فقط خط اول پیام را نشان می‌دهیم
+            line = (msg or "").split("\n")[0][:80]
+            self.status_label.setText(f"⚠ صدا: {line}")
+        except Exception:
+            pass
+        # نشست ناموفق را تمیز می‌کنیم تا دکمه به حالت اول برگردد
+        try:
+            self._stop_audio()
         except Exception:
             pass
 
