@@ -1065,6 +1065,23 @@ def build_listen_url(cam) -> str:
     return f"rtsp://{host}:{port}{path}"
 
 
+def build_direct_url_variants(cam):
+    """آدرس‌های جایگزین مستقیم دوربین (فرمت‌های مختلف سازندگان).
+
+    دوربین‌های Sunell (مثل IAS.NB-Q2501F) از فرمت /snl/live/<ch>/<stream>
+    استفاده می‌کنند که صدا را هم می‌فرستد؛ فرمت XM (/h264/...) فقط ویدیو می‌دهد.
+    """
+    ip = cam.get("camera_ip") or cam.get("ip") or ""
+    port = int(cam.get("port") or 554)
+    ch = int(cam.get("channel") or 1)
+    base = f"rtsp://{ip}:{port}"
+    return [
+        f"{base}/snl/live/{ch}/1",   # Sunell main
+        f"{base}/snl/live/{ch}/2",   # Sunell sub1
+        f"{base}/snl/live/{ch}/3",   # Sunell sub2
+    ]
+
+
 def build_nvr_proxy_listen_url(cam):
     """URLهای پروکسی NVR برای شنیدن صدای کانال (لیست به‌ترتیب اولویت).
 
@@ -1436,8 +1453,11 @@ class ListenSession:
             pass
         # اگر کانال NVR با URL مستقیم دوربین ثبت شده، اول کاندیداهای پروکسی
         # NVR را امتحان می‌کنیم (تایم‌اوت کوتاه ۴ ثانیه، فقط probe) و بعد
-        # آدرس مستقیم را به‌عنوان fallback
-        url_items = [(u, 4.0) for u in nvr_urls] + [(url, 8.0)]
+        # آدرس مستقیم را به‌عنوان fallback؛ در آخر هم فرمت‌های جایگزین
+        # (مثل Sunell /snl/live) را امتحان می‌کنیم
+        sunell_urls = build_direct_url_variants(cam)
+        url_items = ([(u, 4.0) for u in nvr_urls] + [(url, 8.0)] +
+                     [(u, 6.0) for u in sunell_urls])
         self._worker = self._Worker(url_items, cam.get("user", "") or "",
                                    cam.get("pass", "") or "")
         self._worker.pcm_ready.connect(self._on_pcm)
