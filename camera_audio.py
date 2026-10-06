@@ -440,7 +440,20 @@ class RTSPAudioClient:
                                              _auth_tries + 1)
                 raise RTSPError(
                     "احرازهویت دوربین رد شد (نام کاربری/رمز را بررسی کنید)")
-            raise RTSPError("دوربین احرازهویت Basic می‌خواهد (پشتیبانی نمی‌شود)")
+            # (2.0.116-beta) پشتیبانی از Basic auth — بعضی دوربین‌ها با
+            # Basic راحت‌ترند و VLC هم از آن استفاده می‌کند.
+            if "basic" in www.lower() and self.username:
+                import base64 as _b64
+                _basic = _b64.b64encode(
+                    f"{self.username}:{self.password}".encode("utf-8")
+                ).decode("ascii")
+                _basic_auth = f"Basic {_basic}"
+                if _basic_auth != self._auth_header:
+                    self._auth_header = _basic_auth
+                    self._log(f"{method} -> تلاش با Basic auth")
+                    return self._request(method, url, headers, body,
+                                         _auth_tries + 1)
+            raise RTSPError("احرازهویت دوربین رد شد (نام کاربری/رمز را بررسی کنید)")
         return code, resp_headers, resp_body
 
     # -- handshake ----------------------------------------------------------
