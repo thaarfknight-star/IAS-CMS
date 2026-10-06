@@ -1328,7 +1328,24 @@ class ListenSession:
                     for url, timeout in self._url_items:
                         if self._stop:
                             return
-                        client = RTSPAudioClient(url, self._user, self._pwd,
+                        # (2.0.119-beta) مثل VLC: credential را داخل خود URL
+                        # می‌گذاریم (encode شده). بعضی دوربین‌ها با این روش
+                        # بهتر کار می‌کنند تا user/pwd جداگانه.
+                        _use_url = url
+                        try:
+                            if self._user and "@" not in url.split("://", 1)[-1].split("/", 1)[0]:
+                                from urllib.parse import quote as _q, urlparse as _up
+                                _p = _up(url)
+                                _cred = f"{_q(self._user, safe='')}:{_q(self._pwd or '', safe='')}@"
+                                _netloc = _cred + (_p.hostname or "")
+                                if _p.port:
+                                    _netloc += f":{_p.port}"
+                                _use_url = f"{_p.scheme}://{_netloc}{_p.path or '/'}"
+                                if _p.query:
+                                    _use_url += "?" + _p.query
+                        except Exception:
+                            _use_url = url
+                        client = RTSPAudioClient(_use_url, self._user, self._pwd,
                                                  debug=True, timeout=timeout)
                         self._client = client
                         last_client = client

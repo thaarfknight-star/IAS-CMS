@@ -575,6 +575,8 @@ GitHub Actions ساخته می‌شود و روی سیستم مقصد نیازی
 66. **نسخه‌ی 2.0.118-beta — فیکس دایجست** — `algorithm` فقط اگر سرور خواسته
     باشد فرستاده می‌شود.
 
+67. **نسخه‌ی 2.0.119-beta — مثل VLC** — credential داخل خود URL (encode شده).
+
 ## راهنمای اجرای محلی:
 ```bash
 pip install -r requirements.txt
