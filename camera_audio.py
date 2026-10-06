@@ -403,6 +403,12 @@ class RTSPAudioClient:
             # می‌دهند — با چلنج جدید دوباره می‌سازیم.
             www = resp_headers.get("www-authenticate", "")
             if "digest" in www.lower():
+                # (2.0.115-beta) لاگ چلنج برای عیب‌یابی (بدون رمز)
+                try:
+                    _chal_log = www[:200].replace("\r", " ").replace("\n", " ")
+                    self._log(f"{method} -> چلنج: {_chal_log}")
+                except Exception:
+                    pass
                 challenge = _parse_challenge(www)
                 # اگر credential داخل URL بود، از uri دایجست حذفش می‌کنیم
                 # (سرورها userinfo را در uri دایجست قبول ندارند)
