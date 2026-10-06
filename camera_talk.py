@@ -161,6 +161,9 @@ def build_digest_auth(username: str, password: str, method: str, uri: str,
 
     ha1 = H(f"{username}:{realm}:{password}")
     ha2 = H(f"{method}:{uri}")
+    # (2.0.118-beta) algorithm را فقط اگر سرور در چلنج فرستاده باشد می‌فرستیم؛
+    # بعضی دوربین‌ها (مثل Sunell) با algorithm صریح مشکل دارند.
+    _alg_given = bool(challenge.get("algorithm"))
     if qop:
         # qop ممکن است "auth,auth-int" باشد؛ auth را برمی‌داریم
         qop = [q.strip() for q in qop.split(",") if "auth" in q][0]
@@ -168,15 +171,18 @@ def build_digest_auth(username: str, password: str, method: str, uri: str,
         cnonce = cnonce or hashlib.md5(str(random.random()).encode()).hexdigest()[:16]
         resp = KD(f"{ha1}:{nonce}:{nc}:{cnonce}:{qop}:{ha2}")
         parts = [f'username="{username}"', f'realm="{realm}"',
-                 f'nonce="{nonce}"', f'uri="{uri}"', f"response={resp}",
-                 f"algorithm={algorithm}", f"cnonce=\"{cnonce}\"",
+                 f'nonce="{nonce}"', f'uri="{uri}"', f"response={resp}"]
+        if _alg_given:
+            parts.append(f"algorithm={algorithm}")
+        parts += [f"cnonce=\"{cnonce}\"",
                  f'opaque="{opaque}"' if opaque else None,
                  f"qop={qop}", "nc=00000001"]
     else:
         resp = KD(f"{ha1}:{nonce}:{ha2}")
         parts = [f'username="{username}"', f'realm="{realm}"',
-                 f'nonce="{nonce}"', f'uri="{uri}"', f"response={resp}",
-                 f"algorithm={algorithm}"]
+                 f'nonce="{nonce}"', f'uri="{uri}"', f"response={resp}"]
+        if _alg_given:
+            parts.append(f"algorithm={algorithm}")
         if opaque:
             parts.append(f'opaque="{opaque}"')
     parts = [p for p in parts if p]
