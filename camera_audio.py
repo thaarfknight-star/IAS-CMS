@@ -282,12 +282,26 @@ class RTSPAudioClient:
         url_pwd = unquote(parsed.password or "")
         self.username = url_user or username or ""
         self.password = url_pwd or password or ""
+        # (2.0.121-beta) مثل VLC: اگر credential داریم، از همان درخواست اول
+        # هدر Basic را preemptive می‌فرستیم (بعضی دوربین‌ها بدون 401 قبول
+        # می‌کنند). اگر سرور Digest خواست، در _request جایگزین می‌شود.
+        if self.username:
+            try:
+                import base64 as _b64
+                _pre = _b64.b64encode(
+                    f"{self.username}:{self.password}".encode("utf-8")
+                ).decode("ascii")
+                self._auth_header = f"Basic {_pre}"
+            except Exception:
+                self._auth_header = ""
+        else:
+            self._auth_header = ""
         self.timeout = timeout
         self.sock = None
         self.cseq = 0
         self._rx_buf = b""  # بایت‌های اضافی خوانده‌شده از سوکت (بعد از هدرها)
         self.session_id = ""
-        self._auth_header = ""
+        # (نکته: self._auth_header بالاتر ست شده — preemptive Basic اگر یوزر هست)
         self.audio = None  # dict ترک صوتی پس از connect
         self._mode = "tcp"  # یا "udp" پس از fallback
         self._rtp_channel = 0
