@@ -5084,18 +5084,34 @@ class MainWindow(QMainWindow):
                     allowed_pages=allowed)
 
     def open_face_gallery(self):
-        """(2.0.105-beta) دکمه‌ی «🖼 دیدن تصاویر» حالا پوشه‌ای را در اکسپلورر
+        """(2.0.111-beta) دکمه‌ی «🖼 دیدن تصاویر» پوشه‌ای را در اکسپلورر
         باز می‌کند که برنامه تصاویر رویدادها (چهره‌ها، پلاک‌ها و...) را در آن
         ذخیره می‌کند (report_images)."""
         try:
             import os
-            from PyQt6.QtCore import QUrl
-            from PyQt6.QtGui import QDesktopServices
+            import sys
             images_dir = report_store.IMAGES_DIR
             os.makedirs(images_dir, exist_ok=True)
-            QDesktopServices.openUrl(QUrl.fromLocalFile(images_dir))
-        except Exception:
-            pass
+            # در ویندوز os.startfile مطمئن‌ترین راه است.
+            if sys.platform == "win32":
+                try:
+                    os.startfile(images_dir)
+                    return
+                except Exception:
+                    pass
+            # fallback: QDesktopServices
+            from PyQt6.QtCore import QUrl
+            from PyQt6.QtGui import QDesktopServices
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(images_dir)):
+                raise RuntimeError("openUrl ناموفق بود")
+        except Exception as e:
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self, "خطا",
+                    f"باز کردن پوشه‌ی تصاویر ناموفق بود:\n{images_dir}\n\n{e}")
+            except Exception:
+                pass
 
     def on_face_event(self, cam, person, crop_frame):
         """برای هر چهره‌ای که هر یک از دوربین‌ها ببیند (شناخته‌شده یا

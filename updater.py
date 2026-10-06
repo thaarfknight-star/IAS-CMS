@@ -62,14 +62,20 @@ def get_app_version():
 def _ver_tuple(v):
     # پسوند پیش‌انتشار (مثل -beta) در مقایسه‌ی عددی نادیده گرفته می‌شود تا
     # «2.0.2-beta» درست با «2.0.2» مقایسه شود.
-    core = str(v).strip().split("-")[0].split("+")[0]
+    # (2.0.111-beta) فرمت‌های مختلف را هم پشتیبانی می‌کند: «2.0.109-beta»،
+    # «beta-2.0.109»، «v2.0.109» — با regex اعداد نسخه استخراج می‌شوند.
+    import re as _re
+    s = str(v).strip()
+    # دنباله‌ی اعداد نقطه‌دار (مثل 2.0.109) را پیدا می‌کنیم
+    m = _re.search(r"(\d+(?:\.\d+)+)", s)
+    core = m.group(1) if m else s.split("-")[0].split("+")[0]
     parts = []
     for p in core.split("."):
         try:
             parts.append(int(p))
         except ValueError:
             parts.append(0)
-    return tuple(parts)
+    return tuple(parts) if parts else (0,)
 
 
 # ----------------------------------------------------------------------------
