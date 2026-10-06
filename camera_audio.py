@@ -370,6 +370,12 @@ class RTSPAudioClient:
                  body: bytes = b"", _auth_tries: int = 0) -> tuple:
         self.cseq += 1
         target = url or self.url
+        # (2.0.117-beta) لاگ یوزرنیم برای عیب‌یابی (فقط طول، نه مقدار)
+        if _auth_tries == 0 and self.username:
+            try:
+                self._log(f"{method} -> یوزر: {self.username[:2]}*** (طول {len(self.username)})")
+            except Exception:
+                pass
         lines = [f"{method} {target} RTSP/1.0", f"CSeq: {self.cseq}"]
         # بعضی فریمورها (مثل XM) به User-Agent حساس‌اند و کلاینت ناشناس را
         # با ۴۶۱ رد می‌کنند؛ مسیر ویدیوی اصلی برنامه با FFmpeg/Lavf روی همین
