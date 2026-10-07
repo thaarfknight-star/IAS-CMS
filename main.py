@@ -3123,6 +3123,14 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self.fire_page)
         self.face_page = FaceLibraryPage(self.face_engine, self.get_active_camera_frame)
         self.pages.addWidget(self.face_page)
+        # (1.0.0) صفحه‌ی «محدوده هشدار»: تب ثبت گزارش + تب انتخاب دوربین
+        try:
+            from region_alert_page import RegionAlertPage
+            self.region_alert_page = RegionAlertPage(
+                self.camera_store, self.report_store)
+            self.pages.addWidget(self.region_alert_page)
+        except Exception:
+            self.region_alert_page = None
         # camera_store به صفحه‌ی گزارش‌ها پاس داده می‌شود تا برای دکمه‌ی
         # «پخش ویدیوی NVR»، اطلاعات اتصال NVR مربوط به هر رویداد را پیدا کند.
         self.reports_page = ReportsPage(report_store, self.camera_store)
@@ -4733,6 +4741,7 @@ class MainWindow(QMainWindow):
             ("home", "🏠 صفحه اصلی"),
             ("fire", "🔥 اعلام حریق"),
             ("face", "👤 چهره‌ها"),
+            ("region_alert", "⚠ محدوده هشدار"),
             ("reports", "📊 گزارش‌ها"),
             ("plate", "🚗 پلاک‌خوان"),
             ("person", "👥 ردیابی اشخاص"),
@@ -4813,8 +4822,9 @@ class MainWindow(QMainWindow):
         # (2.0.53-beta) کلید صفحه‌ی فعلی برای دکمه‌ی «راهنما» نگه داشته
         # می‌شود تا PDF روی صفحه‌ی مربوط به همین صفحه باز شود.
         self._current_page_key = key
-        index = {"home": 0, "fire": 1, "face": 2, "reports": 3, "plate": 4,
-                 "person": 5, "map": 6, "settings": 7}[key]
+        index = {"home": 0, "fire": 1, "face": 2, "region_alert": 3,
+                 "reports": 4, "plate": 5,
+                 "person": 6, "map": 7, "settings": 8}[key]
         if key == "map" and self.map_page is None:
             QMessageBox.warning(
                 self, "صفحه‌ی نقشه در دسترس نیست",
@@ -4875,7 +4885,8 @@ class MainWindow(QMainWindow):
             else:
                 self.user_label.setVisible(False)
                 self.lock_btn.setVisible(False)
-            allowed = [k for k in ("home", "fire", "face", "reports", "plate",
+            allowed = [k for k in ("home", "fire", "face", "region_alert",
+                                   "reports", "plate",
                                    "person", "map", "settings")
                        if self._has_access(k)]
             if allowed and getattr(self, "_current_page_key", "home") not in allowed:
