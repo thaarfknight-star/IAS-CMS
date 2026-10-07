@@ -34,10 +34,15 @@ DEMO_QUOTAS = {
     "plate": 0,
     "fire": 0,
     "person_tracking": 0,
+    # (1.0.0) سهمیه‌ی تعداد دوربین برای هر قابلیت
+    "face_recognition": 0,
+    "region_alert": 0,
+    "people_counting": 0,
 }
 
 # ترتیب نمایش سهمیه‌ها در دیالوگ
-QUOTA_ORDER = ["cameras", "plate", "fire", "person_tracking"]
+QUOTA_ORDER = ["cameras", "plate", "fire", "person_tracking",
+               "face_recognition", "region_alert", "people_counting"]
 
 # ----------------------------------------------------------------------------
 # قابلیت‌های روشن/خاموش (بدون سهمیه‌ی تعدادی — فقط فعال یا غیرفعال).

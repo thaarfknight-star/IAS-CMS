@@ -5234,6 +5234,19 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def open_license_camera_dialog(self):
+        """(1.0.0) باز کردن دیالوگ انتخاب دوربین برای قابلیت‌ها (لایسنس)."""
+        try:
+            from license_camera_dialog import LicenseCameraDialog
+            dlg = LicenseCameraDialog(self.camera_store, parent=self)
+            dlg.exec()
+        except Exception as e:
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "خطا", f"باز کردن دیالوگ ناموفق بود:\n{e}")
+            except Exception:
+                pass
+
     def open_face_gallery(self):
         """(1.0.0) دکمه‌ی «🖼 دیدن تصاویر» حالا پنجره‌ی گالری را باز می‌کند:
         مرتب‌سازی بر اساس رویداد/تاریخ/ساعت، نمایش جزئیات، و ذخیره با
