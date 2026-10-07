@@ -50,11 +50,17 @@ QUOTA_ORDER = ["cameras", "plate", "fire", "person_tracking",
 # پیش‌فرض «فعال» است تا لایسنس‌های قبلی نشکنند.
 # ----------------------------------------------------------------------------
 FEATURE_DEFS = {
+    "people_counting": "شمارش افراد",
+    "face_recognition": "چهره‌خوان (شناسایی چهره)",
+    "zone_alerts": "هشدار ورود به محدوده",
 }
-FEATURE_ORDER = []
+FEATURE_ORDER = ["people_counting", "face_recognition", "zone_alerts"]
 
 # حالت محدود (بدون لایسنس معتبر): فقط شمارش افراد فعال است
 RESTRICTED_FEATURES = {
+    "people_counting": True,
+    "face_recognition": False,
+    "zone_alerts": False,
 }
 
 
