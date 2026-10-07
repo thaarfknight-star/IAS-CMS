@@ -5869,7 +5869,75 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ close ---
 
+    def _confirm_close_auth(self):
+        """(1.0.0) دیالوگ احراز هویت هنگام بستن برنامه.
+        خروجی: True اگر کاربر معتبر احراز هویت کرد، False در غیر این صورت."""
+        try:
+            from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, \
+                QLineEdit, QDialogButtonBox, QMessageBox
+            from PyQt6.QtCore import Qt
+            from user_manager import UserManager
+
+            # اگر کاربری لاگین نکرده (حالت توسعه)، اجازه‌ی بستن بدون احراز
+            if self.current_user is None:
+                return True
+
+            dlg = QDialog(self)
+            dlg.setWindowTitle("🔐 تأیید بستن برنامه")
+            dlg.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
+            dlg.setMinimumWidth(320)
+            lay = QVBoxLayout(dlg)
+            lay.addWidget(QLabel(
+                "برای بستن برنامه، نام کاربری و رمز عبور خود را وارد کنید:"))
+            user_edit = QLineEdit()
+            user_edit.setPlaceholderText("نام کاربری")
+            try:
+                user_edit.setText(self.current_user.get("username", "") or "")
+            except Exception:
+                pass
+            pass_edit = QLineEdit()
+            pass_edit.setPlaceholderText("رمز عبور")
+            pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            lay.addWidget(QLabel("نام کاربری:"))
+            lay.addWidget(user_edit)
+            lay.addWidget(QLabel("رمز عبور:"))
+            lay.addWidget(pass_edit)
+            btns = QDialogButtonBox(
+                QDialogButtonBox.StandardButton.Ok |
+                QDialogButtonBox.StandardButton.Cancel)
+            btns.button(QDialogButtonBox.StandardButton.Ok).setText("تأیید و بستن")
+            btns.button(QDialogButtonBox.StandardButton.Cancel).setText("انصراف")
+            btns.accepted.connect(dlg.accept)
+            btns.rejected.connect(dlg.reject)
+            lay.addWidget(btns)
+
+            if dlg.exec() != QDialog.DialogCode.Accepted:
+                return False
+
+            username = user_edit.text().strip()
+            password = pass_edit.text()
+            if not username or not password:
+                return False
+
+            try:
+                um = UserManager()
+                user = um.verify(username, password)
+                if user:
+                    return True
+            except Exception:
+                pass
+            QMessageBox.warning(self, "خطا",
+                                "نام کاربری یا رمز عبور اشتباه است.")
+            return False
+        except Exception:
+            return True
+
     def closeEvent(self, event):
+        # (1.0.0) احراز هویت هنگام بستن: همه‌ی کاربران (admin, Test و کاربران
+        # تعریف‌شده توسط ادمین) باید نام کاربری و رمز عبور وارد کنند.
+        if not self._confirm_close_auth():
+            event.ignore()
+            return
         self.camera_grid.stop_all()
         # جلوگیری از کرش هنگام بستن برنامه در حین اسکن شبکه/تشخیص نوع دستگاه:
         # Qt هنگام تخریب یک QThread که هنوز در حال اجراست، کرش می‌کند.
