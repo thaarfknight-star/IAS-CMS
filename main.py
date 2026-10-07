@@ -4749,16 +4749,7 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(lambda _checked=False, _key=key: self.show_page(_key))
             header_layout.addWidget(btn)
             self.nav_buttons[key] = btn
-        # (2.0.53-beta) دکمه‌ی «راهنما»: در همه‌ی صفحه‌ها دیده می‌شود و
-        # کاتالوگ PDF راهنما را روی صفحه‌ی مربوط به همان صفحه‌ی فعلی باز
-        # می‌کند (رجوع کنید به app_help.py).
-        help_btn = QPushButton("❓ راهنما")
-        help_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        help_btn.setStyleSheet(
-            "QPushButton{padding: 6px 14px; border-radius: 6px; font-size: 12px;}"
-        )
-        help_btn.clicked.connect(self.open_help)
-        header_layout.addWidget(help_btn)
+        # (1.0.0) دکمه‌ی «راهنما» از هدر حذف شد — به داخل هر صفحه/tab منتقل می‌شود.
         # نشان نسخه
         ver_label = QLabel(f"v{self.app_version}")
         ver_label.setStyleSheet(
