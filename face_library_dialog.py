@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QTextEdit,
     QTableWidget, QTableWidgetItem, QPushButton, QMessageBox, QDialogButtonBox,
     QHeaderView, QLabel, QFileDialog, QComboBox, QScrollArea, QGridLayout,
+    QListWidget, QListWidgetItem, QTabWidget,
 )
 
 from image_viewer_dialog import ImageViewerDialog  # 👁 دیدن تصویر (دابل‌کلیک روی عکس)
