@@ -3131,6 +3131,13 @@ class MainWindow(QMainWindow):
             self.pages.addWidget(self.region_alert_page)
         except Exception:
             self.region_alert_page = None
+        # (1.0.0) صفحه‌ی «شمارش افراد»: صفحه‌ی جدا با انتخاب دوربین
+        try:
+            from people_counting_page import PeopleCountingPage
+            self.people_counting_page = PeopleCountingPage(self.camera_store)
+            self.pages.addWidget(self.people_counting_page)
+        except Exception:
+            self.people_counting_page = None
         # camera_store به صفحه‌ی گزارش‌ها پاس داده می‌شود تا برای دکمه‌ی
         # «پخش ویدیوی NVR»، اطلاعات اتصال NVR مربوط به هر رویداد را پیدا کند.
         self.reports_page = ReportsPage(report_store, self.camera_store)
@@ -4742,6 +4749,7 @@ class MainWindow(QMainWindow):
             ("fire", "🔥 اعلام حریق"),
             ("face", "👤 چهره‌ها"),
             ("region_alert", "⚠ محدوده هشدار"),
+            ("people_counting", "🔢 شمارش افراد"),
             ("reports", "📊 گزارش‌ها"),
             ("plate", "🚗 پلاک‌خوان"),
             ("person", "👥 ردیابی اشخاص"),
@@ -4823,8 +4831,8 @@ class MainWindow(QMainWindow):
         # می‌شود تا PDF روی صفحه‌ی مربوط به همین صفحه باز شود.
         self._current_page_key = key
         index = {"home": 0, "fire": 1, "face": 2, "region_alert": 3,
-                 "reports": 4, "plate": 5,
-                 "person": 6, "map": 7, "settings": 8}[key]
+                 "people_counting": 4, "reports": 5, "plate": 6,
+                 "person": 7, "map": 8, "settings": 9}[key]
         if key == "map" and self.map_page is None:
             QMessageBox.warning(
                 self, "صفحه‌ی نقشه در دسترس نیست",
@@ -4886,7 +4894,7 @@ class MainWindow(QMainWindow):
                 self.user_label.setVisible(False)
                 self.lock_btn.setVisible(False)
             allowed = [k for k in ("home", "fire", "face", "region_alert",
-                                   "reports", "plate",
+                                   "people_counting", "reports", "plate",
                                    "person", "map", "settings")
                        if self._has_access(k)]
             if allowed and getattr(self, "_current_page_key", "home") not in allowed:
