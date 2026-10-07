@@ -1101,9 +1101,27 @@ class CameraSlotWidget(QWidget):
         _play_alarm_beep("zone")
         self._alarm_timer.start(4000)
         if self._on_region_alert is not None and self.cam is not None:
+            # (1.0.0) عکس فریم جاری را هم برای ثبت در گزارش می‌گیریم
+            crop_frame = None
+            try:
+                pix = self.video_label.pixmap()
+                if pix and not pix.isNull():
+                    # تبدیل QPixmap به numpy array برای ذخیره
+                    from PyQt6.QtGui import QImage
+                    img = pix.toImage().convertToFormat(
+                        QImage.Format.Format_RGB888)
+                    w, h = img.width(), img.height()
+                    ptr = img.bits()
+                    ptr.setsize(h * w * 3)
+                    import numpy as np
+                    arr = np.frombuffer(ptr, np.uint8).reshape((h, w, 3))
+                    # RGB به BGR برای OpenCV
+                    crop_frame = arr[:, :, ::-1].copy()
+            except Exception:
+                pass
             # رفع درخواست «گزارش‌ها روی NVR ضبط بشه»: کل cam پاس داده می‌شود
             # تا nvr_id/channel هم در on_region_alert در دسترس باشد.
-            self._on_region_alert(self.cam, number, name)
+            self._on_region_alert(self.cam, number, name, crop_frame)
 
     def _on_fire_event(self, kind: str, crop_frame, confidence: float):
         """رفع درخواست «سیستم تشخیص دود و اعلام حریق»: دقیقاً همان الگوی
@@ -3431,12 +3449,13 @@ class MainWindow(QMainWindow):
         dialog = RegionManagerDialog(slot, _on_changed, self)
         dialog.exec()
 
-    def on_region_alert(self, cam, number, name):
+    def on_region_alert(self, cam, number, name, crop_frame=None):
         """رفع درخواست: با ورود شخصی به یکی از محدوده‌های هشدار هر دوربین
         (از CameraSlotWidget._on_region_entered)، یک ردیف متنی قرمز هم در
         پنل رویدادها (سمت راست) ثبت می‌شود تا سابقه‌ی هشدارها هم در دسترس
         باشد. ``cam``: کل دیکشنری دوربین (نه فقط اسم) تا nvr_id/channel هم
-        برای لینک «پخش ویدیوی NVR» در دیالوگ گزارش‌ها ذخیره شود."""
+        برای لینک «پخش ویدیوی NVR» در دیالوگ گزارش‌ها ذخیره شود.
+        (1.0.0) crop_frame: عکس فریم جاری برای ثبت در گزارش."""
         # گیت لایسنس: اگر قابلیت «هشدار ورود به محدوده» فعال نباشد،
         # هشداری ثبت و پخش نمی‌شود.
         try:
@@ -3454,8 +3473,11 @@ class MainWindow(QMainWindow):
         self.events_panel_list.insertItem(0, item)
         # رفع درخواست: علاوه بر نمایش موقت در همین پنل، ثبت دائمی روی سیستم
         # (report_store.py) - قابل جست‌وجو/خروجی از دیالوگ «گزارش‌ها».
+        # (1.0.0) عکس هم ثبت می‌شود.
         report_store.log_region_alert(camera_name, number, name,
-                                       nvr_id=cam.get("nvr_id"), channel=cam.get("channel"))
+                                       nvr_id=cam.get("nvr_id"),
+                                       channel=cam.get("channel"),
+                                       crop_frame=crop_frame)
         while self.events_panel_list.count() > 300:
             self.events_panel_list.takeItem(self.events_panel_list.count() - 1)
 

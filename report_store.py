@@ -279,12 +279,15 @@ class ReportStore:
                      crop_frame=crop_frame, crop_prefix=event_type,
                      nvr_id=nvr_id, channel=channel)
 
-    def log_region_alert(self, camera_name, number, name, nvr_id=None, channel=None):
-        """با ورود شخصی به یک محدوده‌ی هشدار، ثبت می‌شود."""
+    def log_region_alert(self, camera_name, number, name, nvr_id=None, channel=None,
+                         crop_frame=None):
+        """با ورود شخصی به یک محدوده‌ی هشدار، ثبت می‌شود.
+        (1.0.0) اگر crop_frame داده شود، عکس شخص هم ذخیره می‌شود."""
         now = time.strftime("%Y-%m-%d %H:%M:%S")
         self._insert(now, "zone_entry", camera_name=camera_name,
                      region_number=str(number), region_name=name,
-                     nvr_id=nvr_id, channel=channel)
+                     nvr_id=nvr_id, channel=channel,
+                     crop_frame=crop_frame, crop_prefix="region_alert")
 
     def log_person_count(self, camera_name, count, nvr_id=None, channel=None):
         """تغییر تعداد نفراتِ یک دوربین را ثبت می‌کند (فراخوان مسئول
