@@ -33,6 +33,9 @@ class PeopleCountingPage(QWidget):
         cam_lay.addWidget(self.cam_list)
         cam_btn_lay = QHBoxLayout()
         cam_btn_lay.addStretch()
+        select_all_btn = QPushButton("✅ انتخاب همه (تا سقف لایسنس)")
+        select_all_btn.clicked.connect(self._select_all_cameras)
+        cam_btn_lay.addWidget(select_all_btn)
         save_btn = QPushButton("💾 ذخیره")
         save_btn.clicked.connect(self._save_cameras)
         cam_btn_lay.addWidget(save_btn)
@@ -56,6 +59,25 @@ class PeopleCountingPage(QWidget):
         lay.addWidget(stats_group)
 
         lay.addStretch()
+
+    def refresh(self):
+        """تازه‌سازی لیست دوربین‌ها و آمار هنگام نمایش صفحه."""
+        self._load_cameras()
+        self._refresh_stats()
+
+    def _select_all_cameras(self):
+        """انتخاب همه‌ی دوربین‌ها تا سقف سهمیه‌ی لایسنس."""
+        try:
+            from license import effective_quotas
+            quota = int(effective_quotas().get("people_counting", 0))
+        except Exception:
+            quota = 0
+        max_select = quota if quota > 0 else self.cam_list.count()
+        for i in range(self.cam_list.count()):
+            item = self.cam_list.item(i)
+            item.setCheckState(
+                Qt.CheckState.Checked if i < max_select
+                else Qt.CheckState.Unchecked)
 
     def _load_cameras(self):
         """بارگذاری دوربین‌ها."""

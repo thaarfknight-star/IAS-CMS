@@ -382,6 +382,9 @@ class FaceLibraryPage(QWidget):
         cam_lay.addWidget(self.face_cam_list)
         cam_btn_lay = QHBoxLayout()
         cam_btn_lay.addStretch()
+        cam_select_all_btn = QPushButton("✅ انتخاب همه (تا سقف لایسنس)")
+        cam_select_all_btn.clicked.connect(self._select_all_face_cameras)
+        cam_btn_lay.addWidget(cam_select_all_btn)
         cam_save_btn = QPushButton("💾 ذخیره")
         cam_save_btn.clicked.connect(self._save_face_cameras)
         cam_btn_lay.addWidget(cam_save_btn)
@@ -427,6 +430,8 @@ class FaceLibraryPage(QWidget):
     def refresh(self):
         """هر بار که صفحه از هدر باز می‌شود صدا زده می‌شود تا جدول تازه باشد."""
         self.refresh_table()
+        self._load_face_cameras()
+        self._refresh_face_report()
 
     def _load_face_cameras(self):
         """(1.0.0) بارگذاری لیست دوربین‌ها برای انتخاب چهره‌خوان."""
@@ -466,6 +471,20 @@ class FaceLibraryPage(QWidget):
                 self.face_cam_list.addItem(item)
         except Exception:
             pass
+
+    def _select_all_face_cameras(self):
+        """انتخاب همه‌ی دوربین‌ها برای چهره‌خوان تا سقف سهمیه‌ی لایسنس."""
+        try:
+            from license import effective_quotas
+            quota = int(effective_quotas().get("face_recognition", 0))
+        except Exception:
+            quota = 0
+        max_select = quota if quota > 0 else self.face_cam_list.count()
+        for i in range(self.face_cam_list.count()):
+            item = self.face_cam_list.item(i)
+            item.setCheckState(
+                Qt.CheckState.Checked if i < max_select
+                else Qt.CheckState.Unchecked)
 
     def _save_face_cameras(self):
         """(1.0.0) ذخیره‌ی انتخاب دوربین‌ها برای چهره‌خوان."""
