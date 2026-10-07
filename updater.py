@@ -135,14 +135,25 @@ def changelog_between(prev_version, new_version, max_chars=6000):
         entries.append((cur_ver, cur_date, "\n".join(buf).strip()))
     prev_t = _ver_tuple(prev_version or "0")
     new_t = _ver_tuple(new_version or "0")
+    # (1.0.0) گذار بتا → پایدار: اگر prev بتا و new پایدار باشد، همه‌ی ورودی‌های
+    # بتا را نشان می‌دهیم (چون new_t از نظر عددی کوچک‌تر است).
+    _is_beta_to_stable = ("beta" in str(prev_version or "").lower()
+                          and "beta" not in str(new_version or "").lower())
     out, total = [], 0
     for ver, date, body in entries:
         vt = _ver_tuple(ver)
-        if vt <= prev_t:
-            break  # ورودی‌ها از جدید به قدیم‌اند
-        if vt > new_t:
-            continue
-        out.append((ver, date, body))
+        if _is_beta_to_stable:
+            # همه‌ی ورودی‌ها را (از جدید به قدیم) نشان می‌دهیم تا به اولین
+            # نسخه‌ی پایدار قبلی برسیم
+            if "beta" not in ver.lower() and vt <= new_t:
+                break
+            out.append((ver, date, body))
+        else:
+            if vt <= prev_t:
+                break  # ورودی‌ها از جدید به قدیم‌اند
+            if vt > new_t:
+                continue
+            out.append((ver, date, body))
         total += len(body)
         if total > max_chars:
             break
@@ -203,7 +214,16 @@ def validate_update_zip(zip_path):
         return False, "فایل آپدیت خالی است."
     cur = _ver_tuple(get_app_version())
     new = _ver_tuple(info["version"])
-    if new < cur:
+    # (1.0.0) هندل کردن گذار بتا → پایدار: اگر نسخه‌ی فعلی بتا باشد و نسخه‌ی
+    # جدید پایدار (بدون پسوند بتا)، آن را ارتقا حساب می‌کنیم حتی اگر از نظر
+    # عددی کوچک‌تر باشد (مثل 2.0.121-beta → 1.0.0).
+    _cur_is_beta = "beta" in str(get_app_version()).lower()
+    _new_is_beta = "beta" in str(info["version"]).lower()
+    if not (new < cur):
+        pass  # ارتقای عادی
+    elif _cur_is_beta and not _new_is_beta:
+        pass  # گذار بتا → پایدار: قبول می‌کنیم
+    else:
         return False, (f"نسخه‌ی فایل آپدیت ({info['version']}) از نسخه‌ی فعلی "
                        f"({get_app_version()}) قدیمی‌تر است.")
     return True, info

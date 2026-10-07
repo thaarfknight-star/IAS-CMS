@@ -2601,6 +2601,13 @@ class MainWindow(QMainWindow):
             if not notice:
                 return
             clear_update_notice()
+            # (1.0.0) بعد از اعمال آپدیت، نسخه‌ی هشدار داده‌شده را پاک می‌کنیم
+            # تا آپدیت‌های بعدی دوباره هشدار بدهند.
+            try:
+                import app_settings
+                app_settings.set_notified_update_version("")
+            except Exception:
+                pass
             new_v = str(notice.get("new_version") or "")
             prev_v = str(notice.get("prev_version") or "")
             entries = changelog_between(prev_v, new_v) if new_v else []
@@ -4880,9 +4887,23 @@ class MainWindow(QMainWindow):
         if not info or not self._is_admin() or not self._auto_check_enabled():
             return
         ver = info.get("version", "")
-        if not ver or ver == self._update_notified_version:
+        if not ver:
+            return
+        # (1.0.0) جلوگیری از آلارم تکراری: نسخه‌ای که قبلاً هشدار داده شده
+        # (حتی بعد از ری‌استارت) دوباره هشدار نمی‌دهیم.
+        try:
+            import app_settings
+            _notified = app_settings.get_notified_update_version()
+        except Exception:
+            _notified = self._update_notified_version
+        if ver == self._update_notified_version or ver == _notified:
             return  # برای همین نسخه قبلاً هشدار داده‌ایم
         self._update_notified_version = ver
+        try:
+            import app_settings
+            app_settings.set_notified_update_version(ver)
+        except Exception:
+            pass
         self._pending_update_info = info
         self.header_update_btn.setVisible(True)
         self._show_update_toast(info)

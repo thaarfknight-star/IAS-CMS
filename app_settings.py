@@ -71,3 +71,14 @@ def set_auto_update_check(on):
     cfg = load_settings()
     cfg["auto_update_check"] = bool(on)
     save_settings(cfg)
+
+
+def get_notified_update_version():
+    """نسخه‌ای که قبلاً هشدار آپدیتش داده شده (برای جلوگیری از تکرار)."""
+    return str(load_settings().get("notified_update_version", "") or "")
+
+
+def set_notified_update_version(ver):
+    cfg = load_settings()
+    cfg["notified_update_version"] = str(ver or "")
+    save_settings(cfg)
