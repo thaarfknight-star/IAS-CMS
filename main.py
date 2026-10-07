@@ -3133,7 +3133,7 @@ class MainWindow(QMainWindow):
         try:
             from region_alert_page import RegionAlertPage
             self.region_alert_page = RegionAlertPage(
-                self.camera_store, self.report_store)
+                self.camera_store, report_store)
             self.pages.addWidget(self.region_alert_page)
             self._page_widgets["region_alert"] = self.region_alert_page
         except Exception:
@@ -3217,7 +3217,7 @@ class MainWindow(QMainWindow):
     def _load_recent_events_to_panel(self):
         """(1.0.0) خواندن ۵۰ رویداد اخیر از دیتابیس و نمایش در پنل رویدادها."""
         try:
-            events = self.report_store.query(limit=50)
+            events = report_store.query(limit=50)
             # از قدیمی به جدید اضافه می‌کنیم (insertItem(0) معکوس می‌کند)
             for ev in reversed(events):
                 et = ev.get("event_type", "")
@@ -5281,7 +5281,7 @@ class MainWindow(QMainWindow):
         کیفیت بالا."""
         try:
             from gallery_dialog import GalleryDialog
-            dlg = GalleryDialog(self.report_store, parent=self)
+            dlg = GalleryDialog(report_store, parent=self)
             dlg.exec()
         except Exception as e:
             try:

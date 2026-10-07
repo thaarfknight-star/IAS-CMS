@@ -521,16 +521,11 @@ class FaceLibraryPage(QWidget):
         try:
             from PyQt6.QtWidgets import QListWidgetItem
             self.face_report_list.clear()
-            # از report_store می‌خوانیم
-            report_store = None
+            # از report_store می‌خوانیم (singleton ایمپورت‌شده)
             try:
-                p = self.parent()
-                while p and not hasattr(p, "report_store"):
-                    p = p.parent()
-                if p and hasattr(p, "report_store"):
-                    report_store = p.report_store
+                from report_store import report_store
             except Exception:
-                pass
+                return
             if not report_store:
                 return
             try:
