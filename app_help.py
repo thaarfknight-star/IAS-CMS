@@ -5,37 +5,45 @@
 (build.yml کل پوشه‌ی assets را اضافه می‌کند) و دکمه‌ی «❓ راهنما» در هدر
 برنامه، PDF را روی صفحه‌ی مربوط به صفحه‌ی فعلی باز می‌کند.
 
-نقشه‌ی صفحه‌های PDF (آموزش کامل ۴۹ صفحه‌ای):
-  1=جلد، 2=فهرست، 3=آشنایی، 4=نصب، 5=شروع سریع، 6=صفحه اصلی،
-  14=اعلام حریق، 17=چهره‌ها، 21=گزارش‌ها، 25=پلاک‌خوان،
-  32=ردیابی اشخاص، 37=نقشه ساختمان، 41=کنترل PTZ، 42=تنظیمات، 48=عیب‌یابی
+نقشه‌ی صفحه‌های PDF (آموزش کامل ۵۵ صفحه‌ای، نسخه‌ی 1.0.0):
+  1=جلد، 2=فهرست، 6=صفحه اصلی، 14=اعلام حریق، 17=چهره‌ها،
+  22=محدوده‌ی هشدار، 23=شمارش افراد، 24=گزارش‌ها، 28=پلاک‌خوان،
+  35=ردیابی اشخاص، 40=نقشه ساختمان، 44=کنترل PTZ، 45=شنیدن صدا،
+  46=تنظیمات، 52=عیب‌یابی، 54=مدیریت کاربران، 55=آپدیت خودکار
 """
 import hashlib
 import os
 import sys
 import tempfile
 
+# (1.0.0) خروجی HELP-PAGE-MAP در build_manual.py — نسخه‌ی 1.0.0 (۵۵ صفحه).
 HELP_PAGES = {
     "home": 6,
     "fire": 14,
     "face": 17,
-    "reports": 21,
-    "plate": 25,
-    "person": 32,
-    "map": 37,
-    "ptz": 41,
-    "settings": 42,
-    "faq": 48,
-    "users": 50,
-    "autoupdate": 51,
+    "region_alert": 22,
+    "people_counting": 23,
+    "reports": 24,
+    "plate": 28,
+    "person": 35,
+    "map": 40,
+    "ptz": 44,
+    "listen": 45,
+    "settings": 46,
+    "faq": 52,
+    "users": 54,
+    "autoupdate": 55,
 }
 
 # (2.0.74-beta) کلیدهایی که در راهنمای فیلترشده‌ی کاربرِ محدود، بخش
 # دارند. «users» و «autoupdate» فقط برای ادمین‌اند و هیچ‌وقت در نسخه‌ی
 # فیلترشده نمی‌آیند (مسیر ادمین allowed_pages=None می‌گیرد و کل PDF را
-# باز می‌کند). «ptz» زیرمجموعه‌ی «home» حساب می‌شود.
-FILTERABLE_KEYS = ("home", "fire", "face", "reports", "plate", "person",
-                   "map", "ptz", "settings", "faq")
+# باز می‌کند). «ptz» و «listen» زیرمجموعه‌ی «home» حساب می‌شوند.
+# (1.0.0) «region_alert» و «people_counting» عملاً فقط برای ادمین‌اند
+# (در ACCESS_PAGES نیستند و به کاربر عادی داده نمی‌شوند).
+FILTERABLE_KEYS = ("home", "fire", "face", "region_alert", "people_counting",
+                   "reports", "plate", "person", "map", "ptz", "listen",
+                   "settings", "faq")
 
 # صفحه‌های عمومی که در راهنمای فیلترشده برای همه می‌آید:
 # 1=جلد، 3=آشنایی، 5=شروع سریع (نصب/فهرست/مدیریت کاربران/آپدیت خودکار
@@ -91,8 +99,8 @@ def _filtered_manual_pdf(allowed_pages):
     for key in FILTERABLE_KEYS:
         if key == "home":
             ok = "home" in allowed_pages
-        elif key == "ptz":
-            ok = "home" in allowed_pages  # کنترل PTZ بخشی از صفحه‌ی اصلی است
+        elif key in ("ptz", "listen"):
+            ok = "home" in allowed_pages  # PTZ و شنیدن صدا بخشی از صفحه‌ی اصلی‌اند
         elif key == "faq":
             ok = True  # عیب‌یابی عمومی برای همه
         else:
