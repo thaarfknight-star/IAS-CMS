@@ -2975,6 +2975,9 @@ class MainWindow(QMainWindow):
         self.events_panel_list = QListWidget()
         self.events_panel_list.setIconSize(QSize(64, 64))
         self.events_panel_list.setWordWrap(True)
+        # (1.0.0) دبل‌کلیک روی رویداد: نمایش تصویر با جزئیات کامل
+        self.events_panel_list.itemDoubleClicked.connect(
+            self._on_event_item_double_clicked)
         events_panel_layout.addWidget(self.events_panel_list)
         events_panel_group.setLayout(events_panel_layout)
         # تاریخچه‌ی چهره‌های این نشست برای گالری + شناسه‌ی تخلفات پلاکی که
@@ -5111,33 +5114,67 @@ class MainWindow(QMainWindow):
         open_manual(getattr(self, "_current_page_key", "home"), parent=self,
                     allowed_pages=allowed)
 
-    def open_face_gallery(self):
-        """(2.0.111-beta) دکمه‌ی «🖼 دیدن تصاویر» پوشه‌ای را در اکسپلورر
-        باز می‌کند که برنامه تصاویر رویدادها (چهره‌ها، پلاک‌ها و...) را در آن
-        ذخیره می‌کند (report_images)."""
+    def _on_event_item_double_clicked(self, item):
+        """(1.0.0) دبل‌کلیک روی آیتم پنل رویدادها: نمایش تصویر با جزئیات."""
         try:
-            import os
-            import sys
-            images_dir = report_store.IMAGES_DIR
-            os.makedirs(images_dir, exist_ok=True)
-            # در ویندوز os.startfile مطمئن‌ترین راه است.
-            if sys.platform == "win32":
-                try:
-                    os.startfile(images_dir)
-                    return
-                except Exception:
-                    pass
-            # fallback: QDesktopServices
-            from PyQt6.QtCore import QUrl
-            from PyQt6.QtGui import QDesktopServices
-            if not QDesktopServices.openUrl(QUrl.fromLocalFile(images_dir)):
-                raise RuntimeError("openUrl ناموفق بود")
+            # داده‌ی رویداد را از آیتم می‌خوانیم (اگر ذخیره شده باشد)
+            ev = item.data(Qt.ItemDataRole.UserRole)
+            if not ev:
+                return
+            img_path = (ev.get("image_path") or "") if isinstance(ev, dict) else ""
+            if not img_path or not os.path.isfile(img_path):
+                return
+            # پنجره‌ی نمایش تصویر با جزئیات
+            from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel
+            from PyQt6.QtGui import QPixmap
+            from PyQt6.QtCore import Qt as _Qt
+            dlg = QDialog(self)
+            dlg.setWindowTitle("تصویر رویداد")
+            dlg.setLayoutDirection(_Qt.LayoutDirection.RightToLeft)
+            dlg.resize(600, 550)
+            lay = QVBoxLayout(dlg)
+            # تصویر
+            pix = QPixmap(img_path)
+            img_lbl = QLabel()
+            img_lbl.setAlignment(_Qt.AlignmentFlag.AlignCenter)
+            if not pix.isNull():
+                img_lbl.setPixmap(pix.scaled(
+                    560, 400, _Qt.AspectRatioMode.KeepAspectRatio,
+                    _Qt.TransformationMode.SmoothTransformation))
+            lay.addWidget(img_lbl)
+            # جزئیات
+            if isinstance(ev, dict):
+                from gallery_dialog import _fa_event_type
+                lines = []
+                lines.append(f"<b>نوع رویداد:</b> {_fa_event_type(ev.get('event_type'))}")
+                if ev.get("camera_name"):
+                    lines.append(f"<b>دوربین:</b> {ev.get('camera_name')}")
+                if ev.get("ts"):
+                    lines.append(f"<b>زمان:</b> {ev.get('ts')}")
+                if ev.get("person_name"):
+                    lines.append(f"<b>شخص:</b> {ev.get('person_name')}")
+                if ev.get("detail"):
+                    lines.append(f"<b>توضیح:</b> {ev.get('detail')}")
+                det = QLabel("<br>".join(lines))
+                det.setWordWrap(True)
+                lay.addWidget(det)
+            dlg.exec()
+        except Exception:
+            pass
+
+    def open_face_gallery(self):
+        """(1.0.0) دکمه‌ی «🖼 دیدن تصاویر» حالا پنجره‌ی گالری را باز می‌کند:
+        مرتب‌سازی بر اساس رویداد/تاریخ/ساعت، نمایش جزئیات، و ذخیره با
+        کیفیت بالا."""
+        try:
+            from gallery_dialog import GalleryDialog
+            dlg = GalleryDialog(self.report_store, parent=self)
+            dlg.exec()
         except Exception as e:
             try:
                 from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.warning(
-                    self, "خطا",
-                    f"باز کردن پوشه‌ی تصاویر ناموفق بود:\n{images_dir}\n\n{e}")
+                QMessageBox.warning(self, "خطا",
+                                    f"باز کردن گالری ناموفق بود:\n{e}")
             except Exception:
                 pass
 
