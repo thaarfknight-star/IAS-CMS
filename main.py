@@ -3042,11 +3042,22 @@ class MainWindow(QMainWindow):
         # (setMinimumHeight) دارند که هیچ‌کدام کاملاً جمع نشوند.
         events_panel_group.setMinimumHeight(120)
         fire_panel_group.setMinimumHeight(120)
+        # (1.0.0) پنل PTZ: زیر پنل رویدادها، به‌جای پنجره‌ی جدا
+        from ptz_panel import PTZPanel
+        self.ptz_panel_group = QGroupBox("🎮 کنترل PTZ")
+        _ptz_lay = QVBoxLayout()
+        self.ptz_panel = PTZPanel()
+        _ptz_lay.addWidget(self.ptz_panel)
+        self.ptz_panel_group.setLayout(_ptz_lay)
+        self.ptz_panel_group.setMinimumHeight(150)
+        self.ptz_panel_group.setVisible(False)  # پیش‌فرض مخفی
         self.right_splitter = QSplitter(Qt.Orientation.Vertical)
         self.right_splitter.addWidget(events_panel_group)
+        self.right_splitter.addWidget(self.ptz_panel_group)
         self.right_splitter.addWidget(fire_panel_group)
         self.right_splitter.setStretchFactor(0, 3)
         self.right_splitter.setStretchFactor(1, 2)
+        self.right_splitter.setStretchFactor(2, 2)
 
         # رفع درخواست: عرض پنل سمت راست (پنل رویدادها) باید دقیقاً هم‌اندازه‌ی
         # پنل سمت چپ باشد تا فضای بیشتری به تصویر دوربین‌ها در وسط برسد. قبلاً
@@ -4511,15 +4522,16 @@ class MainWindow(QMainWindow):
 
     # (2.0.68-beta) کنترل PTZ/لنز موتورایزد --------------------------------
     def open_ptz_control(self, cam_id):
-        """باز کردن دیالوگ کنترل PTZ دوربین (شناسایی خودکار در صورت نیاز)."""
-        from ptz_dialog import PTZDialog
+        """(1.0.0) باز کردن کنترل PTZ در پنل سمت راست (زیر پنل رویدادها)،
+        نه پنجره‌ی جدا."""
         cam = self.camera_store.get_camera(cam_id)
         if not cam:
             return
-        def _save_info(info):
-            self.camera_store.update_camera(cam_id, ptz=info)
-        dlg = PTZDialog(cam, on_detected=_save_info, parent=self)
-        dlg.exec()
+        try:
+            self.ptz_panel.set_camera(cam)
+            self.ptz_panel_group.setVisible(True)
+        except Exception:
+            pass
 
     # (2.0.82-beta) شنیدن صدای دوربین (ترک صوتی RTSP) -----------------------
     def open_listen_dialog(self, cam_id):
