@@ -212,14 +212,28 @@ def apply_update(install_dir, pending_dir, parent_pid, exe_name,
             bad_hash += 1
 
     # ۷) ثبت نسخه و مانیفست جدید + پاک‌سازی pending
+    # (2.1.3) نوشتن version.txt حیاتی است — اگر شکست بخورد، برنامه با نسخه‌ی
+    # قدیمی باز می‌شود و دوباره «آپدیت موجود است» می‌گوید. پس خطا را جدی
+    # می‌گیریم و با خواندن مجدد، صحت را تأیید می‌کنیم.
+    new_ver = str(info.get("version", "")).strip()
     try:
-        (install_dir / "version.txt").write_text(
-            str(info.get("version", "")), encoding="ascii")
+        (install_dir / "version.txt").write_text(new_ver, encoding="ascii")
+        # تأیید با خواندن مجدد
+        written = (install_dir / "version.txt").read_text(
+            encoding="utf-8").strip().split()[0]
+        if written != new_ver:
+            raise RuntimeError(
+                f"version.txt نوشته شد ولی خواندن مجدد '{written}' "
+                f"برگرداند (انتظار: '{new_ver}')")
+        _log(log_file, "version.txt -> %s OK" % new_ver)
         mp = pending_dir / "manifest.json"
         if mp.is_file():
             shutil.copy2(mp, install_dir / "manifest.json")
     except Exception as e:
+        msg = f"ثبت نسخه‌ی جدید ممکن نشد: {e}"
         _log(log_file, "ERROR writing version/manifest: %s" % e)
+        _msgbox(msg + "\n\nجزئیات در فایل update.log (پوشه‌ی نصب) ثبت شد.")
+        return 6
     shutil.rmtree(pending_dir, ignore_errors=True)
 
     if copy_fail > 0 or bad_hash > 0:
