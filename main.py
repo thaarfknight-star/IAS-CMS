@@ -3182,6 +3182,44 @@ class MainWindow(QMainWindow):
             pass
         self.apply_user_permissions()
         self._schedule_update_checks()
+        # (1.0.0) بارگذاری رویدادهای قبلی از دیتابیس در پنل رویدادها —
+        # گزارش‌ها بعد از بستن/آپدیت پاک نمی‌شوند.
+        self._load_recent_events_to_panel()
+
+    def _load_recent_events_to_panel(self):
+        """(1.0.0) خواندن ۵۰ رویداد اخیر از دیتابیس و نمایش در پنل رویدادها."""
+        try:
+            events = self.report_store.query(limit=50)
+            # از قدیمی به جدید اضافه می‌کنیم (insertItem(0) معکوس می‌کند)
+            for ev in reversed(events):
+                et = ev.get("event_type", "")
+                cam = ev.get("camera_name", "")
+                ts = str(ev.get("ts", ""))[:19]
+                # متن نمایشی بر اساس نوع رویداد
+                if et == "zone_entry":
+                    label = ev.get("region_name") or f"شماره {ev.get('region_number', '')}"
+                    text = f"[{ts}] {cam}\n⚠ ورود به محدوده {label}"
+                    color = "#e74c3c"
+                elif et in ("face_known", "face_unknown"):
+                    pname = ev.get("person_name") or "ناشناس"
+                    text = f"[{ts}] {cam}\n👤 {pname}"
+                    color = "#3498db"
+                elif et == "plate":
+                    text = f"[{ts}] {cam}\n🚗 پلاک"
+                    color = "#f39c12"
+                else:
+                    text = f"[{ts}] {cam}\n• {et}"
+                    color = "#95a5a6"
+                item = QListWidgetItem(text)
+                item.setForeground(QColor(color))
+                # ذخیره‌ی داده‌ی رویداد برای دبل‌کلیک
+                item.setData(Qt.ItemDataRole.UserRole, ev)
+                self.events_panel_list.insertItem(0, item)
+            # سقف ۳۰۰
+            while self.events_panel_list.count() > 300:
+                self.events_panel_list.takeItem(self.events_panel_list.count() - 1)
+        except Exception:
+            pass
 
     def _on_password_save_changed(self, enabled: bool):
         """(2.0.15-beta) وقتی کاربر ذخیره‌ی امن رمزها را در تنظیمات عوض می‌کند:
