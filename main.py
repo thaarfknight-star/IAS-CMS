@@ -3114,6 +3114,10 @@ class MainWindow(QMainWindow):
 
         self.pages = QStackedWidget()
         self.pages.addWidget(home_widget)
+        # (2.1.0) نگاشت کلید صفحه -> ویجت برای ایندکس داینامیک (جلوگیری از
+        # به‌هم‌ریختگی ایندکس‌ها وقتی صفحه‌ای شرطی اضافه نمی‌شود).
+        self._page_widgets = {}
+        self._page_widgets["home"] = home_widget
         self.fire_page = FireAlarmPage(
             self.fire_alarm_store, self._start_fire_alarm_monitor,
             self._stop_fire_alarm_monitor,
@@ -3121,14 +3125,17 @@ class MainWindow(QMainWindow):
             on_fire_toggle=self._on_camera_fire_toggle,
         )
         self.pages.addWidget(self.fire_page)
+        self._page_widgets["fire"] = self.fire_page
         self.face_page = FaceLibraryPage(self.face_engine, self.get_active_camera_frame)
         self.pages.addWidget(self.face_page)
+        self._page_widgets["face"] = self.face_page
         # (1.0.0) صفحه‌ی «محدوده هشدار»: تب ثبت گزارش + تب انتخاب دوربین
         try:
             from region_alert_page import RegionAlertPage
             self.region_alert_page = RegionAlertPage(
                 self.camera_store, self.report_store)
             self.pages.addWidget(self.region_alert_page)
+            self._page_widgets["region_alert"] = self.region_alert_page
         except Exception:
             self.region_alert_page = None
         # (1.0.0) صفحه‌ی «شمارش افراد»: صفحه‌ی جدا با انتخاب دوربین
@@ -3136,12 +3143,14 @@ class MainWindow(QMainWindow):
             from people_counting_page import PeopleCountingPage
             self.people_counting_page = PeopleCountingPage(self.camera_store)
             self.pages.addWidget(self.people_counting_page)
+            self._page_widgets["people_counting"] = self.people_counting_page
         except Exception:
             self.people_counting_page = None
         # camera_store به صفحه‌ی گزارش‌ها پاس داده می‌شود تا برای دکمه‌ی
         # «پخش ویدیوی NVR»، اطلاعات اتصال NVR مربوط به هر رویداد را پیدا کند.
         self.reports_page = ReportsPage(report_store, self.camera_store)
         self.pages.addWidget(self.reports_page)
+        self._page_widgets["reports"] = self.reports_page
         # رفع درخواست «سیستم پلاک‌خوان»: صفحه‌ی جدا (مثل Face Library) با دو
         # تب «تعریف پلاک‌ها» و «گزارش عبور»؛ on_plate_toggle برای اعمال زنده‌ی
         # فعال/غیرفعال شدن پلاک‌خوان روی دوربینی که همین حالا باز است.
@@ -3150,6 +3159,7 @@ class MainWindow(QMainWindow):
             on_plate_toggle=self._on_camera_plate_toggle,
             get_plate_diag_callback=self._get_plate_live_diag)
         self.pages.addWidget(self.plate_page)
+        self._page_widgets["plate"] = self.plate_page
         # رفع درخواست «ردیابی اشخاص بین دوربین‌ها»: صفحه‌ی جدا (مثل
         # پلاک‌خوان) با دو تب «اشخاص ردیابی‌شده» و «گزارش مسیر حرکت»؛
         # on_person_toggle برای اعمال زنده‌ی فعال/غیرفعال شدن ردیابی روی
@@ -3160,6 +3170,7 @@ class MainWindow(QMainWindow):
             on_show_on_map=self._on_person_show_on_map,
             face_engine=self.face_engine)
         self.pages.addWidget(self.person_page)
+        self._page_widgets["person"] = self.person_page
         # رفع درخواست «نقشه‌ی تعاملی ساختمان»: صفحه‌ی هفتم؛ اگر فایل
         # building_map_dialog.py کنار برنامه نباشد، بدون کرش رد می‌شود.
         self.map_page = None
@@ -3168,6 +3179,7 @@ class MainWindow(QMainWindow):
                 self.camera_store,
                 on_camera_click=self._on_map_camera_click)
             self.pages.addWidget(self.map_page)
+            self._page_widgets["map"] = self.map_page
         # صفحه‌ی «⚙️ تنظیمات»: تم (تاریک/روشن/سیستم)، زبان (فارسی/English)
         # و «اعمال آپدیت» (از هدر به اینجا منتقل شد).
         self.settings_page = SettingsPage(
@@ -3178,6 +3190,7 @@ class MainWindow(QMainWindow):
             is_admin=self._is_admin(),
             camera_store=self.camera_store)
         self.pages.addWidget(self.settings_page)
+        self._page_widgets["settings"] = self.settings_page
 
         main_layout.addWidget(self._build_header())
         main_layout.addWidget(self.pages, 1)
@@ -4830,9 +4843,14 @@ class MainWindow(QMainWindow):
         # (2.0.53-beta) کلید صفحه‌ی فعلی برای دکمه‌ی «راهنما» نگه داشته
         # می‌شود تا PDF روی صفحه‌ی مربوط به همین صفحه باز شود.
         self._current_page_key = key
-        index = {"home": 0, "fire": 1, "face": 2, "region_alert": 3,
-                 "people_counting": 4, "reports": 5, "plate": 6,
-                 "person": 7, "map": 8, "settings": 9}[key]
+        # (2.1.0) ایندکس داینامیک از روی ویجت — نه هاردکد (جلوگیری از
+        # به‌هم‌ریختگی وقتی صفحه‌ای اضافه/حذف می‌شود).
+        page_widget = self._page_widgets.get(key)
+        if page_widget is None:
+            return
+        index = self.pages.indexOf(page_widget)
+        if index < 0:
+            return
         if key == "map" and self.map_page is None:
             QMessageBox.warning(
                 self, "صفحه‌ی نقشه در دسترس نیست",
