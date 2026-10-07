@@ -359,14 +359,55 @@ class FaceLibraryPage(QWidget):
         btn_row.addWidget(delete_btn)
         btn_row.addStretch()
 
+        # (1.0.0) ساختار Tab: مدیریت چهره‌ها | انتخاب دوربین | گزارش چهره‌ها
+        from PyQt6.QtWidgets import QTabWidget
+        tab_widget = QTabWidget()
+
+        # تب ۱: مدیریت چهره‌ها (محتوای فعلی)
+        face_tab = QWidget()
+        face_lay = QVBoxLayout(face_tab)
+        face_lay.addLayout(title_row)
+        face_lay.addLayout(filter_row)
+        face_lay.addWidget(self.table, 1)
+        face_lay.addLayout(btn_row)
+        tab_widget.addTab(face_tab, "👤 مدیریت چهره‌ها")
+
+        # تب ۲: انتخاب دوربین (کدام دوربین‌ها چهره‌خوان داشته باشند)
+        cam_tab = QWidget()
+        cam_lay = QVBoxLayout(cam_tab)
+        cam_lay.addWidget(QLabel(
+            "مشخص کنید کدام دوربین‌ها قابلیت چهره‌خوان داشته باشند:"))
+        self.face_cam_list = QListWidget()
+        cam_lay.addWidget(self.face_cam_list)
+        cam_btn_lay = QHBoxLayout()
+        cam_btn_lay.addStretch()
+        cam_save_btn = QPushButton("💾 ذخیره")
+        cam_save_btn.clicked.connect(self._save_face_cameras)
+        cam_btn_lay.addWidget(cam_save_btn)
+        cam_lay.addLayout(cam_btn_lay)
+        tab_widget.addTab(cam_tab, "📷 انتخاب دوربین")
+
+        # تب ۳: گزارش چهره‌ها
+        report_tab = QWidget()
+        report_lay = QVBoxLayout(report_tab)
+        report_lay.addWidget(QLabel("گزارش چهره‌های شناسایی‌شده:"))
+        self.face_report_list = QListWidget()
+        report_lay.addWidget(self.face_report_list)
+        report_btn_lay = QHBoxLayout()
+        report_btn_lay.addStretch()
+        report_refresh_btn = QPushButton("🔄 به‌روزرسانی")
+        report_refresh_btn.clicked.connect(self._refresh_face_report)
+        report_btn_lay.addWidget(report_refresh_btn)
+        report_lay.addLayout(report_btn_lay)
+        tab_widget.addTab(report_tab, "📊 گزارش چهره‌ها")
+
         layout = QVBoxLayout()
-        layout.addLayout(title_row)
-        layout.addLayout(filter_row)
-        layout.addWidget(self.table, 1)
-        layout.addLayout(btn_row)
+        layout.addWidget(tab_widget)
         self.setLayout(layout)
 
         self.refresh_table()
+        self._load_face_cameras()
+        self._refresh_face_report()
 
     def _reload_group_filter(self):
         cur = self.group_filter.currentData()
@@ -385,6 +426,132 @@ class FaceLibraryPage(QWidget):
     def refresh(self):
         """هر بار که صفحه از هدر باز می‌شود صدا زده می‌شود تا جدول تازه باشد."""
         self.refresh_table()
+
+    def _load_face_cameras(self):
+        """(1.0.0) بارگذاری لیست دوربین‌ها برای انتخاب چهره‌خوان."""
+        try:
+            from PyQt6.QtWidgets import QListWidgetItem
+            from PyQt6.QtCore import Qt
+            # دسترسی به camera_store از طریق parent
+            cam_store = None
+            try:
+                # MainWindow از طریق parent chain
+                p = self.parent()
+                while p and not hasattr(p, "camera_store"):
+                    p = p.parent()
+                if p and hasattr(p, "camera_store"):
+                    cam_store = p.camera_store
+            except Exception:
+                pass
+            self.face_cam_list.clear()
+            if not cam_store:
+                return
+            try:
+                cameras = cam_store.get_cameras()
+            except Exception:
+                cameras = []
+            for cam in cameras:
+                if not isinstance(cam, dict):
+                    continue
+                cam_id = cam.get("id", "")
+                cam_name = cam.get("name", cam_id)
+                is_enabled = bool(cam.get("face_recognition_enabled", False))
+                item = QListWidgetItem(cam_name)
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(
+                    Qt.CheckState.Checked if is_enabled
+                    else Qt.CheckState.Unchecked)
+                item.setData(Qt.ItemDataRole.UserRole, cam_id)
+                self.face_cam_list.addItem(item)
+        except Exception:
+            pass
+
+    def _save_face_cameras(self):
+        """(1.0.0) ذخیره‌ی انتخاب دوربین‌ها برای چهره‌خوان."""
+        try:
+            from PyQt6.QtCore import Qt
+            from PyQt6.QtWidgets import QMessageBox
+            # بررسی سهمیه
+            try:
+                from license import effective_quotas
+                quota = int(effective_quotas().get("face_recognition", 0))
+            except Exception:
+                quota = 0
+            selected = []
+            for i in range(self.face_cam_list.count()):
+                item = self.face_cam_list.item(i)
+                if item.checkState() == Qt.CheckState.Checked:
+                    selected.append(item.data(Qt.ItemDataRole.UserRole))
+            if quota > 0 and len(selected) > quota:
+                QMessageBox.warning(
+                    self, "خطا",
+                    f"حداکثر {quota} دوربین برای چهره‌خوان مجاز است.")
+                return
+            # ذخیره
+            cam_store = None
+            try:
+                p = self.parent()
+                while p and not hasattr(p, "camera_store"):
+                    p = p.parent()
+                if p and hasattr(p, "camera_store"):
+                    cam_store = p.camera_store
+            except Exception:
+                pass
+            if cam_store:
+                for i in range(self.face_cam_list.count()):
+                    item = self.face_cam_list.item(i)
+                    cam_id = item.data(Qt.ItemDataRole.UserRole)
+                    enabled = (item.checkState() == Qt.CheckState.Checked)
+                    try:
+                        cam_store.update_camera(
+                            cam_id, face_recognition_enabled=enabled)
+                    except Exception:
+                        pass
+            QMessageBox.information(self, "موفق", "تنظیمات ذخیره شد.")
+        except Exception as e:
+            try:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(self, "خطا", f"ذخیره ناموفق:\n{e}")
+            except Exception:
+                pass
+
+    def _refresh_face_report(self):
+        """(1.0.0) به‌روزرسانی گزارش چهره‌های شناسایی‌شده."""
+        try:
+            from PyQt6.QtWidgets import QListWidgetItem
+            self.face_report_list.clear()
+            # از report_store می‌خوانیم
+            report_store = None
+            try:
+                p = self.parent()
+                while p and not hasattr(p, "report_store"):
+                    p = p.parent()
+                if p and hasattr(p, "report_store"):
+                    report_store = p.report_store
+            except Exception:
+                pass
+            if not report_store:
+                return
+            try:
+                events = report_store.query(
+                    event_type="face_known", limit=100)
+                events += report_store.query(
+                    event_type="face_unknown", limit=100)
+            except Exception:
+                events = []
+            # مرتب‌سازی بر اساس زمان (جدیدترین اول)
+            try:
+                events.sort(key=lambda e: str(e.get("ts", "")), reverse=True)
+            except Exception:
+                pass
+            for ev in events[:100]:
+                pname = ev.get("person_name") or "ناشناس"
+                cam = ev.get("camera_name", "")
+                ts = str(ev.get("ts", ""))[:19]
+                item = QListWidgetItem(f"[{ts}] {cam} — {pname}")
+                self.face_report_list.addItem(item)
+        except Exception:
+            pass
 
     def refresh_table(self):
         self._reload_group_filter()
