@@ -19,7 +19,7 @@ on:
       publish_release:
         description: 'true = ساخت GitHub Release برای همین نسخه و اتصال «فایل آپدیت» به آن — آپدیت خودکار برنامه فقط از Release می‌خواند'
         type: boolean
-        default: false
+        default: true
 
 concurrency:
   group: build-exe-${{ github.ref }}
@@ -735,12 +735,13 @@ jobs:
         if-no-files-found: warn
 
     # اتصال «فایل آپدیت» به GitHub Release — خودکار وقتی تگ v* پوش می‌شود
-    # (مثل NerkhCheck)، یا با اجرای دستی ورک‌فلو + تیک publish_release.
+    # (1.0.0) انتشار خودکار: روی push به main هم Release ساخته می‌شود —
+    # دیگر لازم نیست تیک publish_release را دستی بزنید.
     # آپدیت خودکار برنامه (update_checker.py) نسخه‌ی جدید را از لیست
     # Releaseها می‌خواند؛ بدون این قدم، هشدار آپدیت هیچ‌وقت نمی‌آید.
     # اگر Release آن نسخه از قبل ساخته شده باشد، فقط فایل جایگزین می‌شود.
     - name: Publish update package to GitHub Release
-      if: ${{ startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release == 'true') }}
+      if: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release == 'true') }}
       shell: pwsh
       env:
         GH_TOKEN: ${{ github.token }}
