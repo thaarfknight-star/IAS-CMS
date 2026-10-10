@@ -283,6 +283,12 @@ def apply_update(install_dir, pending_dir, parent_pid, exe_name,
             rel = _safe_rel(f.get("path"))
             if not rel:
                 continue
+            # فایل‌های _internal ران‌تایم پایتونِ خودِ آپدیتر هستند؛
+            # در ویندوز memory-mapped و قفل‌اند و نمی‌شود برگرداندشان.
+            # چون آپدیتر از نسخه‌ی جدید آن‌ها در حال اجراست، نادیده‌شان می‌گیریم.
+            if rel.startswith("_internal" + os.sep) or rel.startswith("_internal/"):
+                _log(log_file, "ROLLBACK skip (runtime locked): %s" % rel)
+                continue
             b = backup_root / rel
             dst = install_dir / rel
             if b.is_file():
@@ -304,7 +310,7 @@ def apply_update(install_dir, pending_dir, parent_pid, exe_name,
                     _log(log_file, "WARN rollback failed for %s: %s" % (rel, e))
         # version.txt را به نسخه‌ی قبلی برگردان
         try:
-            (install_dir / "version.txt").write_text(prev_version, encoding="ascii")
+            (install_dir / "version.txt").write_text(prev_version, encoding="utf-8")
         except Exception:
             pass
         msg = ("آپدیت ناموفق بود و به نسخه‌ی قبلی برگردانده شد.\n"
@@ -378,7 +384,7 @@ def apply_update(install_dir, pending_dir, parent_pid, exe_name,
 
     # ۷) ثبت نسخه‌ی جدید (حیاتی — با تأیید خواندن مجدد)
     try:
-        (install_dir / "version.txt").write_text(new_version, encoding="ascii")
+        (install_dir / "version.txt").write_text(new_version, encoding="utf-8")
         written = (install_dir / "version.txt").read_text(
             encoding="utf-8").strip().split()[0]
         if written != new_version:
