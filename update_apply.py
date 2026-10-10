@@ -1,31 +1,41 @@
 # -*- coding: utf-8 -*-
-"""مرحله‌ی دوم آپدیت «IAS Viewer» — موتور آپدیت خالص پایتون.
+"""موتور آپدیت IAS Viewer — بازنویسی کامل (2.2.0).
 
-چرا بدون PowerShell؟ موتور قبلی (updater.ps1) روی بعضی سیستم‌ها اصلاً بالا
-نمی‌آمد (ExecutionPolicy، آنتی‌ویروس، PowerShell قفل‌شده) و هیچ لاگی هم از
-علت واقعی نمی‌داد. این موتور همان فایل اجرایی برنامه است که با پرچم
-``--apply-update`` اجرا می‌شود؛ هیچ وابستگی خارجی ندارد و هر قدم را در
-``update.log`` ثبت می‌کند.
+معماری جدید — ساده‌تر و قابل‌اتکاتر از نسخه‌ی قبلی:
+----------------------------------------------------------------
+۱) بدون کپی فایل اجرایی: برنامه خودش را با پرچم --apply-update دوباره
+   اجرا می‌کند (فرایند جدا). نیازی به کپی ۱۰۰+ مگابایتی exe نیست؛
+   آنتی‌ویروس هم به فایل جدید گیر نمی‌دهد.
+
+۲) جایگزینی فایل در حال اجرا با ترفند rename: در ویندوز نمی‌شود فایل
+   اجراییِ در حال اجرا را بازنویسی/حذف کرد، ولی rename مجاز است.
+   پس: app.exe → app.exe.old (rename)، سپس کپی نسخه‌ی جدید به app.exe.
+   فایل‌های .old در استارتاپ بعدی پاک می‌شوند (cleanup_old_files).
+
+۳) rollback خودکار: اگر هر مرحله‌ای شکست بخورد، فایل‌ها از بکاپ
+   برگردانده می‌شوند و برنامه با نسخه‌ی قبلی بالا می‌آید — نه خراب.
+
+۴) لاگ یکپارچه: همه‌چیز در update.log. بدون فایل err جداگانه.
+
+۵) فایل وضعیت update_state.json: نتیجه‌ی آخرین آپدیت (موفق/ناموفق +
+   دلیل) تا برنامه در استارتاپ بعدی بتواند به کاربر اطلاع دهد.
 
 گردش کار:
   updater.py (داخل برنامه):
     ۱) اعتبارسنجی و استخراج زیپ در <install>/pending_update
-    ۲) کپی فایل اجرایی به CCTV_CMS_upd.exe (خواندن فایل در حال اجرا آزاد است)
-    ۳) اجرای جداگانه‌ی CCTV_CMS_upd.exe با پرچم --apply-update
-    ۴) انتظار برای «updater started» در update.log، بعد بستن برنامه
-  این ماژول (در فرایند CCTV_CMS_upd.exe):
+    ۲) اجرای جداگانه‌ی همین exe با پرچم --apply-update
+    ۳) انتظار کوتاه برای زنده ماندن فرایند، بعد بستن برنامه
+  این ماژول (در فرایند جدا با پرچم --apply-update):
     ۱) انتظار برای خروج کامل فرایند والد (حداکثر ۱۲۰ ثانیه)
     ۲) بکاپ فایل‌های قدیمی در backup\\v<prev_version>
-    ۳) کپی فایل‌های جدید از pending_update/files/...
-    ۴) حذف فایل‌های منسوخ‌شده (removed)
+    ۳) جایگزینی فایل‌ها (با ترفند rename برای فایل‌های قفل)
+    ۴) حذف فایل‌های منسوخ‌شده
     ۵) راستی‌آزمایی sha256
-    ۶) ثبت version.txt و manifest.json جدید + پاک‌سازی pending_update
-    ۷) اجرای مجدد برنامه و خروج
-  برنامه‌ی اصلی در استارتاپ بعدی CCTV_CMS_upd.exe را پاک می‌کند
-  (cleanup_updater_copy).
+    ۶) ثبت version.txt (با تأیید خواندن مجدد) + manifest.json
+    ۷) در صورت شکست هر مرحله → rollback خودکار از بکاپ
+    ۸) ثبت update_state.json + اجرای مجدد برنامه
 
-این ماژول عمداً هیچ وابستگی به Qt یا هیچ پکیج خارجی ندارد تا در
-مرحله‌ی دوم آپدیت سبک و قابل‌اتکا باشد.
+این ماژول عمداً هیچ وابستگی به Qt یا هیچ پکیج خارجی ندارد.
 """
 
 import hashlib
@@ -38,8 +48,9 @@ import time
 from pathlib import Path
 
 APPLY_FLAG = "--apply-update"
-UPDATER_EXE_NAME = "CCTV_CMS_upd.exe"
 HANDSHAKE_LINE = "updater started"
+STATE_FILE = "update_state.json"
+OLD_SUFFIX = ".old"
 
 
 def _log(log_file, msg):
@@ -84,7 +95,7 @@ def _wait_pid_exit(pid, timeout_s=120):
                 kernel32.CloseHandle(h)
         except Exception:
             pass
-    # fallback همه‌جا: نظرسنجی دوره‌ای
+    # fallback: نظرسنجی دوره‌ای
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
@@ -92,7 +103,7 @@ def _wait_pid_exit(pid, timeout_s=120):
         except ProcessLookupError:
             return True
         except PermissionError:
-            time.sleep(0.5)  # فرایند هست ولی دسترسی نداریم → هنوز زنده است
+            time.sleep(0.5)
             continue
         except Exception:
             return True
@@ -112,6 +123,91 @@ def _safe_rel(p):
     return rel.replace("/", os.sep)
 
 
+def _replace_file(src, dst, log_file):
+    """جایگزینی امن فایل — با ترفند rename برای فایل‌های قفل‌شده (ویندوز).
+
+    در ویندوز فایل در حال اجرا را نمی‌شود بازنویسی کرد ولی rename مجاز است.
+    خروجی: (True, "") یا (False, دلیل).
+    """
+    dst = Path(dst)
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(str(src), str(dst))
+        return True, ""
+    except PermissionError as e:
+        # احتمالاً فایل قفل است (در حال اجرا) — ترفند rename
+        if os.name != "nt":
+            return False, str(e)
+        try:
+            old_path = dst.with_name(dst.name + OLD_SUFFIX)
+            # اگر .old قبلی مانده، اول پاکش کن
+            try:
+                if old_path.is_file():
+                    old_path.unlink()
+            except Exception:
+                pass
+            os.rename(str(dst), str(old_path))
+            shutil.copy2(str(src), str(dst))
+            _log(log_file, "replaced locked file via rename: %s" % dst.name)
+            return True, ""
+        except Exception as e2:
+            return False, "rename trick failed: %s" % e2
+    except Exception as e:
+        return False, str(e)
+
+
+def _write_state(install_dir, status, detail=""):
+    """ثبت نتیجه‌ی آپدیت برای نمایش در استارتاپ بعدی برنامه."""
+    try:
+        data = {
+            "status": status,  # "ok" | "failed" | "rolled_back"
+            "detail": str(detail),
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        (Path(install_dir) / STATE_FILE).write_text(
+            json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def cleanup_old_files(install_dir=None):
+    """پاک‌سازی فایل‌های .old باقی‌مانده از آپدیت قبلی.
+
+    در استارتاپ برنامه‌ی اصلی صدا زده می‌شود.
+    خروجی: تعداد فایل‌های پاک‌شده.
+    """
+    count = 0
+    try:
+        base = Path(install_dir) if install_dir else None
+        if base is None:
+            try:
+                from app_paths import get_install_dir as _gid
+                base = Path(_gid())
+            except Exception:
+                if getattr(sys, "frozen", False):
+                    base = Path(sys.executable).resolve().parent
+                else:
+                    return 0
+        for p in base.glob("*.old"):
+            try:
+                if p.is_file():
+                    p.unlink()
+                    count += 1
+            except Exception:
+                pass
+        # .oldهای داخل زیرپوشه‌ها (مثلاً DLLها)
+        for p in base.rglob("*.old"):
+            try:
+                if p.is_file():
+                    p.unlink()
+                    count += 1
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return count
+
+
 def apply_update(install_dir, pending_dir, parent_pid, exe_name,
                  log_file=None, relaunch=True):
     """اجرای کامل مرحله‌ی دوم آپدیت. خروجی: کد خروج (۰ یعنی موفق)."""
@@ -119,14 +215,15 @@ def apply_update(install_dir, pending_dir, parent_pid, exe_name,
     pending_dir = Path(pending_dir)
     log_file = Path(log_file) if log_file else install_dir / "update.log"
 
-    _log(log_file, "%s (python engine) install=%s pending=%s exe=%s parent=%s"
+    _log(log_file, "%s (v2 engine) install=%s pending=%s exe=%s parent=%s"
          % (HANDSHAKE_LINE, install_dir, pending_dir, exe_name, parent_pid))
 
-    # ۱) انتظار برای خروج کامل برنامه (فایل‌ها قفل‌اند تا برنامه باز است)
+    # ۱) انتظار برای خروج کامل برنامه
     if not _wait_pid_exit(parent_pid, 120):
         msg = ("برنامه‌ی IAS Viewer بعد از ۱۲۰ ثانیه هنوز باز است؛ "
                "آپدیت لغو شد. لطفاً برنامه را دستی ببندید و دوباره تلاش کنید.")
         _log(log_file, "ERROR: " + msg)
+        _write_state(install_dir, "failed", msg)
         _msgbox(msg + "\n\nجزئیات در فایل update.log (پوشه‌ی نصب) ثبت شد.")
         return 2
 
@@ -135,6 +232,7 @@ def apply_update(install_dir, pending_dir, parent_pid, exe_name,
     if not info_path.is_file():
         msg = "فایل update_info.json در پوشه‌ی pending_update پیدا نشد؛ آپدیت لغو شد."
         _log(log_file, "ERROR: " + msg)
+        _write_state(install_dir, "failed", msg)
         _msgbox(msg)
         return 3
     try:
@@ -142,16 +240,25 @@ def apply_update(install_dir, pending_dir, parent_pid, exe_name,
     except Exception as e:
         msg = "خواندن update_info.json ممکن نشد: %s" % e
         _log(log_file, "ERROR: " + msg)
+        _write_state(install_dir, "failed", msg)
         _msgbox(msg)
         return 4
+
+    new_version = str(info.get("version", "")).strip()
+    prev_version = str(info.get("prev_version", "unknown")).strip()
     files = info.get("files") or []
     removed = info.get("removed") or []
+    if not new_version or not files:
+        msg = "فایل آپدیت ناقص است (نسخه یا فهرست فایل‌ها خالی است)."
+        _log(log_file, "ERROR: " + msg)
+        _write_state(install_dir, "failed", msg)
+        _msgbox(msg)
+        return 4
     _log(log_file, "update v%s (prev v%s): %d files, %d removed"
-         % (info.get("version"), info.get("prev_version"),
-            len(files), len(removed)))
+         % (new_version, prev_version, len(files), len(removed)))
 
     # ۳) بکاپ فایل‌های قدیمی
-    backup_root = install_dir / "backup" / ("v" + str(info.get("prev_version", "unknown")))
+    backup_root = install_dir / "backup" / ("v" + prev_version)
     backup_count = 0
     for f in files:
         rel = _safe_rel(f.get("path"))
@@ -162,13 +269,51 @@ def apply_update(install_dir, pending_dir, parent_pid, exe_name,
             b = backup_root / rel
             try:
                 b.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(dst, b)
+                shutil.copy2(str(dst), str(b))
                 backup_count += 1
             except Exception as e:
                 _log(log_file, "WARN backup failed: %s : %s" % (rel, e))
     _log(log_file, "backed up %d files to %s" % (backup_count, backup_root))
 
-    # ۴) کپی فایل‌های جدید
+    def _rollback(reason):
+        """برگرداندن فایل‌ها از بکاپ. خروجی: پیام خطای نهایی."""
+        _log(log_file, "ROLLBACK started: %s" % reason)
+        restored = 0
+        for f in files:
+            rel = _safe_rel(f.get("path"))
+            if not rel:
+                continue
+            b = backup_root / rel
+            dst = install_dir / rel
+            if b.is_file():
+                try:
+                    # اگر dst قفل است، اول rename
+                    if dst.is_file():
+                        try:
+                            dst.unlink()
+                        except PermissionError:
+                            if os.name == "nt":
+                                os.rename(str(dst),
+                                          str(dst.with_name(dst.name + OLD_SUFFIX)))
+                            else:
+                                raise
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(str(b), str(dst))
+                    restored += 1
+                except Exception as e:
+                    _log(log_file, "WARN rollback failed for %s: %s" % (rel, e))
+        # version.txt را به نسخه‌ی قبلی برگردان
+        try:
+            (install_dir / "version.txt").write_text(prev_version, encoding="ascii")
+        except Exception:
+            pass
+        msg = ("آپدیت ناموفق بود و به نسخه‌ی قبلی برگردانده شد.\n"
+               "دلیل: %s\n(%d فایل بازیابی شد)" % (reason, restored))
+        _log(log_file, "ROLLBACK done: %d files restored" % restored)
+        _write_state(install_dir, "rolled_back", reason)
+        return msg
+
+    # ۴) جایگزینی فایل‌ها
     copy_fail = 0
     for f in files:
         rel = _safe_rel(f.get("path"))
@@ -176,11 +321,13 @@ def apply_update(install_dir, pending_dir, parent_pid, exe_name,
             continue
         src = pending_dir / "files" / rel
         dst = install_dir / rel
-        try:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-        except Exception as e:
-            _log(log_file, "ERROR copy failed: %s : %s" % (rel, e))
+        if not src.is_file():
+            _log(log_file, "ERROR source missing in package: %s" % rel)
+            copy_fail += 1
+            continue
+        ok, err = _replace_file(src, dst, log_file)
+        if not ok:
+            _log(log_file, "ERROR copy failed: %s : %s" % (rel, err))
             copy_fail += 1
 
     # ۵) حذف فایل‌های منسوخ‌شده
@@ -192,6 +339,15 @@ def apply_update(install_dir, pending_dir, parent_pid, exe_name,
         if t.is_file():
             try:
                 t.unlink()
+            except PermissionError:
+                # فایل قفل است — rename به .old تا در استارتاپ بعدی پاک شود
+                try:
+                    if os.name == "nt":
+                        os.rename(str(t), str(t.with_name(t.name + OLD_SUFFIX)))
+                    else:
+                        raise
+                except Exception as e:
+                    _log(log_file, "WARN remove failed: %s : %s" % (rel, e))
             except Exception as e:
                 _log(log_file, "WARN remove failed: %s : %s" % (rel, e))
 
@@ -211,53 +367,49 @@ def apply_update(install_dir, pending_dir, parent_pid, exe_name,
             _log(log_file, "HASH CHECK FAILED (missing?): %s" % rel)
             bad_hash += 1
 
-    # ۷) ثبت نسخه و مانیفست جدید + پاک‌سازی pending
-    # (2.1.3) نوشتن version.txt حیاتی است — اگر شکست بخورد، برنامه با نسخه‌ی
-    # قدیمی باز می‌شود و دوباره «آپدیت موجود است» می‌گوید. پس خطا را جدی
-    # می‌گیریم و با خواندن مجدد، صحت را تأیید می‌کنیم.
-    new_ver = str(info.get("version", "")).strip()
-    try:
-        (install_dir / "version.txt").write_text(new_ver, encoding="ascii")
-        # تأیید با خواندن مجدد
-        written = (install_dir / "version.txt").read_text(
-            encoding="utf-8").strip().split()[0]
-        if written != new_ver:
-            raise RuntimeError(
-                f"version.txt نوشته شد ولی خواندن مجدد '{written}' "
-                f"برگرداند (انتظار: '{new_ver}')")
-        _log(log_file, "version.txt -> %s OK" % new_ver)
-        mp = pending_dir / "manifest.json"
-        if mp.is_file():
-            shutil.copy2(mp, install_dir / "manifest.json")
-    except Exception as e:
-        msg = f"ثبت نسخه‌ی جدید ممکن نشد: {e}"
-        _log(log_file, "ERROR writing version/manifest: %s" % e)
-        _msgbox(msg + "\n\nجزئیات در فایل update.log (پوشه‌ی نصب) ثبت شد.")
-        return 6
-    shutil.rmtree(pending_dir, ignore_errors=True)
-
+    # اگر کپی یا هش مشکل داشت → rollback
     if copy_fail > 0 or bad_hash > 0:
-        msg = ("آپدیت با خطا تمام شد (copyFail=%d badHash=%d)؛ "
-               "برنامه دوباره اجرا نشد تا وضعیت ناقص نماند."
-               % (copy_fail, bad_hash))
-        _log(log_file, "ERROR: " + msg)
+        reason = "خطا در کپی فایل‌ها (copyFail=%d) یا تطابق هش (badHash=%d)" % (
+            copy_fail, bad_hash)
+        msg = _rollback(reason)
         _msgbox(msg + "\n\nجزئیات در فایل update.log (پوشه‌ی نصب) ثبت شد.")
+        shutil.rmtree(pending_dir, ignore_errors=True)
         return 5
 
-    _log(log_file, "update to v%s OK" % info.get("version"))
+    # ۷) ثبت نسخه‌ی جدید (حیاتی — با تأیید خواندن مجدد)
+    try:
+        (install_dir / "version.txt").write_text(new_version, encoding="ascii")
+        written = (install_dir / "version.txt").read_text(
+            encoding="utf-8").strip().split()[0]
+        if written != new_version:
+            raise RuntimeError(
+                "خواندن مجدد '%s' برگرداند (انتظار: '%s')" % (written, new_version))
+        _log(log_file, "version.txt -> %s OK" % new_version)
+        mp = pending_dir / "manifest.json"
+        if mp.is_file():
+            shutil.copy2(str(mp), str(install_dir / "manifest.json"))
+    except Exception as e:
+        msg = _rollback("ثبت نسخه‌ی جدید ممکن نشد: %s" % e)
+        _msgbox(msg + "\n\nجزئیات در فایل update.log (پوشه‌ی نصب) ثبت شد.")
+        shutil.rmtree(pending_dir, ignore_errors=True)
+        return 6
 
-    # ۷-ب) نشانگر «آپدیت تازه اعمال شد» برای پنجره‌ی اطلاع‌رسانی تغییرات:
-    # در استارت بعدی برنامه خوانده و بعد از نمایش، پاک می‌شود.
+    shutil.rmtree(pending_dir, ignore_errors=True)
+    _log(log_file, "update to v%s OK" % new_version)
+
+    # نشانگر «آپدیت تازه اعمال شد» برای پنجره‌ی اطلاع‌رسانی تغییرات
     try:
         (install_dir / "update_applied.json").write_text(
-            json.dumps({"prev_version": str(info.get("prev_version", "")),
-                        "new_version": str(info.get("version", ""))},
+            json.dumps({"prev_version": prev_version,
+                        "new_version": new_version},
                        ensure_ascii=False),
             encoding="utf-8")
     except Exception as e:
         _log(log_file, "WARN could not write update_applied.json: %s" % e)
 
-    # ۸) اجرای مجدد برنامه + راستی‌آزمایی اینکه واقعاً بالا آمد
+    _write_state(install_dir, "ok", "به‌روزرسانی به نسخه‌ی %s انجام شد." % new_version)
+
+    # ۸) اجرای مجدد برنامه
     if relaunch:
         exe_path = install_dir / exe_name
         try:
@@ -290,22 +442,34 @@ def apply_update(install_dir, pending_dir, parent_pid, exe_name,
     return 0
 
 
-def cleanup_updater_copy():
-    """پاک‌سازی فایل موتور آپدیت در استارتاپ برنامه‌ی اصلی.
+def read_update_state(install_dir=None):
+    """خواندن نتیجه‌ی آخرین آپدیت (برای نمایش در استارتاپ برنامه).
 
-    فقط در حالت frozen اجرا شود؛ در حالت توسعه هیچ‌کاری نمی‌کند.
-    خروجی: True اگر فایلی پاک شد.
+    خروجی: dict با کلیدهای status/detail/time یا None.
+    بعد از خواندن، فایل وضعیت پاک می‌شود (یک‌بار مصرف).
     """
     try:
-        if not getattr(sys, "frozen", False):
-            return False
-        p = Path(sys.executable).resolve().parent / UPDATER_EXE_NAME
-        if p.is_file():
-            p.unlink()
-            return True
+        base = Path(install_dir) if install_dir else None
+        if base is None:
+            try:
+                from app_paths import get_install_dir as _gid
+                base = Path(_gid())
+            except Exception:
+                if getattr(sys, "frozen", False):
+                    base = Path(sys.executable).resolve().parent
+                else:
+                    return None
+        sf = base / STATE_FILE
+        if not sf.is_file():
+            return None
+        data = json.loads(sf.read_text(encoding="utf-8"))
+        try:
+            sf.unlink()
+        except Exception:
+            pass
+        return data
     except Exception:
-        pass
-    return False
+        return None
 
 
 def main(argv=None):

@@ -2612,6 +2612,27 @@ class MainWindow(QMainWindow):
     def _maybe_show_update_notice(self):
         """اگر موتور آپدیت تازه نسخه‌ی جدید را اعمال کرده، پنجره‌ی
         «تغییرات این نسخه» را از روی CHANGELOG_FA.md نشان بده."""
+        # (2.2.0) اول وضعیت موتور جدید را چک کن (شکست/rollback)
+        try:
+            from update_apply import read_update_state
+            state = read_update_state()
+            if state and state.get("status") in ("failed", "rolled_back"):
+                from PyQt6.QtWidgets import QMessageBox
+                detail = state.get("detail", "")
+                if state.get("status") == "rolled_back":
+                    QMessageBox.warning(
+                        self, "آپدیت ناموفق",
+                        "به‌روزرسانی انجام نشد و برنامه به نسخه‌ی قبلی برگردانده شد.\n\n"
+                        f"دلیل: {detail}\n\n"
+                        "جزئیات در فایل update.log (پوشه‌ی نصب) ثبت شده است.")
+                else:
+                    QMessageBox.warning(
+                        self, "خطای آپدیت",
+                        f"به‌روزرسانی انجام نشد.\n\nدلیل: {detail}\n\n"
+                        "جزئیات در فایل update.log (پوشه‌ی نصب) ثبت شده است.")
+                return
+        except Exception:
+            pass
         try:
             from updater import (get_update_notice, clear_update_notice,
                                  changelog_between)
@@ -6067,11 +6088,11 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
-    # پاک‌سازی فایل موتور آپدیت مرحله‌ی قبل (اگر آپدیتی انجام شده باشد)؛
-    # باید قبل از هر کاری انجام شود چون خود موتور در حال اجرا نیست.
+    # پاک‌سازی فایل‌های .old باقی‌مانده از آپدیت قبلی (ترفند rename)؛
+    # باید قبل از هر کاری انجام شود.
     try:
-        from update_apply import cleanup_updater_copy
-        cleanup_updater_copy()
+        from update_apply import cleanup_old_files
+        cleanup_old_files()
     except Exception:
         pass
     # مهاجرت یک‌باره‌ی دیتای نسخه‌های قبلی (کنار exe) به پوشه‌ی یکتای دیتا؛

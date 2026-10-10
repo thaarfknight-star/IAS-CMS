@@ -290,10 +290,12 @@ def wait_updater_handshake(install_dir, proc, spawn_ts, pump_cb=None):
 
 
 def stage_and_launch_update(zip_path, status_cb=None):
-    """هسته‌ی مشترک اعمال «فایل آپدیت» (دیالوگ دستی + آپدیت خودکار):
-    استخراج امن به pending_update → آماده‌سازی موتور (کپی exe) → اجرا →
-    انتظار handshake. ورودی باید قبلاً با validate_update_zip اعتبارسنجی
-    شده باشد. خروجی: (True, "") یا (False, پیام خطای فارسی).
+    """هسته‌ی مشترک اعمال «فایل آپدیت» (دیالوگ دستی + آپدیت خودکار) — نسخه‌ی
+    بازنویسی‌شده (2.2.0):
+    استخراج امن به pending_update → اجرای همین exe با پرچم --apply-update
+    (بدون کپی فایل اجرایی) → انتظار برای شروع موتور.
+    ورودی باید قبلاً با validate_update_zip اعتبارسنجی شده باشد.
+    خروجی: (True, "") یا (False, پیام خطای فارسی).
     در صورت موفقیت، فراخواننده باید برنامه را ببندد (quit + os._exit)."""
 
     def _st(t):
@@ -312,47 +314,27 @@ def stage_and_launch_update(zip_path, status_cb=None):
     except Exception as e:
         return False, f"استخراج فایل آپدیت ممکن نشد:\n{e}"
 
-    # موتور آپدیت = یک کپی از همین فایل اجرایی با پرچم --apply-update
-    # (موتور خالص پایتون در update_apply.py).
+    # موتور آپدیت = همین فایل اجرایی با پرچم --apply-update (بدون کپی).
+    # جایگزینی exe در حال اجرا با ترفند rename داخل update_apply انجام می‌شود.
     try:
         import update_apply as _ua
-        src_exe = Path(sys.executable).resolve()
-        if not src_exe.is_file():
+        src_exe = str(Path(sys.executable).resolve())
+        if not Path(src_exe).is_file():
             raise RuntimeError("فایل اجرایی برنامه پیدا نشد.")
-        exe_name = src_exe.name
-        upd_exe = install_dir / _ua.UPDATER_EXE_NAME
+        exe_name = Path(src_exe).name
+        # فایل‌های .old باقی‌مانده از آپدیت قبلی را پاک کن
         try:
-            if upd_exe.is_file():
-                upd_exe.unlink()
+            _ua.cleanup_old_files(str(install_dir))
         except Exception:
             pass
-        shutil.copy2(src_exe, upd_exe)
     except Exception as e:
         shutil.rmtree(pending, ignore_errors=True)
         return False, f"آماده‌سازی موتور آپدیت ممکن نشد:\n{e}"
 
     try:
         import time as _time
-        spawn_ts = _time.time()
-        err_log = install_dir / "update_err.log"
-        try:
-            if err_log.is_file():
-                err_log.unlink()
-        except Exception:
-            pass
-        _ef = open(err_log, "a", encoding="utf-8", errors="replace")
-
-        def _eflog(m):
-            try:
-                _ef.write("[launcher %s] %s\n"
-                          % (_time.strftime("%H:%M:%S"), m))
-                _ef.flush()
-            except Exception:
-                pass
-
-        cmd = [str(upd_exe), _ua.APPLY_FLAG, str(install_dir),
+        cmd = [src_exe, _ua.APPLY_FLAG, str(install_dir),
                str(pending), str(os.getpid()), exe_name]
-        _eflog("spawning: %s" % (cmd,))
         if os.name == "nt":
             creationflags = getattr(subprocess, "DETACHED_PROCESS", 0)
             creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -361,8 +343,8 @@ def stage_and_launch_update(zip_path, status_cb=None):
                 creationflags=creationflags,
                 close_fds=True,
                 stdin=subprocess.DEVNULL,
-                stdout=_ef,
-                stderr=subprocess.STDOUT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
         else:
             proc = subprocess.Popen(
@@ -370,40 +352,61 @@ def stage_and_launch_update(zip_path, status_cb=None):
                 close_fds=True,
                 start_new_session=True,
                 stdin=subprocess.DEVNULL,
-                stdout=_ef,
-                stderr=subprocess.STDOUT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
-        _eflog("spawned pid=%s" % (proc.pid,))
     except Exception as e:
-        try:
-            _ef.close()
-        except Exception:
-            pass
         shutil.rmtree(pending, ignore_errors=True)
         return False, f"اجرای موتور آپدیت ممکن نشد:\n{e}"
 
     _st("در حال راه‌اندازی موتور آپدیت…")
+    # انتظار ساده: فرایند باید حداقل ۳ ثانیه زنده بماند (یعنی کرش نکرده).
+    # موتور اولین کاری که می‌کند نوشتن "updater started" در update.log است.
     try:
         from PyQt6.QtWidgets import QApplication as _QA
         pump = _QA.processEvents
     except Exception:
         pump = None
-    handshake_ok, handshake_hint = wait_updater_handshake(
-        install_dir, proc, spawn_ts, pump_cb=pump)
+    import time as _time2
+    spawn_ts = _time2.time()
+    for _ in range(30):
+        _time2.sleep(0.1)
+        if pump:
+            try:
+                pump()
+            except Exception:
+                pass
+        if proc.poll() is not None:
+            # فرایند بلافاصله بسته شد — خطا را از لاگ بخوان
+            hint = "فرایند موتور آپدیت بلافاصله بسته شد (کد خروج: %s)." % proc.poll()
+            try:
+                logf = install_dir / "update.log"
+                if logf.is_file():
+                    tail = logf.read_text(
+                        encoding="utf-8", errors="ignore").strip().splitlines()[-8:]
+                    if tail:
+                        hint += "\n\nجزئیات:\n" + "\n".join(tail)
+            except Exception:
+                pass
+            shutil.rmtree(pending, ignore_errors=True)
+            return False, ("موتور آپدیت راه‌اندازی نشد؛ برنامه بسته نشد.\n"
+                           f"{hint}\n"
+                           "اگر مشکل ادامه داشت، فایل update.log در پوشه‌ی نصب را بفرستید.")
+    # ۳ ثانیه گذشت و فرایند زنده است → موتور در حال کار است
+    _log_spawned(install_dir, spawn_ts, proc.pid)
+    return True, ""
+
+
+def _log_spawned(install_dir, spawn_ts, pid):
+    """ثبت شروع موتور در update.log (برای عیب‌یابی)."""
     try:
-        _ef.close()
+        import time as _time
+        with open(install_dir / "update.log", "a",
+                  encoding="utf-8", errors="replace") as f:
+            f.write("[%s] launcher: updater spawned (pid %s)\n"
+                    % (_time.strftime("%Y-%m-%d %H:%M:%S"), pid))
     except Exception:
         pass
-    if not handshake_ok:
-        try:
-            if proc.poll() is None:
-                proc.kill()
-        except Exception:
-            pass
-        shutil.rmtree(pending, ignore_errors=True)
-        return False, ("موتور آپدیت راه‌اندازی نشد؛ برنامه بسته نشد.\n"
-                       f"{handshake_hint}\n"
-                       "اگر مشکل ادامه داشت، فایل update_err.log در پوشه‌ی نصب را بفرستید.")
     return True, ""
 
 
