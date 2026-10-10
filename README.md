@@ -589,11 +589,16 @@ GitHub Actions ساخته می‌شود و روی سیستم مقصد نیازی
 
 73. **نسخه‌ی 2.1.4 — لیست دوربین‌ها** — تازه‌سازی خودکار لیست دوربین‌ها هنگام باز شدن صفحه + دکمه «انتخاب همه» تا سقف لایسنس.
 
+74. **نسخه‌ی 2.1.5 — لایسنس AGPL-3.0** — فایل LICENSE + بخش «درباره‌ی برنامه» در تنظیمات.
+
 ## راهنمای اجرای محلی:
 ```bash
 pip install -r requirements.txt
 python main.py
 ```
+
+## License
+IAS Viewer is free software licensed under the GNU Affero General Public License v3.0 — see LICENSE.
 
 ## راهنمای ساخت EXE در GitHub:
 1. تمام محتویات این پوشه را به یک مخزن GitHub جدید Push کنید.

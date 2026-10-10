@@ -89,6 +89,7 @@ class SettingsPage(QWidget):
         layout.addWidget(self._build_bandwidth_group())
         layout.addWidget(self._build_update_group())
         layout.addWidget(self._build_uninstall_group())
+        layout.addWidget(self._build_about_group())
 
         layout.addStretch()
 
@@ -469,6 +470,34 @@ class SettingsPage(QWidget):
         nlay.addLayout(nrow)
         un_group.setLayout(nlay)
         return un_group
+
+    def _build_about_group(self):
+        """(2.1.5) بخش «درباره‌ی برنامه» — اطلاع‌رسانی لایسنس AGPL-3.0."""
+        about_group = QGroupBox("ℹ️ درباره‌ی برنامه")
+        alay = QVBoxLayout()
+        alay.setSpacing(10)
+        notice = QLabel(
+            "«IAS Viewer» — نسخه‌ی ویندوز\n"
+            "Copyright (C) 2026 Taha Arefi (طه عارفی)\n\n"
+            "این برنامه نرم‌افزار آزاد است: شما می‌توانید آن را تحت شرایط\n"
+            "«GNU Affero General Public License» نسخه‌ی ۳ (یا هر نسخه‌ی جدیدتر،\n"
+            "به انتخاب شما) بازتوزیع و/یا اصلاح کنید.\n"
+            "متن کامل لایسنس: فایل LICENSE در ریپوی گیت‌هاب\n"
+            "سورس‌کد: https://github.com/thaarfknight-star/IAS-CMS\n\n"
+            "IAS Viewer (Windows) — Copyright (C) 2026 Taha Arefi\n"
+            "This program is free software: you can redistribute it and/or modify\n"
+            "it under the terms of the GNU Affero General Public License as published\n"
+            "by the Free Software Foundation, either version 3 of the License, or\n"
+            "(at your option) any later version.\n"
+            "Full text: LICENSE file in the GitHub repo — "
+            "https://www.gnu.org/licenses/agpl-3.0.html"
+        )
+        notice.setWordWrap(True)
+        notice.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        alay.addWidget(notice)
+        about_group.setLayout(alay)
+        return about_group
 
     def _on_theme_changed(self, index):
         mode = self.theme_combo.itemData(index)
